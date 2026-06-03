@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenIncent — Commission math you can actually see</title>
+<meta name="description" content="Open-source incentive-compensation engine. Turn your comp plan and deal data into auditable commission payouts — self-hosted, transparent, and yours.">
+<style>
+  :root{
+    --bg:#ffffff; --ink:#0f172a; --ink2:#475569; --line:#e2e8f0;
+    --accent:#1d4ed8; --accent-ink:#1e3a8a; --soft:#f1f5f9; --soft2:#eff4ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 22px}
+  a{color:var(--accent);text-decoration:none}
+
+  nav{display:flex;align-items:center;justify-content:space-between;padding:20px 0}
+  .logo{font-weight:800;font-size:19px;letter-spacing:-.02em;color:var(--ink)}
+  .logo span{color:var(--accent)}
+  .nav-links a{margin-left:22px;color:var(--ink2);font-weight:600;font-size:14px}
+
+  .btn{display:inline-block;background:var(--accent);color:#fff;font-weight:650;
+    padding:12px 20px;border-radius:9px;font-size:15px}
+  .btn:hover{background:var(--accent-ink)}
+  .btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}
+  .btn.ghost:hover{background:var(--soft)}
+
+  .hero{padding:64px 0 56px;max-width:760px}
+  .hero h1{font-size:48px;line-height:1.08;letter-spacing:-.03em;margin:0 0 18px}
+  .hero p{font-size:19px;color:var(--ink2);margin:0 0 30px}
+  .hero .cta{display:flex;gap:12px;flex-wrap:wrap}
+
+  .pillars{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;padding:8px 0 56px}
+  .card{background:var(--soft);border:1px solid var(--line);border-radius:14px;padding:22px}
+  .card h3{margin:0 0 7px;font-size:17px}
+  .card p{margin:0;color:var(--ink2);font-size:14.5px}
+  .kicker{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--accent)}
+
+  section.band{padding:48px 0;border-top:1px solid var(--line)}
+  section.band h2{font-size:28px;letter-spacing:-.02em;margin:0 0 14px;max-width:680px}
+  section.band p.lead{font-size:17px;color:var(--ink2);max-width:680px;margin:0 0 8px}
+
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:26px}
+  .step .n{width:30px;height:30px;border-radius:50%;background:var(--soft2);color:var(--accent);
+    font-weight:700;display:flex;align-items:center;justify-content:center;margin-bottom:10px}
+  .step h4{margin:0 0 4px;font-size:16px}
+  .step p{margin:0;color:var(--ink2);font-size:14.5px}
+
+  .audit{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:22px 24px;margin-top:26px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;overflow-x:auto}
+  .audit .c{color:#7dd3fc}
+
+  .cta-band{background:var(--soft2);border:1px solid #dbe4ff;border-radius:18px;padding:40px;margin:8px 0 0;text-align:center}
+  .cta-band h2{margin:0 0 10px;font-size:26px;letter-spacing:-.02em}
+  .cta-band p{margin:0 auto 22px;color:var(--ink2);max-width:560px;font-size:16px}
+
+  footer{border-top:1px solid var(--line);margin-top:56px;padding:28px 0 48px;color:var(--ink2);font-size:14px}
+  footer .row{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+  footer a{color:var(--ink2)}
+
+  @media(max-width:760px){
+    .hero h1{font-size:36px}
+    .pillars,.steps{grid-template-columns:1fr}
+    .nav-links{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav>
+    <a class="logo" href="index.html">Open<span>Incent</span></a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="services.html">Services</a>
+      <a href="#audit">Free audit</a>
+      <a href="[GITHUB_URL]">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <h1>Commission math you can actually see.</h1>
+    <p>OpenIncent is an open-source incentive-compensation engine. Feed it your comp plan and your deals; get back every payout — with a full audit trail explaining how each number was produced. Self-host it, read the source, own your comp logic.</p>
+    <div class="cta">
+      <a class="btn" href="#audit">Get a free comp audit</a>
+      <a class="btn ghost" href="[GITHUB_URL]">View on GitHub</a>
+    </div>
+  </header>
+
+  <div class="pillars">
+    <div class="card">
+      <div class="kicker">Correct</div>
+      <h3>Penny-precise, deterministic</h3>
+      <p>All money is exact decimal — no floating-point drift. The same inputs always produce the same payouts. Reproducible and testable.</p>
+    </div>
+    <div class="card">
+      <div class="kicker">Transparent</div>
+      <h3>Every number, explained</h3>
+      <p>Each commission traces back to the exact rule, deal, and inputs that produced it. Answer “why did this rep get paid $X?” down to the cent.</p>
+    </div>
+    <div class="card">
+      <div class="kicker">Yours</div>
+      <h3>Self-hosted &amp; open</h3>
+      <p>Runs on your machine or your infrastructure. Your comp and payee data never leave your control. Open source — no per-seat fees, no lock-in.</p>
+    </div>
+  </div>
+
+  <section class="band">
+    <h2>Stop renting a black box.</h2>
+    <p class="lead">Most commission tools are closed SaaS: your pay data lives in someone else's cloud, you pay per rep per month forever, and you can't see how a number was calculated. Or you're wrestling a spreadsheet you don't fully trust.</p>
+    <p class="lead">OpenIncent is for RevOps, finance, and data teams who'd rather <strong>own their comp logic</strong> than rent something they can't inspect.</p>
+  </section>
+
+  <section class="band" id="how">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step"><div class="n">1</div><h4>Define your plan</h4><p>Write it in a simple YAML format — or describe it in plain English and let the engine draft it.</p></div>
+      <div class="step"><div class="n">2</div><h4>Drop in your deals</h4><p>CSV, Excel, or a warehouse export (Snowflake, BigQuery, DuckDB). Messy column names are matched automatically.</p></div>
+      <div class="step"><div class="n">3</div><h4>Get explained payouts</h4><p>Per-rep commission statements plus an immutable audit trail for every single number.</p></div>
+    </div>
+    <div class="audit" id="audit-sample">
+<span class="c">// from the audit ledger — every payout shows its work</span>
+{ "transaction_id": "D-1042", "payee_id": "P-014", "rule_id": "tiered_core",
+  "inputs": { "amount": "7000", "rate": "0.10", "cumulative_pct": "1.07" },
+  "outputs": { "commission_amount": "700.00" },
+  "human_readable": "Tiered: 7000 @ 0.10 (at 107% of quota) = 700.00" }
+    </div>
+  </section>
+
+  <section class="band" id="audit">
+    <div class="cta-band">
+      <h2>Get a free comp audit</h2>
+      <p>Send me your comp plan and a sample of your deal data. I'll show you exactly what your reps should be paid — with every number explained. Fully async, no sales call.</p>
+      <a class="btn" href="mailto:[CONTACT_EMAIL]?subject=Free%20comp%20audit">Email me your plan →</a>
+    </div>
+  </section>
+
+  <footer>
+    <div class="row">
+      <div>Open source · AGPL-3.0 · self-hostable</div>
+      <div>
+        <a href="[GITHUB_URL]">GitHub</a> &nbsp;·&nbsp;
+        <a href="mailto:[CONTACT_EMAIL]">Contact</a>
+      </div>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

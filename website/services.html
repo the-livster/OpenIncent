@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Services — OpenIncent</title>
+<meta name="description" content="Get your commission plan running on OpenIncent — accurately, auditably, and entirely under your control. Free audit, fixed-fee setup, and optional ongoing care. Fully async.">
+<style>
+  :root{
+    --bg:#ffffff; --ink:#0f172a; --ink2:#475569; --line:#e2e8f0;
+    --accent:#1d4ed8; --accent-ink:#1e3a8a; --soft:#f1f5f9; --soft2:#eff4ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 22px}
+  a{color:var(--accent);text-decoration:none}
+
+  nav{display:flex;align-items:center;justify-content:space-between;padding:20px 0}
+  .logo{font-weight:800;font-size:19px;letter-spacing:-.02em;color:var(--ink)}
+  .logo span{color:var(--accent)}
+  .nav-links a{margin-left:22px;color:var(--ink2);font-weight:600;font-size:14px}
+
+  .btn{display:inline-block;background:var(--accent);color:#fff;font-weight:650;
+    padding:12px 20px;border-radius:9px;font-size:15px}
+  .btn:hover{background:var(--accent-ink)}
+
+  .hero{padding:56px 0 40px;max-width:720px}
+  .hero h1{font-size:40px;line-height:1.1;letter-spacing:-.03em;margin:0 0 16px}
+  .hero p{font-size:18px;color:var(--ink2);margin:0}
+  .hero .note{font-size:15px;color:var(--ink2);margin-top:14px;padding:12px 16px;background:var(--soft);border-radius:10px}
+
+  .tiers{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;padding:18px 0 8px}
+  .tier{border:1px solid var(--line);border-radius:14px;padding:22px;display:flex;flex-direction:column}
+  .tier.feature{border-color:var(--accent);box-shadow:0 6px 20px rgba(29,78,216,.08)}
+  .tier .name{font-weight:700;font-size:16px}
+  .tier .price{font-size:26px;font-weight:800;letter-spacing:-.02em;margin:6px 0 10px}
+  .tier .price small{font-size:13px;font-weight:600;color:var(--ink2)}
+  .tier p{margin:0;color:var(--ink2);font-size:14px}
+  .tag{display:inline-block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--accent);background:var(--soft2);padding:3px 8px;border-radius:20px;margin-bottom:8px;align-self:flex-start}
+
+  section.band{padding:44px 0;border-top:1px solid var(--line);margin-top:34px}
+  section.band h2{font-size:26px;letter-spacing:-.02em;margin:0 0 18px}
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .step .n{width:30px;height:30px;border-radius:50%;background:var(--soft2);color:var(--accent);
+    font-weight:700;display:flex;align-items:center;justify-content:center;margin-bottom:10px}
+  .step h4{margin:0 0 4px;font-size:16px}
+  .step p{margin:0;color:var(--ink2);font-size:14.5px}
+
+  .why{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .why li{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .why b{display:block;margin-bottom:4px}
+  .why span{color:var(--ink2);font-size:14.5px}
+
+  .cta-band{background:var(--soft2);border:1px solid #dbe4ff;border-radius:18px;padding:40px;margin-top:34px;text-align:center}
+  .cta-band h2{margin:0 0 10px;font-size:26px;letter-spacing:-.02em}
+  .cta-band p{margin:0 auto 22px;color:var(--ink2);max-width:560px;font-size:16px}
+
+  footer{border-top:1px solid var(--line);margin-top:50px;padding:28px 0 48px;color:var(--ink2);font-size:14px}
+  footer .row{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+  footer a{color:var(--ink2)}
+
+  @media(max-width:760px){
+    .hero h1{font-size:32px}
+    .steps,.why{grid-template-columns:1fr}
+    .nav-links{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav>
+    <a class="logo" href="index.html">Open<span>Incent</span></a>
+    <div class="nav-links">
+      <a href="index.html#how">How it works</a>
+      <a href="services.html">Services</a>
+      <a href="[GITHUB_URL]">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <h1>Get it running — and keep it yours.</h1>
+    <p>The engine is free and open source. I help you get your comp plan running on it: accurate, auditable, and entirely under your control. You bring the plan; I make it work on your data.</p>
+    <div class="note"><strong>What this is — and isn't:</strong> this is hands-on technical setup, not comp-strategy consulting. You already know how your reps are paid; I turn that into a working, auditable system you own.</div>
+  </header>
+
+  <div class="tiers">
+    <div class="tier feature">
+      <span class="tag">Start here</span>
+      <div class="name">Free comp audit</div>
+      <div class="price">Free</div>
+      <p>Send your plan and a sample of deals. I'll show you exactly what your reps should be paid — every number explained. Async, no call.</p>
+    </div>
+    <div class="tier">
+      <div class="name">Setup</div>
+      <div class="price">from $750</div>
+      <p>I encode your existing plan, map your data, and get you live with per-rep statements and a full audit trail. Fixed fee, fully async.</p>
+    </div>
+    <div class="tier">
+      <div class="name">Implementation</div>
+      <div class="price">from $8,000</div>
+      <p>For larger or more complex comp: full setup on your real data — splits, true-ups, statements — plus handoff. Scoped to your plan.</p>
+    </div>
+    <div class="tier">
+      <div class="name">Ongoing care</div>
+      <div class="price">from $99<small>/mo</small></div>
+      <p>Plan changes, new periods, and support as your comp evolves. Optional — and cancel anytime.</p>
+    </div>
+  </div>
+  <p style="color:var(--ink2);font-size:13px;margin:6px 2px 0">Prices are indicative starting points — every engagement is a fixed, agreed scope before you pay anything.</p>
+
+  <section class="band">
+    <h2>How it works — fully async</h2>
+    <div class="steps">
+      <div class="step"><div class="n">1</div><h4>You send it over</h4><p>Email me your comp plan and a sample of your deal data. No call required.</p></div>
+      <div class="step"><div class="n">2</div><h4>I build &amp; run it</h4><p>I configure it on OpenIncent and run your numbers, with the full audit trail.</p></div>
+      <div class="step"><div class="n">3</div><h4>You get the result</h4><p>Accurate, explained payouts and per-rep statements — and the setup is yours to keep.</p></div>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Why this beats a per-seat subscription</h2>
+    <ul class="why">
+      <li><b>You own it</b><span>Open-source engine, your data, your config. Run it without me, forever — no lock-in.</span></li>
+      <li><b>Pay once</b><span>A fixed setup fee instead of paying per rep, every month, indefinitely.</span></li>
+      <li><b>See it first</b><span>Start with a free audit. You see exactly what you'd get before spending anything.</span></li>
+    </ul>
+  </section>
+
+  <section class="band" style="border:none;padding-top:0">
+    <div class="cta-band">
+      <h2>Start with a free comp audit</h2>
+      <p>Send your plan and a sample of your deal data. I'll show you what your reps should be paid, every number explained — async, no sales call.</p>
+      <a class="btn" href="mailto:[CONTACT_EMAIL]?subject=Free%20comp%20audit">Email me your plan →</a>
+    </div>
+  </section>
+
+  <footer>
+    <div class="row">
+      <div>Open source · AGPL-3.0 · self-hostable</div>
+      <div>
+        <a href="index.html">Home</a> &nbsp;·&nbsp;
+        <a href="[GITHUB_URL]">GitHub</a> &nbsp;·&nbsp;
+        <a href="mailto:[CONTACT_EMAIL]">Contact</a>
+      </div>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
