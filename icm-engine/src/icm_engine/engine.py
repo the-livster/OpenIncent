@@ -342,6 +342,37 @@ def _resolve_credits(transactions: list[Transaction]) -> list[_CreditUnit]:
     return units
 
 
+def _compute_attainment(
+    credits: list[_CreditUnit],
+    payee_map: dict[str, Payee],
+    period_type: str,
+) -> list[AttainmentSummary]:
+    """Compute bookings vs quota per (payee, window).
+
+    v1: ALL credited bookings count toward attainment. Quota-category filtering
+    (e.g. only new-business deals) is a future extension.
+    """
+    bookings: dict[tuple[str, str], Decimal] = {}
+    for cu in credits:
+        window = _window_key(cu.period, period_type)
+        key = (cu.payee_id, window)
+        bookings[key] = bookings.get(key, Decimal("0")) + cu.credited_amount
+
+    summaries: list[AttainmentSummary] = []
+    for (pid, window), booked in sorted(bookings.items()):
+        p = payee_map.get(pid)
+        quota = p.quota if p else Decimal("0")
+        pct = booked / quota if quota != 0 else None
+        summaries.append(AttainmentSummary(
+            payee_id=pid,
+            period=window,
+            bookings=booked,
+            quota=quota,
+            attainment_pct=pct,
+        ))
+    return summaries
+
+
 def _make_synthetic_transactions(credits: list[_CreditUnit]) -> list[Transaction]:
     """Convert credit units into synthetic Transactions for rule evaluation."""
     return [
@@ -373,9 +404,19 @@ def _stamp_credits(commissions: list[Commission], credits: list[_CreditUnit]) ->
 
 
 @dataclass
+class AttainmentSummary:
+    payee_id: str
+    period: str
+    bookings: Decimal
+    quota: Decimal
+    attainment_pct: Decimal | None  # None if quota == 0
+
+
+@dataclass
 class CalculationResult:
     commissions: list[Commission] = field(default_factory=list)
     ledger: list[LedgerEntry] = field(default_factory=list)
+    attainment: list[AttainmentSummary] = field(default_factory=list)
 
 
 @dataclass
@@ -410,6 +451,24 @@ class CommissionEngine:
 
         # Resolve credits — expand multi-payee transactions into credit units
         credits = _resolve_credits(transactions)
+
+        # Compute attainment: bookings per (payee, window) vs quota
+        attainment = _compute_attainment(credits, payee_map, pt)
+        for a in attainment:
+            all_ledger.append(LedgerEntry(
+                transaction_id="*",
+                payee_id=a.payee_id,
+                rule_id="*",
+                event_type="attainment_computed",
+                inputs={"bookings": str(a.bookings), "quota": str(a.quota)},
+                outputs={"attainment_pct": str(a.attainment_pct) if a.attainment_pct is not None else "N/A"},
+                human_readable=(
+                    f"{a.payee_id} booked {a.bookings} against "
+                    f"{a.quota} quota = {a.attainment_pct * 100:.1f}%"
+                    if a.attainment_pct is not None
+                    else f"{a.payee_id} booked {a.bookings} (quota=0)"
+                ),
+            ))
 
         # Emit credit_allocated ledger entries
         for cu in credits:
@@ -451,7 +510,7 @@ class CommissionEngine:
             all_commissions.extend(commissions)
             all_ledger.extend(ledger)
 
-        return CalculationResult(commissions=all_commissions, ledger=all_ledger)
+        return CalculationResult(commissions=all_commissions, ledger=all_ledger, attainment=attainment)
 
     def true_up(
         self,
