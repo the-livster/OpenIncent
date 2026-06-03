@@ -43,7 +43,7 @@ export default function ResultsDashboard({ data }: Props) {
 
   const stats = [
     { label: "Total Commission", value: `$${totalCommission}`, accent: "text-success" },
-    { label: "Payees", value: String(Object.keys(data.summary).length), accent: "text-brand-400" },
+    { label: "Payees", value: String(Object.keys(data.summary).length), accent: "text-accent" },
     { label: "Commission Lines", value: String(data.commissions.length), accent: "text-brand-300" },
     { label: "Rules Triggered", value: String(uniqueRules), accent: "text-warn" },
   ];
@@ -55,9 +55,9 @@ export default function ResultsDashboard({ data }: Props) {
         {stats.map((s) => (
           <div
             key={s.label}
-            className="glass rounded-xl p-4 hover:scale-[1.02] transition-transform duration-200"
+            className="card p-4 hover:scale-[1.02] transition-transform duration-200"
           >
-            <div className="text-xs font-medium text-surface-500 uppercase tracking-wider">
+            <div className="text-xs font-medium text-ink2 uppercase tracking-wider">
               {s.label}
             </div>
             <div className={`text-2xl font-bold mt-1 ${s.accent}`}>{s.value}</div>
@@ -67,24 +67,24 @@ export default function ResultsDashboard({ data }: Props) {
 
       {/* Payee breakdown */}
       {payeeSummary.length > 1 && (
-        <div className="glass rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-surface-700 mb-3">Per-Payee Breakdown</h3>
+        <div className="card p-4">
+          <h3 className="text-sm font-semibold text-ink mb-3">Per-Payee Breakdown</h3>
           <div className="space-y-2">
             {payeeSummary.map((p) => {
               const pct = (p.total / parseFloat(totalCommission)) * 100;
               return (
                 <div key={p.id} className="flex items-center gap-3">
-                  <span className="text-xs font-mono text-surface-600 w-24 truncate">{p.id}</span>
+                  <span className="text-xs font-mono text-ink2 w-24 truncate">{p.id}</span>
                   <div className="flex-1 h-2 rounded-full bg-surface-200 overflow-hidden">
                     <div
-                      className="h-full rounded-full bg-gradient-to-r from-brand-500 to-brand-400 transition-all duration-500"
+                      className="h-full rounded-full bg-gradient-to-r from-accent to-brand-400 transition-all duration-500"
                       style={{ width: `${Math.min(pct, 100)}%` }}
                     />
                   </div>
-                  <span className="text-xs font-mono text-surface-700 w-20 text-right">
+                  <span className="text-xs font-mono text-ink w-20 text-right">
                     ${p.total.toFixed(2)}
                   </span>
-                  <span className="text-xs text-surface-500 w-10 text-right">
+                  <span className="text-xs text-ink2 w-10 text-right">
                     {p.count} txn
                   </span>
                 </div>
@@ -120,8 +120,8 @@ function DownloadBtn({ label, onClick }: { label: string; onClick: () => void })
       className="
         inline-flex items-center gap-1.5 px-3 py-1.5
         rounded-lg text-xs font-medium
-        bg-surface-200/80 text-surface-700 hover:bg-surface-300
-        border border-surface-300/50
+        bg-surface-200/80 text-ink hover:bg-surface-300
+        border border-line
         transition-colors cursor-pointer
       "
     >

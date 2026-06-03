@@ -65,10 +65,10 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
 
   return (
     <div className="max-w-3xl mx-auto space-y-6 animate-in">
-      <div className="glass rounded-xl p-6 space-y-4">
+      <div className="card p-6 space-y-4">
         <div>
-          <h2 className="text-lg font-semibold text-surface-800">AI Plan Builder</h2>
-          <p className="text-sm text-surface-500 mt-1">
+          <h2 className="text-lg font-semibold text-ink">AI Plan Builder</h2>
+          <p className="text-sm text-ink2 mt-1">
             Describe your commission plan in plain English. We'll generate it and let you tune it with sliders.
           </p>
         </div>
@@ -80,7 +80,7 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
         )}
 
         <div>
-          <label className="block text-xs font-medium text-surface-600 mb-1.5">
+          <label className="block text-xs font-medium text-ink2 mb-1.5">
             Plan Description
           </label>
           <textarea
@@ -88,27 +88,27 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
             onChange={(e) => setDescription(e.target.value)}
             placeholder="e.g. 5% flat commission on all closed deals. Above 100% quota, pay 2x the rate. Enterprise products get an extra 2% bonus."
             rows={4}
-            className="w-full px-3 py-2.5 rounded-lg text-sm bg-surface-100 border border-surface-300/50 text-surface-800 placeholder:text-surface-500 focus:outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-400/30 transition-all resize-y"
+            className="w-full px-3 py-2.5 rounded-lg text-sm bg-soft border border-line text-ink placeholder:text-ink2 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/10 transition-all resize-y"
           />
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-surface-600 mb-1.5">
-            Plan ID <span className="text-surface-400">(optional)</span>
+          <label className="block text-xs font-medium text-ink2 mb-1.5">
+            Plan ID <span className="text-ink2">(optional)</span>
           </label>
           <input
             type="text"
             value={planId}
             onChange={(e) => setPlanId(e.target.value)}
             placeholder="my_sales_plan"
-            className="w-full px-3 py-2 rounded-lg text-sm font-mono bg-surface-100 border border-surface-300/50 text-surface-800 placeholder:text-surface-500 focus:outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-400/30 transition-all"
+            className="w-full px-3 py-2 rounded-lg text-sm font-mono bg-soft border border-line text-ink placeholder:text-ink2 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/10 transition-all"
           />
         </div>
 
         <button
           onClick={generate}
           disabled={!description.trim() || status === "loading"}
-          className="w-full py-2.5 rounded-lg font-medium text-sm bg-gradient-to-r from-brand-500 to-brand-600 text-white hover:from-brand-400 hover:to-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer shadow-lg shadow-brand-500/20"
+          className="w-full py-2.5 rounded-lg font-medium text-sm bg-gradient-to-r from-accent to-accent-ink text-white hover:from-accent hover:to-accent disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer shadow-sm"
         >
           {status === "loading" ? (
             <span className="flex items-center justify-center gap-2">
@@ -128,32 +128,32 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
       )}
 
       {status === "success" && generatedYaml && (
-        <div className="glass rounded-xl overflow-hidden animate-in">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-surface-300/30">
-            <h3 className="text-sm font-semibold text-surface-700">Plan Generated</h3>
+        <div className="card overflow-hidden animate-in">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+            <h3 className="text-sm font-semibold text-ink">Plan Generated</h3>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowBuilder(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-brand-500 text-white hover:bg-brand-400 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-accent text-white hover:bg-brand-400 transition-colors cursor-pointer"
               >
                 Tune with Sliders
               </button>
               <button
                 onClick={() => onPlanGenerated({ yaml: generatedYaml, name: planId || "generated_plan" })}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-brand-500/15 text-brand-400 hover:bg-brand-500/25 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors cursor-pointer"
               >
                 + Save to Library
               </button>
               <button
                 onClick={downloadYaml}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-brand-500/15 text-brand-400 hover:bg-brand-500/25 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors cursor-pointer"
               >
                 ↓ Download YAML
               </button>
             </div>
           </div>
           <div className="p-4 overflow-x-auto">
-            <pre className="yaml-block">{generatedYaml}</pre>
+            <pre className="audit-panel">{generatedYaml}</pre>
           </div>
         </div>
       )}

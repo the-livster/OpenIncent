@@ -1,29 +1,26 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --color-brand-50: oklch(0.97 0.02 280);
-  --color-brand-100: oklch(0.93 0.04 280);
-  --color-brand-200: oklch(0.86 0.08 280);
-  --color-brand-300: oklch(0.76 0.12 280);
-  --color-brand-400: oklch(0.66 0.18 275);
-  --color-brand-500: oklch(0.55 0.24 275);
-  --color-brand-600: oklch(0.48 0.22 275);
-  --color-brand-700: oklch(0.40 0.18 275);
-  --color-surface-50: oklch(0.16 0.01 260);
-  --color-surface-100: oklch(0.19 0.01 260);
-  --color-surface-200: oklch(0.22 0.015 260);
-  --color-surface-300: oklch(0.26 0.015 260);
-  --color-surface-400: oklch(0.32 0.01 260);
-  --color-surface-500: oklch(0.42 0.01 260);
-  --color-surface-600: oklch(0.55 0.01 260);
-  --color-surface-700: oklch(0.70 0.01 260);
-  --color-surface-800: oklch(0.82 0.005 260);
-  --color-surface-900: oklch(0.92 0.005 260);
-  --color-success: oklch(0.72 0.19 155);
-  --color-danger: oklch(0.65 0.2 25);
-  --color-warn: oklch(0.78 0.16 80);
+
+  /* Primary palette — matches OpenIncent website */
+  --color-ink: oklch(0.21 0.04 260);        /* #0f172a */
+  --color-ink2: oklch(0.45 0.02 260);       /* #475569 */
+  --color-line: oklch(0.90 0.01 260);       /* #e2e8f0 */
+  --color-accent: oklch(0.50 0.20 270);     /* #1d4ed8 */
+  --color-accent-ink: oklch(0.35 0.16 270); /* #1e3a8a */
+  --color-soft: oklch(0.96 0.005 260);      /* #f1f5f9 */
+  --color-soft2: oklch(0.96 0.02 270);      /* #eff4ff */
+
+  /* Semantic */
+  --color-success: oklch(0.65 0.18 155);
+  --color-danger: oklch(0.60 0.22 25);
+  --color-warn: oklch(0.75 0.16 80);
+
+  /* Radius */
+  --radius-card: 14px;
+  --radius-btn: 9px;
 }
 
 html {
@@ -32,52 +29,123 @@ html {
 
 body {
   font-family: var(--font-sans);
-  background: var(--color-surface-50);
-  color: var(--color-surface-800);
+  background: #ffffff;
+  color: var(--color-ink);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   user-select: text;
 }
 
 /* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-line); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-ink2); }
+
+/* Card — white panel with border */
+.card {
+  background: #ffffff;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+  box-shadow: 0 1px 2px rgba(20, 30, 60, 0.04);
 }
-::-webkit-scrollbar-track {
+
+/* Button — primary */
+.btn-primary {
+  background: var(--color-accent);
+  color: #ffffff;
+  font-weight: 650;
+  padding: 12px 20px;
+  border-radius: var(--radius-btn);
+  transition: background 0.15s;
+  cursor: pointer;
+  border: none;
+}
+.btn-primary:hover { background: var(--color-accent-ink); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Button — secondary/ghost */
+.btn-ghost {
   background: transparent;
+  color: var(--color-accent);
+  font-weight: 650;
+  padding: 10px 18px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--color-line);
+  transition: all 0.15s;
+  cursor: pointer;
 }
-::-webkit-scrollbar-thumb {
-  background: var(--color-surface-300);
+.btn-ghost:hover { background: var(--color-soft2); border-color: var(--color-accent); }
+
+/* Badge / pill label */
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-accent);
+  background: var(--color-soft2);
+  padding: 3px 10px;
   border-radius: 999px;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: var(--color-surface-400);
+
+/* Input / select / textarea */
+input[type="text"],
+input[type="number"],
+input[type="password"],
+input[type="email"],
+select,
+textarea {
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-btn);
+  padding: 10px 14px;
+  font-size: 0.875rem;
+  color: var(--color-ink);
+  background: #ffffff;
+  transition: border-color 0.15s;
+  outline: none;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.1);
 }
 
-/* Glass card utility */
-.glass {
-  background: oklch(0.18 0.012 260 / 0.7);
-  backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid oklch(0.28 0.015 260 / 0.5);
+/* Table */
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-ink2);
+  padding: 10px 14px;
+  background: var(--color-soft);
+  border-bottom: 1px solid var(--color-line);
 }
+td {
+  padding: 10px 14px;
+  font-size: 0.875rem;
+  color: var(--color-ink);
+  border-bottom: 1px solid var(--color-line);
+}
+tr:hover td { background: var(--color-soft); }
 
-/* Animated gradient bg */
-.gradient-bg {
-  background: linear-gradient(
-    135deg,
-    oklch(0.14 0.02 275) 0%,
-    oklch(0.16 0.015 260) 40%,
-    oklch(0.15 0.02 300) 100%
-  );
+/* Audit panel — dark code-block style for ledger/trace/YAML */
+.audit-panel {
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  padding: 20px 24px;
+  border-radius: var(--radius-card);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
-
-/* Pulse glow on interactive */
-.glow-brand {
-  box-shadow:
-    0 0 0 1px oklch(0.55 0.24 275 / 0.3),
-    0 0 20px oklch(0.55 0.24 275 / 0.1);
-}
+.audit-panel .hl { color: #7dd3fc; }
 
 /* Fade-in animation */
 @keyframes fadeIn {
@@ -88,23 +156,11 @@ body {
   animation: fadeIn 0.4s ease-out both;
 }
 
-/* Stagger children */
-.stagger > * {
-  animation: fadeIn 0.35s ease-out both;
+/* Logo wordmark */
+.logo-wordmark {
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
-.stagger > *:nth-child(1) { animation-delay: 0ms; }
-.stagger > *:nth-child(2) { animation-delay: 60ms; }
-.stagger > *:nth-child(3) { animation-delay: 120ms; }
-.stagger > *:nth-child(4) { animation-delay: 180ms; }
-.stagger > *:nth-child(5) { animation-delay: 240ms; }
-
-/* YAML code block */
-.yaml-block {
-  tab-size: 2;
-  white-space: pre;
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  color: oklch(0.78 0.04 270);
-  overflow-x: auto;
-}
+.logo-open { color: var(--color-ink); }
+.logo-incent { color: var(--color-accent); }
