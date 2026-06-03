@@ -33,6 +33,7 @@ def generate_statements(
     formats: tuple[str, ...] = ("xlsx",),
     generated_on: date | None = None,
     emit_zero: bool = False,
+    attainment: list[Any] | None = None,
 ) -> list[StatementFile]:
     """Generate per-payee commission statements.
 
@@ -89,7 +90,7 @@ def generate_statements(
             if fmt == "xlsx":
                 path = _write_xlsx(pid, pname, period_label, lines, total, out_dir)
             elif fmt == "html":
-                path = _write_html(pid, pname, period_label, lines, total, generated_on, out_dir)
+                path = _write_html(pid, pname, period_label, lines, total, generated_on, out_dir, attainment)
             elif fmt == "pdf":
                 path = _write_pdf(pid, pname, period_label, lines, total, generated_on, out_dir)
             else:
@@ -142,9 +143,28 @@ def _write_xlsx(
 def _write_html(
     pid: str, pname: str, period: str,
     lines: list[Any], total: Decimal, generated_on: date | None, out_dir: Path,
+    attainment: list[Any] | None = None,
 ) -> Path:
     esc = html.escape
     date_str = f"<p>Generated: {esc(str(generated_on))}</p>" if generated_on else ""
+
+    # Attainment line
+    att_html = ""
+    if attainment:
+        for a in attainment:
+            if _get(a, "payee_id") == pid:
+                bookings = _get(a, "bookings")
+                quota = _get(a, "quota")
+                pct_raw = getattr(a, "attainment_pct", None)
+                if pct_raw is not None:
+                    pct = f"{float(str(pct_raw)) * 100:.1f}%"
+                else:
+                    pct = "N/A"
+                att_html = (
+                    f"<p class='attainment'>You booked ${esc(bookings)} "
+                    f"against your ${esc(quota)} quota ({pct}).</p>"
+                )
+                break
     rows_html = ""
     for c in lines:
         rows_html += (
@@ -165,6 +185,7 @@ def _write_html(
   body {{ font-family: -apple-system, sans-serif; max-width: 700px; margin: 2rem auto; color: #1a1a2e; }}
   h1 {{ font-size: 1.25rem; margin-bottom: 0.25rem; }}
   .meta {{ color: #666; font-size: 0.85rem; margin-bottom: 1.5rem; }}
+  .attainment {{ color: #2d6a4f; font-weight: 600; font-size: 0.95rem; margin-bottom: 1.5rem; }}
   table {{ width: 100%; border-collapse: collapse; }}
   th, td {{ padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; font-size: 0.9rem; }}
   th {{ background: #f5f5f5; font-weight: 600; }}
@@ -176,6 +197,7 @@ def _write_html(
   <h1>Commission Statement</h1>
   <div class="meta">
     <p><strong>{esc(pname)}</strong> ({esc(pid)}) - Period: {esc(period)}</p>
+    {att_html}
     {date_str}
   </div>
   <table>

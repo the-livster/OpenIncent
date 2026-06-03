@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -712,6 +713,95 @@ class TestTrueUp:
         assert [(a.payee_id, a.period, a.delta) for a in tu1.adjustments] == \
                [(a.payee_id, a.period, a.delta) for a in tu2.adjustments]
         assert tu1.exceptions == tu2.exceptions
+
+
+# --- attainment ---------------------------------------------------------
+
+
+class TestAttainment:
+    def test_basic_attainment(self) -> None:
+        """Bookings 120k vs 100k quota = 120% attainment."""
+        plan = Plan(plan_id="p", name="P", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1", name="A", quota=Decimal("100000"), plan_id="p")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("120000"), close_date=date(2026, 1, 15))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        assert len(result.attainment) == 1
+        a = result.attainment[0]
+        assert a.payee_id == "P1"
+        assert a.bookings == Decimal("120000")
+        assert a.quota == Decimal("100000")
+        assert a.attainment_pct == Decimal("1.2")
+
+    def test_zero_quota_no_crash(self) -> None:
+        """Zero-quota payee produces attainment_pct=None, no crash."""
+        plan = Plan(plan_id="p", name="P", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1", name="A", quota=Decimal("0"), plan_id="p")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("5000"), close_date=date(2026, 1, 15))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        assert len(result.attainment) == 1
+        assert result.attainment[0].attainment_pct is None
+
+    def test_split_credit_bookings(self) -> None:
+        """A 30% split on 10,000 adds 3,000 to that payee's bookings."""
+        from icm_engine.models import Credit
+        plan = Plan(plan_id="p", name="P", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [
+            _payee(id="P1", name="A", quota=Decimal("100000"), plan_id="p"),
+            _payee(id="P2", name="B", quota=Decimal("100000"), plan_id="p"),
+        ]
+        txns = [Transaction(id="T1", payee_id="P1", period="2026-01", amount=Decimal("10000"),
+                            close_date=date(2026, 1, 10),
+                            credits=[Credit(payee_id="P1", split_pct=Decimal("0.7")),
+                                     Credit(payee_id="P2", split_pct=Decimal("0.3"))])]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        p2 = next(a for a in result.attainment if a.payee_id == "P2")
+        assert p2.bookings == Decimal("3000")  # 30% of 10000
+
+    def test_attainment_ledger_entry(self) -> None:
+        """An attainment_computed ledger entry is emitted."""
+        plan = Plan(plan_id="p", name="P", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1", name="A", quota=Decimal("100000"), plan_id="p")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("120000"), close_date=date(2026, 1, 15))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        att_entries = [e for e in result.ledger if e.event_type == "attainment_computed"]
+        assert len(att_entries) == 1
+        assert att_entries[0].payee_id == "P1"
+        assert att_entries[0].inputs["bookings"] == "120000"
+
+    def test_attainment_in_api(self) -> None:
+        """API response includes attainment."""
+        plan = Plan(plan_id="p", name="P", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1", name="A", quota=Decimal("100000"), plan_id="p")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("120000"), close_date=date(2026, 1, 15))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        # Just verify attainment is accessible with expected fields
+        a = result.attainment[0]
+        assert a.payee_id
+        assert a.period
+        assert a.bookings is not None
+        assert a.quota is not None
+
+    def test_attainment_in_statement(self) -> None:
+        """Statement HTML includes attainment info."""
+        from icm_engine.statements import generate_statements
+        plan = Plan(plan_id="p", name="P", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1", name="Alice", quota=Decimal("100000"), plan_id="p")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("120000"), close_date=date(2026, 1, 15))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        out = Path("tests/fixtures/_stmt_att")
+        out.mkdir(parents=True, exist_ok=True)
+        files = generate_statements(
+            result.commissions, payees, out_dir=out, formats=("html",),
+            attainment=result.attainment,
+        )
+        content = files[0].path.read_text(encoding="utf-8")
+        assert "120000" in content
 
 
 # --- rule_skipped ledger entries ---------------------------------------

@@ -159,6 +159,16 @@ async def calculate(
             "commissions": commissions,
             "ledger": ledger_dicts,
             "summary": {k: str(v) for k, v in summary.items()},
+            "attainment": [
+                {
+                    "payee_id": a.payee_id,
+                    "period": a.period,
+                    "bookings": a.bookings,
+                    "quota": a.quota,
+                    "attainment_pct": a.attainment_pct,
+                }
+                for a in result.attainment
+            ],
         }))
 
 
