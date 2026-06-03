@@ -130,10 +130,17 @@ class Payee(BaseModel):
     id: str
     name: str
     quota: Decimal = Field(ge=Decimal("0"))
+    quotas: dict[str, Decimal] = {}
     plan_id: str = ""
     effective_from: date | None = None
     effective_to: date | None = None
     email: str | None = None
+
+    def quota_for(self, window_key: str) -> Decimal:
+        """Return the quota for a given window key, falling back to default."""
+        if window_key in self.quotas:
+            return self.quotas[window_key]
+        return self.quota
 
     @model_validator(mode="before")
     @classmethod

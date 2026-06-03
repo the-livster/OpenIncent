@@ -361,7 +361,7 @@ def _compute_attainment(
     summaries: list[AttainmentSummary] = []
     for (pid, window), booked in sorted(bookings.items()):
         p = payee_map.get(pid)
-        quota = p.quota if p else Decimal("0")
+        quota = p.quota_for(window) if p else Decimal("0")
         pct = booked / quota if quota != 0 else None
         summaries.append(AttainmentSummary(
             payee_id=pid,
@@ -751,7 +751,7 @@ class CommissionEngine:
                 )
             )
 
-            quota = payee.quota
+            quota = payee.quota_for(window)
             if quota == Decimal("0"):
                 top_tier = rule.tiers[-1]
                 for txn in txn_group:
@@ -964,7 +964,7 @@ class CommissionEngine:
                         ),
                     ))
                 continue
-            quota = payee.quota
+            quota = payee.quota_for(window)
             if quota == Decimal("0"):
                 for t in txn_group:
                     ledger.append(LedgerEntry(

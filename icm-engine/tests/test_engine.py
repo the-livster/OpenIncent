@@ -804,6 +804,86 @@ class TestAttainment:
         assert "120000" in content
 
 
+# --- time-varying quotas ------------------------------------------------
+
+
+class TestTimeVaryingQuotas:
+    def test_quarterly_tiered_uses_period_quota(self) -> None:
+        """Tiered rule uses period-specific quota when quotas dict is set."""
+        engine = CommissionEngine()
+        tiers = [
+            Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05")),
+            Tier(threshold_pct=Decimal("100.0"), rate=Decimal("0.10")),
+        ]
+        rule = TieredRule(type="tiered", id="t", tiers=tiers)
+        # Q1 quota=300000, Q2 quota=350000
+        payee = Payee(id="P1", name="A", quota=Decimal("100000"),
+                      quotas={"2026-Q1": Decimal("300000"), "2026-Q2": Decimal("350000")},
+                      plan_id="p", effective_from=date(2026, 1, 1))
+        payees = {"P1": payee}
+        # Q1: 200,000 against 300,000 = 66.7% -> stays in first tier (5%) -> 10,000
+        # Q2: 200,000 against 350,000 = 57.1% -> stays in first tier (5%) -> 10,000
+        txns = [
+            _txn(id="T1", payee_id="P1", period="2026-01", amount=Decimal("200000")),
+            _txn(id="T2", payee_id="P1", period="2026-04", amount=Decimal("200000")),
+        ]
+        commissions, _ = engine._calc_tiered(rule, txns, payees, period_type="quarterly")
+        total = sum(c.commission_amount for c in commissions)
+        assert total == Decimal("20000.00")
+
+    def test_fallback_to_default_quota(self) -> None:
+        """A window not in quotas uses the default quota."""
+        engine = CommissionEngine()
+        tiers = [
+            Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05")),
+            Tier(threshold_pct=Decimal("100.0"), rate=Decimal("0.10")),
+        ]
+        rule = TieredRule(type="tiered", id="t", tiers=tiers)
+        payee = Payee(id="P1", name="A", quota=Decimal("100000"),
+                      quotas={"2026-Q1": Decimal("300000")},
+                      plan_id="p", effective_from=date(2026, 1, 1))
+        payees = {"P1": payee}
+        # Q2 not in quotas -> uses default 100,000
+        # 150,000 against 100,000 = 150% -> crosses tier
+        txns = [_txn(id="T1", payee_id="P1", period="2026-04", amount=Decimal("150000"))]
+        commissions, _ = engine._calc_tiered(rule, txns, payees)
+        total = sum(c.commission_amount for c in commissions)
+        # 100k@5% + 50k@10% = 10000
+        assert total == Decimal("10000.00")
+
+    def test_backward_compat_empty_quotas(self) -> None:
+        """Payee with empty quotas dict behaves same as default."""
+        engine = CommissionEngine()
+        tiers = [
+            Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05")),
+            Tier(threshold_pct=Decimal("100.0"), rate=Decimal("0.10")),
+        ]
+        rule = TieredRule(type="tiered", id="t", tiers=tiers)
+        payee = Payee(id="P1", name="A", quota=Decimal("100000"),
+                      quotas={}, plan_id="p", effective_from=date(2026, 1, 1))
+        payees = {"P1": payee}
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("150000"))]
+        commissions, _ = engine._calc_tiered(rule, txns, payees)
+        total = sum(c.commission_amount for c in commissions)
+        assert total == Decimal("10000.00")  # 100k@5% + 50k@10%
+
+    def test_attainment_uses_period_quota(self) -> None:
+        """Attainment computation uses period-specific quota."""
+        plan = Plan(plan_id="p", name="P", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [Payee(id="P1", name="A", quota=Decimal("100000"),
+                        quotas={"2026-01": Decimal("300000")},
+                        plan_id="p", effective_from=date(2026, 1, 1))]
+        txns = [_txn(id="T1", payee_id="P1", period="2026-01", amount=Decimal("200000"))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        a = result.attainment[0]
+        # 200k against 300k (period quota), not 100k (default)
+        assert a.quota == Decimal("300000")
+        assert a.bookings == Decimal("200000")
+        assert a.attainment_pct is not None
+        assert abs(a.attainment_pct - Decimal("0.6667")) < Decimal("0.01")
+
+
 # --- rule_skipped ledger entries ---------------------------------------
 
 
