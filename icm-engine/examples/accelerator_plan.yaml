@@ -1,0 +1,13 @@
+plan_id: accelerator_plan
+name: "Accelerator Commission Plan"
+period_type: quarterly
+currency: USD
+rules:
+  - id: base_flat
+    type: flat_rate
+    rate: 0.05
+  - id: quota_accelerator
+    type: accelerator
+    rate: 0.05
+    threshold_pct: 1.0
+    multiplier: 1.5

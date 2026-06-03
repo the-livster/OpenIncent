@@ -1,0 +1,8 @@
+plan_id: flat_rate_plan
+name: "Flat Rate Commission Plan"
+period_type: monthly
+currency: USD
+rules:
+  - id: flat_5pct
+    type: flat_rate
+    rate: 0.05

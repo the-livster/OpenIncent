@@ -1,0 +1,4 @@
+id,payee_id,deal_id,period,amount,product,close_date
+T001,P001,D001,2026-04,1500.00,Enterprise,2026-04-15
+T002,P001,D002,2026-04,2500.00,Standard,2026-04-20
+T003,P002,D003,2026-05,1000.00,,2026-05-10

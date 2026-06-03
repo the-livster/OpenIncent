@@ -1,0 +1,322 @@
+- name: flat_rate_basic
+  description: "Single flat-rate rule, one transaction"
+  plan:
+    plan_id: eval_flat
+    name: Flat Rate Eval
+    period_type: monthly
+    currency: USD
+    rules:
+      - type: flat_rate
+        id: R-001
+        rate: "0.05"
+  transactions:
+    - id: T001
+      payee_id: P001
+      deal_id: D001
+      period: "2026-01"
+      amount: "10000"
+      close_date: "2026-01-15"
+  payees:
+    - id: P001
+      name: Alice
+      quota: "100000"
+      plan_id: eval_flat
+      effective_from: "2026-01-01"
+  expected_commissions:
+    - transaction_id: T001
+      payee_id: P001
+      rule_id: R-001
+      commission_amount: "500"
+
+- name: flat_rate_with_filter
+  description: "Flat rate with product filter — only Enterprise deals"
+  plan:
+    plan_id: eval_filter
+    name: Filter Eval
+    period_type: monthly
+    currency: USD
+    rules:
+      - type: flat_rate
+        id: R-001
+        rate: "0.10"
+        filter: 'product == "Enterprise"'
+  transactions:
+    - id: T001
+      payee_id: P001
+      deal_id: D001
+      period: "2026-01"
+      amount: "5000"
+      product: Enterprise
+      close_date: "2026-01-10"
+    - id: T002
+      payee_id: P001
+      deal_id: D002
+      period: "2026-01"
+      amount: "3000"
+      product: Standard
+      close_date: "2026-01-12"
+  payees:
+    - id: P001
+      name: Alice
+      quota: "100000"
+      plan_id: eval_filter
+      effective_from: "2026-01-01"
+  expected_commissions:
+    - transaction_id: T001
+      payee_id: P001
+      rule_id: R-001
+      commission_amount: "500"
+
+- name: tiered_single_tier
+  description: "Tiered rule where all revenue stays in the first tier"
+  plan:
+    plan_id: eval_tier1
+    name: Tiered Eval
+    period_type: monthly
+    currency: USD
+    rules:
+      - type: tiered
+        id: R-001
+        tiers:
+          - threshold_pct: "1.0"
+            rate: "0.05"
+          - threshold_pct: "1.5"
+            rate: "0.08"
+          - threshold_pct: "999"
+            rate: "0.12"
+  transactions:
+    - id: T001
+      payee_id: P001
+      deal_id: D001
+      period: "2026-01"
+      amount: "5000"
+      close_date: "2026-01-15"
+  payees:
+    - id: P001
+      name: Alice
+      quota: "100000"
+      plan_id: eval_tier1
+      effective_from: "2026-01-01"
+  expected_commissions:
+    - transaction_id: T001
+      payee_id: P001
+      rule_id: R-001
+      commission_amount: "250"
+
+- name: tiered_crosses_boundary
+  description: "Tiered rule where a transaction spans two tiers"
+  plan:
+    plan_id: eval_tier_cross
+    name: Tiered Cross Eval
+    period_type: monthly
+    currency: USD
+    rules:
+      - type: tiered
+        id: R-001
+        tiers:
+          - threshold_pct: "1.0"
+            rate: "0.05"
+          - threshold_pct: "1.5"
+            rate: "0.08"
+          - threshold_pct: "999"
+            rate: "0.12"
+  transactions:
+    - id: T001
+      payee_id: P001
+      deal_id: D001
+      period: "2026-01"
+      amount: "80000"
+      close_date: "2026-01-10"
+    - id: T002
+      payee_id: P001
+      deal_id: D002
+      period: "2026-01"
+      amount: "40000"
+      close_date: "2026-01-20"
+  payees:
+    - id: P001
+      name: Alice
+      quota: "100000"
+      plan_id: eval_tier_cross
+      effective_from: "2026-01-01"
+  expected_commissions:
+    - transaction_id: T001
+      payee_id: P001
+      rule_id: R-001
+      commission_amount: "4000"
+    - transaction_id: T002
+      payee_id: P001
+      rule_id: R-001
+      commission_amount: "2600"
+
+- name: accelerator_below_threshold
+  description: "Accelerator rule where attainment is below threshold — no bonus"
+  plan:
+    plan_id: eval_accel_below
+    name: Accelerator Below Eval
+    period_type: monthly
+    currency: USD
+    rules:
+      - type: accelerator
+        id: R-001
+        rate: "0.05"
+        threshold_pct: "1.0"
+        multiplier: "2.0"
+  transactions:
+    - id: T001
+      payee_id: P001
+      deal_id: D001
+      period: "2026-01"
+      amount: "50000"
+      close_date: "2026-01-15"
+  payees:
+    - id: P001
+      name: Alice
+      quota: "100000"
+      plan_id: eval_accel_below
+      effective_from: "2026-01-01"
+  expected_commissions: []
+
+- name: accelerator_above_threshold
+  description: "Accelerator rule with attainment above threshold"
+  plan:
+    plan_id: eval_accel_above
+    name: Accelerator Above Eval
+    period_type: monthly
+    currency: USD
+    rules:
+      - type: accelerator
+        id: R-001
+        rate: "0.05"
+        threshold_pct: "1.0"
+        multiplier: "2.0"
+  transactions:
+    - id: T001
+      payee_id: P001
+      deal_id: D001
+      period: "2026-01"
+      amount: "80000"
+      close_date: "2026-01-10"
+    - id: T002
+      payee_id: P001
+      deal_id: D002
+      period: "2026-01"
+      amount: "40000"
+      close_date: "2026-01-20"
+  payees:
+    - id: P001
+      name: Alice
+      quota: "100000"
+      plan_id: eval_accel_above
+      effective_from: "2026-01-01"
+  expected_commissions:
+    - transaction_id: T002
+      payee_id: P001
+      rule_id: R-001
+      commission_amount: "2000"
+
+- name: multi_rule_plan
+  description: "Flat rate + tiered in the same plan"
+  plan:
+    plan_id: eval_multi
+    name: Multi Rule Eval
+    period_type: monthly
+    currency: USD
+    rules:
+      - type: flat_rate
+        id: R-001
+        rate: "0.03"
+      - type: tiered
+        id: R-002
+        tiers:
+          - threshold_pct: "1.0"
+            rate: "0.05"
+          - threshold_pct: "999"
+            rate: "0.10"
+  transactions:
+    - id: T001
+      payee_id: P001
+      deal_id: D001
+      period: "2026-01"
+      amount: "10000"
+      close_date: "2026-01-15"
+  payees:
+    - id: P001
+      name: Alice
+      quota: "100000"
+      plan_id: eval_multi
+      effective_from: "2026-01-01"
+  expected_commissions:
+    - transaction_id: T001
+      payee_id: P001
+      rule_id: R-001
+      commission_amount: "300"
+    - transaction_id: T001
+      payee_id: P001
+      rule_id: R-002
+      commission_amount: "500"
+
+- name: multiple_payees
+  description: "Same plan, two different payees with different quotas"
+  plan:
+    plan_id: eval_multi_payee
+    name: Multi Payee Eval
+    period_type: monthly
+    currency: USD
+    rules:
+      - type: flat_rate
+        id: R-001
+        rate: "0.05"
+  transactions:
+    - id: T001
+      payee_id: P001
+      deal_id: D001
+      period: "2026-01"
+      amount: "10000"
+      close_date: "2026-01-15"
+    - id: T002
+      payee_id: P002
+      deal_id: D002
+      period: "2026-01"
+      amount: "20000"
+      close_date: "2026-01-20"
+  payees:
+    - id: P001
+      name: Alice
+      quota: "100000"
+      plan_id: eval_multi_payee
+      effective_from: "2026-01-01"
+    - id: P002
+      name: Bob
+      quota: "80000"
+      plan_id: eval_multi_payee
+      effective_from: "2026-01-01"
+  expected_commissions:
+    - transaction_id: T001
+      payee_id: P001
+      rule_id: R-001
+      commission_amount: "500"
+    - transaction_id: T002
+      payee_id: P002
+      rule_id: R-001
+      commission_amount: "1000"
+
+- name: empty_transactions
+  description: "No transactions — should produce no commissions"
+  plan:
+    plan_id: eval_empty
+    name: Empty Eval
+    period_type: monthly
+    currency: USD
+    rules:
+      - type: flat_rate
+        id: R-001
+        rate: "0.05"
+  transactions: []
+  payees:
+    - id: P001
+      name: Alice
+      quota: "100000"
+      plan_id: eval_empty
+      effective_from: "2026-01-01"
+  expected_commissions: []

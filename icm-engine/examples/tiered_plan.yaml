@@ -1,0 +1,14 @@
+plan_id: tiered_plan
+name: "Tiered Commission Plan"
+period_type: monthly
+currency: USD
+rules:
+  - id: standard_tiers
+    type: tiered
+    tiers:
+      - threshold_pct: 1.0
+        rate: 0.05
+      - threshold_pct: 1.5
+        rate: 0.08
+      - threshold_pct: 100.0
+        rate: 0.12

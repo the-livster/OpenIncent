@@ -1,0 +1,234 @@
+from __future__ import annotations
+
+import csv
+import logging
+from datetime import date, datetime
+from decimal import Decimal
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from icm_engine.mapping import ColumnMapping
+
+import yaml
+
+from icm_engine.models import Payee, Plan, Transaction
+
+logger = logging.getLogger(__name__)
+
+
+def load_plan(path: str | Path) -> Plan:
+    """Load and validate a plan definition from a YAML file."""
+    try:
+        raw = _read_yaml(Path(path))
+        return Plan.model_validate(raw)
+    except Exception as e:
+        raise ValueError(f"Invalid plan file '{path}': {e}") from e
+
+
+def load_transactions(
+    path: str | Path, mapping: ColumnMapping | None = None
+) -> tuple[list[Transaction], ColumnMapping | None]:
+    """Load transactions from a CSV or XLSX file.
+
+    Returns (transactions, mapping_used). mapping_used is the ColumnMapping
+    that was applied, or None for CSV files.
+    """
+    p = Path(path)
+    if p.suffix.lower() == ".xlsx":
+        return _load_transactions_xlsx(p, mapping)
+    if p.suffix.lower() == ".parquet":
+        return _load_transactions_parquet(p), None
+    return _load_transactions_csv(p), None
+
+
+def load_payees(
+    path: str | Path, mapping: ColumnMapping | None = None
+) -> tuple[list[Payee], ColumnMapping | None]:
+    """Load payees from a CSV or XLSX file.
+
+    Returns (payees, mapping_used). mapping_used is the ColumnMapping
+    that was applied, or None for CSV files.
+    """
+    p = Path(path)
+    if p.suffix.lower() == ".xlsx":
+        return _load_payees_xlsx(p, mapping)
+    if p.suffix.lower() == ".parquet":
+        return _load_payees_parquet(p), None
+    return _load_payees_csv(p), None
+
+
+def _load_transactions_csv(path: Path) -> list[Transaction]:
+    rows: list[dict[str, str]] = []
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError(f"CSV file '{path}' has no header row")
+        for row in reader:
+            rows.append(row)
+
+    transactions: list[Transaction] = []
+    known = {"id", "payee_id", "deal_id", "period", "amount", "product", "close_date"}
+    for i, row in enumerate(rows, start=2):
+        meta = {k: v for k, v in row.items() if k and k not in known}
+        try:
+            product = (row.get("product") or "").strip() or None
+            deal_id = (row.get("deal_id") or "").strip()
+            period = (row.get("period") or "").strip()
+            close_date_str = (row.get("close_date") or "").strip()
+            t = Transaction(
+                id=row["id"].strip(),
+                payee_id=row["payee_id"].strip(),
+                deal_id=deal_id,
+                period=period,
+                amount=Decimal(row["amount"].strip()),
+                product=product,
+                close_date=_parse_date(close_date_str) if close_date_str else None,
+                metadata=meta,
+            )
+            transactions.append(t)
+        except Exception as e:
+            raise ValueError(f"Row {i} in '{path}': {e}") from e
+
+    return transactions
+
+
+def _load_transactions_xlsx(
+    path: Path, mapping: Any,
+) -> tuple[list[Transaction], Any]:
+    from icm_engine.excel import read_xlsx_rows
+    from icm_engine.mapping import apply_mapping, infer_mapping
+
+    headers, rows = read_xlsx_rows(path)
+    if mapping is None:
+        mapping = infer_mapping(headers, "transactions")
+        logger.info(
+            "Inferred mapping: %s",
+            {k: v for k, v in mapping.mappings.items()},
+        )
+    mapped = apply_mapping(rows, mapping, Transaction)
+    return list(mapped), mapping
+
+
+def _load_payees_csv(path: Path) -> list[Payee]:
+    payees: list[Payee] = []
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError(f"CSV file '{path}' has no header row")
+        for i, row in enumerate(reader, start=2):
+            try:
+                effective_to_raw = (row.get("effective_to") or "").strip()
+                payees.append(
+                    Payee(
+                        id=row["id"].strip(),
+                        name=row["name"].strip(),
+                        quota=Decimal(row["quota"].strip()),
+                        plan_id=row["plan_id"].strip(),
+                        effective_from=_parse_date(row["effective_from"].strip()),
+                        effective_to=_parse_date(effective_to_raw) if effective_to_raw else None,
+                    )
+                )
+            except Exception as e:
+                raise ValueError(f"Row {i} in '{path}': {e}") from e
+    return payees
+
+
+def _load_payees_xlsx(
+    path: Path, mapping: Any,
+) -> tuple[list[Payee], Any]:
+    from icm_engine.excel import read_xlsx_rows
+    from icm_engine.mapping import apply_mapping, infer_mapping
+
+    headers, rows = read_xlsx_rows(path)
+    if mapping is None:
+        mapping = infer_mapping(headers, "payees")
+        logger.info(
+            "Inferred mapping: %s",
+            {k: v for k, v in mapping.mappings.items()},
+        )
+    mapped = apply_mapping(rows, mapping, Payee)
+    return list(mapped), mapping
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    try:
+        with path.open(encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+    except UnicodeDecodeError as e:
+        raise ValueError(f"YAML file '{path}' is not valid UTF-8: {e}") from e
+    if not isinstance(raw, dict):
+        raise ValueError(f"YAML file '{path}' must contain a mapping at the top level")
+    return raw
+
+
+def _load_transactions_parquet(path: Path) -> list[Transaction]:
+    """Load transactions from a Parquet file. Column names must match canonical
+    field names exactly (no fuzzy mapping)."""
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(path)  # type: ignore[no-untyped-call]
+    transactions: list[Transaction] = []
+    for i in range(table.num_rows):
+        row = {col: table.column(col)[i].as_py() for col in table.column_names}
+        try:
+            product_raw = row.get("product")
+            product = str(product_raw).strip() if product_raw is not None else None
+            close_date_raw = row.get("close_date")
+            close_date_str = str(close_date_raw) if close_date_raw is not None else ""
+            known_txn = {"id", "payee_id", "deal_id", "period", "amount", "product", "close_date"}
+            meta = {k: v for k, v in row.items() if k and k not in known_txn}
+            t = Transaction(
+                id=str(row["id"]),
+                payee_id=str(row["payee_id"]),
+                deal_id=str(row["deal_id"]),
+                period=str(row["period"]),
+                amount=Decimal(str(row["amount"])),
+                product=product or None,
+                close_date=_parse_date(close_date_str) if close_date_str else date.today(),
+                metadata=meta,
+            )
+            transactions.append(t)
+        except Exception as e:
+            raise ValueError(f"Row {i} in '{path}': {e}") from e
+    return transactions
+
+
+def _load_payees_parquet(path: Path) -> list[Payee]:
+    """Load payees from a Parquet file. Column names must match canonical
+    field names exactly (no fuzzy mapping)."""
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(path)  # type: ignore[no-untyped-call]
+    payees: list[Payee] = []
+    for i in range(table.num_rows):
+        row = {col: table.column(col)[i].as_py() for col in table.column_names}
+        try:
+            effective_from_raw = row.get("effective_from")
+            effective_from_str = str(effective_from_raw) if effective_from_raw is not None else ""
+            effective_to_raw = row.get("effective_to")
+            effective_to_str = str(effective_to_raw) if effective_to_raw is not None else ""
+            payees.append(
+                Payee(
+                    id=str(row["id"]),
+                    name=str(row["name"]),
+                    quota=Decimal(str(row["quota"])),
+                    plan_id=str(row["plan_id"]),
+                    effective_from=(
+                        _parse_date(effective_from_str) if effective_from_str else date.today()
+                    ),
+                    effective_to=_parse_date(effective_to_str) if effective_to_str else None,
+                )
+            )
+        except Exception as e:
+            raise ValueError(f"Row {i} in '{path}': {e}") from e
+    return payees
+
+
+def _parse_date(s: str) -> date:
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"Cannot parse date: '{s}'")
