@@ -1,0 +1,18 @@
+plan_id: saas_ae_plan
+name: "SaaS AE Standard Plan"
+period_type: monthly
+currency: USD
+rules:
+  - id: tiered_core
+    type: tiered
+    tiers:
+      - threshold_pct: 1.0
+        rate: 0.05
+      - threshold_pct: 1.5
+        rate: 0.08
+      - threshold_pct: 100.0
+        rate: 0.12
+  - id: enterprise_spif
+    type: flat_rate
+    rate: 0.02
+    filter: 'product == "Enterprise"'

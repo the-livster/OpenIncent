@@ -1,0 +1,758 @@
+import { useCallback, useEffect, useState } from "react";
+import { calculate, listPlans, exportStatements, previewFile } from "../api";
+import PlanBuilder from "./PlanBuilder";
+import type { CalculateResponse, SavedPlan } from "../types";
+
+// ------------------------------------------------------------------
+// Simple client-side CSV parser
+// ------------------------------------------------------------------
+
+function parseCsvPreview(text: string): { headers: string[]; rows: string[][] } {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length === 0) return { headers: [], rows: [] };
+  const headers = parseCsvLine(lines[0]);
+  const rows = lines.slice(1, 6).map(parseCsvLine);
+  return { headers, rows };
+}
+
+function parseCsvLine(line: string): string[] {
+  const cells: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (i + 1 < line.length && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += c;
+      }
+    } else {
+      if (c === '"') {
+        inQuotes = true;
+      } else if (c === ",") {
+        cells.push(current.trim());
+        current = "";
+      } else {
+        current += c;
+      }
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+// ------------------------------------------------------------------
+// Types
+// ------------------------------------------------------------------
+
+interface ColumnMapping {
+  payeeColumn: string;
+  amountColumn: string;
+  dateColumn: string;
+  productColumn: string;
+}
+
+type Step = "data" | "map" | "payees" | "plan" | "results";
+
+const FIELD_LABELS: Record<keyof ColumnMapping, string> = {
+  payeeColumn: "Rep / Payee",
+  amountColumn: "Deal Amount",
+  dateColumn: "Close Date",
+  productColumn: "Product (optional)",
+};
+
+// ------------------------------------------------------------------
+// Component
+// ------------------------------------------------------------------
+
+interface Props {
+  loadedPlan: { yaml: string; name: string } | null;
+  onPlanConsumed: () => void;
+}
+
+export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) {
+  // Step 1: Data
+  const [txnFile, setTxnFile] = useState<File | null>(null);
+  const [csvPreview, setCsvPreview] = useState<{ headers: string[]; rows: string[][] } | null>(null);
+
+  // Step 2: Column mapping
+  const [mapping, setMapping] = useState<ColumnMapping>({
+    payeeColumn: "",
+    amountColumn: "",
+    dateColumn: "",
+    productColumn: "",
+  });
+
+  // Step 3: Payees
+  const [payeeFile, setPayeeFile] = useState<File | null>(null);
+  const [payeePreview, setPayeePreview] = useState<{ headers: string[]; rows: string[][] } | null>(null);
+
+  // Step 4: Plan
+  const [plans, setPlans] = useState<SavedPlan[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [planFile, setPlanFile] = useState<File | null>(null);
+  const [planSource, setPlanSource] = useState<"library" | "file" | "build">("library");
+
+  // Step 5: Results
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [error, setError] = useState("");
+  const [data, setData] = useState<CalculateResponse | null>(null);
+
+  const [step, setStep] = useState<Step>("data");
+
+  // Load saved plans for step 4
+  useEffect(() => {
+    listPlans().then(setPlans).catch(() => {});
+  }, []);
+
+  // Handle plan loaded from library
+  useEffect(() => {
+    if (loadedPlan) {
+      const file = new File([loadedPlan.yaml], `${loadedPlan.name}.yaml`, { type: "text/yaml" });
+      setPlanFile(file);
+      setPlanSource("file");
+      onPlanConsumed();
+    }
+  }, [loadedPlan, onPlanConsumed]);
+
+  // Parse CSV or call preview API when file changes
+  useEffect(() => {
+    if (!txnFile) { setCsvPreview(null); return; }
+    if (txnFile.name.endsWith(".csv")) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const preview = parseCsvPreview(reader.result as string);
+        setCsvPreview(preview);
+        const headers = preview.headers;
+        setMapping({
+          payeeColumn: headers.find(h => /rep|payee|agent|name|sales/i.test(h)) || "",
+          amountColumn: headers.find(h => /amount|acv|value|revenue|total|price/i.test(h)) || "",
+          dateColumn: headers.find(h => /date|close|period/i.test(h)) || "",
+          productColumn: headers.find(h => /product|type|tier|plan/i.test(h)) || "",
+        });
+      };
+      reader.readAsText(txnFile);
+    } else {
+      // XLSX — ask server for preview
+      previewFile(txnFile).then(preview => {
+        setCsvPreview({ headers: preview.headers, rows: preview.preview_rows });
+        const rev: Record<string, string> = {};
+        for (const [src, tgt] of Object.entries(preview.mapping)) {
+          rev[tgt] = src;
+        }
+        setMapping({
+          payeeColumn: rev["payee_id"] || "",
+          amountColumn: rev["amount"] || "",
+          dateColumn: rev["close_date"] || "",
+          productColumn: rev["product"] || "",
+        });
+      }).catch(() => {
+        setCsvPreview(null);
+      });
+    }
+  }, [txnFile]);
+
+  // Parse payee file for preview
+  useEffect(() => {
+    if (!payeeFile) { setPayeePreview(null); return; }
+    previewFile(payeeFile, "payees").then(preview => {
+      setPayeePreview({ headers: preview.headers, rows: preview.preview_rows });
+    }).catch(() => {
+      setPayeePreview(null);
+    });
+  }, [payeeFile]);
+
+  // Build the file to send: for XLSX pass through, for CSV pass original
+  // (the server-side fuzzy mapper handles column mapping)
+  const buildMappedFile = useCallback((): File | null => {
+    return txnFile;
+  }, [txnFile]);
+
+  // Build payees CSV from rep names in the data
+  const buildAutoPayees = useCallback((): File => {
+    if (!csvPreview || !mapping.payeeColumn) return new File([], "empty.csv");
+    const payeeIdx = csvPreview.headers.indexOf(mapping.payeeColumn);
+    if (payeeIdx < 0) return new File([], "empty.csv");
+    const names = new Set(csvPreview.rows.map(r => r[payeeIdx]).filter(Boolean));
+    let csv = "id,name,quota,plan_id,effective_from\n";
+    let i = 1;
+    for (const name of names) {
+      csv += `P${String(i).padStart(3, "0")},${name},100000,auto,2026-01-01\n`;
+      i++;
+    }
+    return new File([csv], "payees.csv", { type: "text/csv" });
+  }, [csvPreview, mapping.payeeColumn]);
+
+  // Run calculation
+  const run = useCallback(async () => {
+    const plan = planSource === "library" && selectedPlanId
+      ? new File([plans.find(p => p.id === selectedPlanId)!.yaml_content], "plan.yaml", { type: "text/yaml" })
+      : planFile;
+    const txns = buildMappedFile();
+    const pees = payeeFile || buildAutoPayees();
+
+    if (!plan || !txns) return;
+
+    setStatus("loading");
+    setError("");
+    try {
+      const result = await calculate({ plan, transactions: txns, payees: pees });
+      setData(result);
+      setStatus("success");
+      setStep("results");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Calculation failed");
+      setStatus("error");
+    }
+  }, [planSource, selectedPlanId, plans, planFile, payeeFile, buildMappedFile, buildAutoPayees]);
+
+  // Export XLSX statements
+  const handleExport = useCallback(async () => {
+    const plan = planSource === "library" && selectedPlanId
+      ? new File([plans.find(p => p.id === selectedPlanId)!.yaml_content], "plan.yaml", { type: "text/yaml" })
+      : planFile;
+    const txns = buildMappedFile();
+    const pees = payeeFile || buildAutoPayees();
+    if (!plan || !txns) return;
+    try {
+      await exportStatements({ plan, transactions: txns, payees: pees });
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Export failed");
+    }
+  }, [planSource, selectedPlanId, plans, planFile, payeeFile, buildMappedFile, buildAutoPayees]);
+
+  const stepIndex = ["data", "map", "payees", "plan", "results"].indexOf(step);
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-6">
+      {/* Step indicator */}
+      {step !== "results" && (
+        <div className="flex items-center gap-2">
+          {["Upload Data", "Map Columns", "Payees", "Select Plan"].map((label, i) => (
+            <div key={label} className="flex items-center gap-2">
+              <div className={`
+                flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all
+                ${i < stepIndex ? "bg-brand-500/15 text-brand-400" : ""}
+                ${i === stepIndex ? "bg-brand-500 text-white" : ""}
+                ${i > stepIndex ? "bg-surface-100 text-surface-500" : ""}
+              `}>
+                <span className={`
+                  w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold
+                  ${i < stepIndex ? "bg-brand-400 text-white" : ""}
+                  ${i === stepIndex ? "bg-white text-brand-500" : ""}
+                  ${i > stepIndex ? "bg-surface-200 text-surface-500" : ""}
+                `}>
+                  {i < stepIndex ? "✓" : i + 1}
+                </span>
+                {label}
+              </div>
+              {i < 3 && <div className="w-4 h-px bg-surface-300" />}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Step 1: Upload Data */}
+      {step === "data" && (
+        <div className="glass rounded-xl p-6 space-y-4 animate-in">
+          <h2 className="text-lg font-semibold text-surface-800">Upload Sales Data</h2>
+          <p className="text-sm text-surface-500">
+            Drop your sales spreadsheet — CSV or Excel. We will detect the columns automatically.
+          </p>
+          <DropZone
+            file={txnFile}
+            onChange={setTxnFile}
+            accept=".csv,.xlsx"
+            label="Sales transactions"
+          />
+
+          {csvPreview && (
+            <div className="mt-4">
+              <div className="text-xs font-medium text-surface-600 mb-2">
+                Detected {csvPreview.headers.length} columns, {csvPreview.rows.length} rows previewed
+              </div>
+              <div className="overflow-x-auto rounded-lg border border-surface-300/50">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-surface-100">
+                      {csvPreview.headers.map(h => (
+                        <th key={h} className="px-2.5 py-1.5 text-left font-medium text-surface-700 whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-surface-200/50">
+                    {csvPreview.rows.map((row, ri) => (
+                      <tr key={ri}>
+                        {row.map((cell, ci) => (
+                          <td key={ci} className="px-2.5 py-1.5 text-surface-600 whitespace-nowrap max-w-[200px] truncate">{cell}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {txnFile && !csvPreview && (
+            <div className="text-xs text-surface-500 mt-2">
+              Excel file detected — column mapping will happen automatically on the server.
+            </div>
+          )}
+
+          <div className="flex justify-end pt-2">
+            <StepButton onClick={() => setStep("map")} disabled={!txnFile}>
+              Next: Map Columns →
+            </StepButton>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2: Map Columns */}
+      {step === "map" && (
+        <div className="glass rounded-xl p-6 space-y-4 animate-in">
+          <h2 className="text-lg font-semibold text-surface-800">Map Columns</h2>
+          <p className="text-sm text-surface-500">
+            Tell us what each column represents. We guessed based on your headers — adjust if needed.
+          </p>
+
+          <div className="space-y-3">
+            {(Object.keys(FIELD_LABELS) as (keyof ColumnMapping)[]).map(field => (
+              <div key={field}>
+                <label className="block text-xs font-medium text-surface-600 mb-1">
+                  {FIELD_LABELS[field]}
+                </label>
+                {csvPreview ? (
+                  <select
+                    value={mapping[field]}
+                    onChange={e => setMapping(prev => ({ ...prev, [field]: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-lg text-sm bg-surface-100 border border-surface-300/50 text-surface-800 focus:outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-400/30 transition-all"
+                  >
+                    <option value="">-- Select column --</option>
+                    {csvPreview.headers.map(h => (
+                      <option key={h} value={h}>{h}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={mapping[field]}
+                    onChange={e => setMapping(prev => ({ ...prev, [field]: e.target.value }))}
+                    placeholder="Type column name"
+                    className="w-full px-3 py-2 rounded-lg text-sm bg-surface-100 border border-surface-300/50 text-surface-800 placeholder:text-surface-500 focus:outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-400/30 transition-all"
+                  />
+                )}
+              </div>
+            ))}
+            {!csvPreview && (
+              <div className="text-xs text-surface-500 italic pt-1">
+                Excel file detected — the server will auto-map columns. Type names above to override.
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-between pt-2">
+            <TextButton onClick={() => setStep("data")}>← Back</TextButton>
+            <StepButton
+              onClick={() => setStep("payees")}
+              disabled={!mapping.payeeColumn || !mapping.amountColumn}
+            >
+              Next: Payees →
+            </StepButton>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: Payees */}
+      {step === "payees" && (
+        <div className="glass rounded-xl p-6 space-y-4 animate-in">
+          <h2 className="text-lg font-semibold text-surface-800">Payees</h2>
+          <p className="text-sm text-surface-500">
+            Upload a payee roster, or skip to auto-generate one from the rep names in your data.
+          </p>
+
+          <DropZone
+            file={payeeFile}
+            onChange={setPayeeFile}
+            accept=".csv,.xlsx"
+            label="Payee roster (optional)"
+          />
+
+          {!payeeFile && csvPreview && mapping.payeeColumn && (
+            <div className="px-3 py-2 rounded-lg bg-surface-100 text-xs text-surface-600">
+              {(() => {
+                const idx = csvPreview.headers.indexOf(mapping.payeeColumn);
+                const count = idx >= 0 ? new Set(csvPreview.rows.map(r => r[idx]).filter(Boolean)).size : 0;
+                return `Will auto-generate ${count} payee${count !== 1 ? "s" : ""} from the "${mapping.payeeColumn}" column.`;
+              })()}
+            </div>
+          )}
+
+          {payeePreview && (
+            <div className="mt-2">
+              <div className="text-xs font-medium text-surface-600 mb-2">
+                Detected {payeePreview.headers.length} columns
+              </div>
+              <div className="overflow-x-auto rounded-lg border border-surface-300/50">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-surface-100">
+                      {payeePreview.headers.map(h => (
+                        <th key={h} className="px-2.5 py-1.5 text-left font-medium text-surface-700 whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-surface-200/50">
+                    {payeePreview.rows.map((row, ri) => (
+                      <tr key={ri}>
+                        {row.map((cell, ci) => (
+                          <td key={ci} className="px-2.5 py-1.5 text-surface-600 whitespace-nowrap max-w-[200px] truncate">{cell}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-between pt-2">
+            <TextButton onClick={() => setStep("map")}>← Back</TextButton>
+            <StepButton onClick={() => setStep("plan")}>
+              Next: Select Plan →
+            </StepButton>
+          </div>
+        </div>
+      )}
+
+      {/* Step 4: Select Plan */}
+      {step === "plan" && (
+        <div className="glass rounded-xl p-6 space-y-4 animate-in">
+          <h2 className="text-lg font-semibold text-surface-800">Select Plan</h2>
+          <p className="text-sm text-surface-500">
+            Pick a saved plan from your library, or upload a YAML file.
+          </p>
+
+          {/* Toggle source */}
+          <div className="flex gap-1 bg-surface-100 rounded-lg p-1 w-fit">
+            <SourceToggle active={planSource === "library"} onClick={() => setPlanSource("library")} label="Library" />
+            <SourceToggle active={planSource === "file"} onClick={() => setPlanSource("file")} label="Upload File" />
+            <SourceToggle active={planSource === "build"} onClick={() => setPlanSource("build")} label="Build New" />
+          </div>
+
+          {planSource === "library" && (
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {plans.length === 0 && (
+                <div className="text-sm text-surface-500 py-4 text-center">
+                  No saved plans. Switch to Upload File, or build one in the AI Builder tab.
+                </div>
+              )}
+              {plans.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => setSelectedPlanId(p.id)}
+                  className={`
+                    w-full text-left px-4 py-3 rounded-lg border transition-all cursor-pointer
+                    ${selectedPlanId === p.id
+                      ? "border-brand-400 bg-brand-500/10"
+                      : "border-surface-300/50 bg-surface-100/50 hover:border-surface-400"
+                    }
+                  `}
+                >
+                  <div className="text-sm font-medium text-surface-800">{p.name}</div>
+                  {p.description && <div className="text-xs text-surface-500 mt-0.5">{p.description}</div>}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {planSource === "file" && (
+            <DropZone
+              file={planFile}
+              onChange={setPlanFile}
+              accept=".yaml,.yml"
+              label="Plan YAML"
+            />
+          )}
+
+          {planSource === "build" && (
+            <PlanBuilderWizard
+              onUse={(yaml: string) => {
+                setPlanFile(new File([yaml], "plan.yaml", { type: "text/yaml" }));
+                setPlanSource("file");
+              }}
+              onCancel={() => setPlanSource("library")}
+            />
+          )}
+
+          <div className="flex justify-between pt-2">
+            <TextButton onClick={() => setStep("payees")}>← Back</TextButton>
+            <StepButton
+              onClick={run}
+              disabled={!(selectedPlanId || planFile)}
+              highlight
+            >
+              Calculate Commissions ✨
+            </StepButton>
+          </div>
+        </div>
+      )}
+
+      {/* Error */}
+      {status === "error" && (
+        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/30 text-danger text-sm animate-in select-text">
+          {error}
+        </div>
+      )}
+
+      {/* Loading */}
+      {status === "loading" && (
+        <div className="text-center py-12 animate-in">
+          <div className="inline-block w-8 h-8 border-3 border-brand-400/30 border-t-brand-400 rounded-full animate-spin mb-3" />
+          <p className="text-surface-600 text-sm">Calculating commissions...</p>
+        </div>
+      )}
+
+      {/* Results */}
+      {step === "results" && status === "success" && data && (
+        <div className="space-y-6 animate-in">
+          {/* Summary cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <StatCard label="Total Commission" value={`$${Object.values(data.summary).reduce((a, b) => a + parseFloat(b), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
+            <StatCard label="Payees" value={String(Object.keys(data.summary).length)} />
+            <StatCard label="Commission Lines" value={String(data.commissions.length)} />
+          </div>
+
+          {/* Export button */}
+          <div className="flex justify-end">
+            <button
+              onClick={handleExport}
+              className="
+                inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium
+                bg-surface-100 border border-surface-300/50 text-surface-700
+                hover:bg-surface-200 hover:border-surface-400
+                transition-all cursor-pointer
+              "
+            >
+              ↓ Download Statements (.xlsx)
+            </button>
+          </div>
+
+          {/* Per-payee breakdown */}
+          <div className="glass rounded-xl overflow-hidden">
+            <div className="px-5 py-3 border-b border-surface-300/30">
+              <h3 className="text-sm font-semibold text-surface-800">Per Payee</h3>
+            </div>
+            <div className="divide-y divide-surface-200/50">
+              {Object.entries(data.summary).map(([payee, total]) => (
+                <div key={payee} className="px-5 py-2.5 flex justify-between items-center text-sm">
+                  <span className="text-surface-700 font-medium">{payee}</span>
+                  <span className="text-surface-900 font-mono">${parseFloat(total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Commission details */}
+          <div className="glass rounded-xl overflow-hidden">
+            <div className="px-5 py-3 border-b border-surface-300/30">
+              <h3 className="text-sm font-semibold text-surface-800">All Commissions ({data.commissions.length})</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-surface-100/50">
+                    <th className="px-3 py-2 text-left font-medium text-surface-600">Deal</th>
+                    <th className="px-3 py-2 text-left font-medium text-surface-600">Payee</th>
+                    <th className="px-3 py-2 text-left font-medium text-surface-600">Rule</th>
+                    <th className="px-3 py-2 text-right font-medium text-surface-600">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-surface-200/30">
+                  {data.commissions.map((c, i) => (
+                    <tr key={i} className="hover:bg-surface-100/50">
+                      <td className="px-3 py-1.5 text-surface-700 font-mono">{c.transaction_id}</td>
+                      <td className="px-3 py-1.5 text-surface-700">{c.payee_id}</td>
+                      <td className="px-3 py-1.5 text-surface-500">{c.rule_id}</td>
+                      <td className="px-3 py-1.5 text-surface-900 font-mono text-right">${parseFloat(c.commission_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="flex justify-center">
+            <TextButton onClick={() => { setStep("data"); setStatus("idle"); setData(null); }}>
+              ← Start New Calculation
+            </TextButton>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// Sub-components
+// ------------------------------------------------------------------
+
+function DropZone({ file, onChange, accept, label }: {
+  file: File | null;
+  onChange: (f: File | null) => void;
+  accept: string;
+  label: string;
+}) {
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const f = e.dataTransfer.files[0];
+    if (f) onChange(f);
+  }, [onChange]);
+
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+      onClick={() => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = accept;
+        input.onchange = () => {
+          const f = input.files?.[0];
+          if (f) onChange(f);
+        };
+        input.click();
+      }}
+      className={`
+        rounded-xl border-2 border-dashed p-6 text-center cursor-pointer transition-all
+        ${dragOver
+          ? "border-brand-400 bg-brand-500/10 scale-[1.01]"
+          : file
+            ? "border-brand-500/40 bg-brand-500/5"
+            : "border-surface-300 bg-surface-100/50 hover:border-surface-400"
+        }
+      `}
+    >
+      {file ? (
+        <div>
+          <div className="text-lg mb-1">{accept.includes("csv") ? "📊" : accept.includes("yaml") ? "📋" : "📄"}</div>
+          <div className="text-sm font-medium text-surface-800">{file.name}</div>
+          <div className="text-xs text-surface-500 mt-0.5">
+            {(file.size / 1024).toFixed(1)} KB · Click to change
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div className="text-2xl mb-1 opacity-40">📂</div>
+          <div className="text-sm text-surface-600">{label}</div>
+          <div className="text-xs text-surface-500 mt-0.5">Drag & drop or click to browse</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepButton({ onClick, disabled, children, highlight }: {
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+  highlight?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`
+        px-5 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer
+        ${highlight
+          ? "bg-gradient-to-r from-brand-500 to-brand-600 text-white shadow-lg shadow-brand-500/20 hover:from-brand-400 hover:to-brand-500"
+          : "bg-brand-500 text-white hover:bg-brand-400"
+        }
+        disabled:opacity-40 disabled:cursor-not-allowed
+      `}
+    >
+      {children}
+    </button>
+  );
+}
+
+function TextButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={onClick} className="text-sm text-surface-500 hover:text-surface-700 transition-colors cursor-pointer">
+      {children}
+    </button>
+  );
+}
+
+function SourceToggle({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`
+        px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer
+        ${active ? "bg-white text-surface-800 shadow-sm" : "text-surface-500 hover:text-surface-700"}
+      `}
+    >
+      {label}
+    </button>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="glass rounded-xl p-4">
+      <div className="text-xs text-surface-500">{label}</div>
+      <div className="text-lg font-bold text-surface-900 mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// Inline plan builder for wizard
+// ------------------------------------------------------------------
+
+const DEFAULT_PLAN: PlanBuilderPlanData = {
+  plan_id: "my_plan",
+  name: "My Commission Plan",
+  period_type: "monthly",
+  currency: "USD",
+  rules: [{ type: "flat_rate", id: "R-001", rate: "0.05" }],
+};
+
+function PlanBuilderWizard({ onUse, onCancel }: { onUse: (yaml: string) => void; onCancel: () => void }) {
+  return (
+    <PlanBuilder
+      plan={DEFAULT_PLAN}
+      onClose={onCancel}
+      onUse={onUse}
+    />
+  );
+}
+
+interface PlanBuilderRule {
+  type: string;
+  id: string;
+  rate?: string;
+  filter?: string;
+  tiers?: { threshold: string; rate: string }[];
+  threshold_pct?: string;
+  multiplier?: string;
+}
+
+interface PlanBuilderPlanData {
+  plan_id: string;
+  name: string;
+  period_type: string;
+  currency: string;
+  rules: PlanBuilderRule[];
+}

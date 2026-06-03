@@ -1,0 +1,55 @@
+- name: simple_flat_rate
+  description: "Pay 5% commission on every closed deal"
+  expected_rule_count: 1
+  expected_rule_types: ["flat_rate"]
+  must_contain_filters: []
+  notes: "Baseline — should produce one flat_rate rule with rate 0.05"
+
+- name: tiered_only
+  description: "Standard tiered commission: 5% up to 100% of quota, 8% from 100% to 150%, 12% above 150%"
+  expected_rule_count: 1
+  expected_rule_types: ["tiered"]
+  must_contain_filters: []
+  notes: "Three-tier structure with correct threshold_pct ordering"
+
+- name: tiered_with_enterprise_spif
+  description: "Standard tiers: 5% to 100% quota, 8% to 150%, 12% above. Plus 2% extra on Enterprise products."
+  expected_rule_count: 2
+  expected_rule_types: ["tiered", "flat_rate"]
+  must_contain_filters: ["Enterprise"]
+  notes: "Common SaaS pattern — tiers + product SPIF"
+
+- name: flat_with_product_filter
+  description: "10% commission on Professional edition deals, 5% on everything else"
+  expected_rule_count: 2
+  expected_rule_types: ["flat_rate", "flat_rate"]
+  must_contain_filters: ["Professional"]
+  notes: "Two flat-rate rules distinguished by product filter"
+
+- name: accelerator_on_tiered_base
+  description: "Tiered rates: 5% to quota, 8% above. Plus an accelerator that doubles the rate on everything above 150% of quota."
+  expected_rule_count: 2
+  expected_rule_types: ["tiered", "accelerator"]
+  must_contain_filters: []
+  notes: "Tiered base + accelerator kicker — classic enterprise AE plan"
+
+- name: quarterly_period
+  description: "Quarterly plan: 3% flat rate on all deals, paid quarterly"
+  expected_rule_count: 1
+  expected_rule_types: ["flat_rate"]
+  must_contain_filters: []
+  notes: "Quarterly period_type — should use quarterly not monthly"
+
+- name: multi_rule_with_amount_filter
+  description: "5% on deals under $10,000. 7% on deals $10,000 and above. Extra 3% on deals over $50,000."
+  expected_rule_count: 3
+  expected_rule_types: ["flat_rate", "flat_rate", "flat_rate"]
+  must_contain_filters: ["amount", "50000"]
+  notes: "Amount-based filters with thresholds — tests numeric comparisons"
+
+- name: ambiguous_minimal
+  description: "commission: 6 percent"
+  expected_rule_count: 1
+  expected_rule_types: ["flat_rate"]
+  must_contain_filters: []
+  notes: "Ambiguous — should pick reasonable defaults (monthly, USD, flat_rate at 6%)"

@@ -1,0 +1,4 @@
+id,name,quota,plan_id,effective_from
+P001,Alice,100000.00,saas_ae_plan,2026-01-01
+P002,Bob,80000.00,saas_ae_plan,2026-01-01
+P003,Carol,60000.00,saas_ae_plan,2026-01-01

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[oc]
+*.egg-info
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+icm-engine/desktop/build/
+icm-engine/desktop/dist/
+icm-engine/desktop/ui_dist/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Env
+.env

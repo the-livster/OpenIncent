@@ -1,0 +1,8 @@
+plan_id: bad_plan
+name: "Plan with unknown rule type"
+period_type: monthly
+currency: USD
+rules:
+  - id: mystery
+    type: made_up_type
+    something: 123
