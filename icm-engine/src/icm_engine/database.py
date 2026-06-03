@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS payees (
     org_id TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL,
     quota TEXT NOT NULL,
+    quotas TEXT NOT NULL DEFAULT '{}',
     plan_id TEXT NOT NULL,
     effective_from TEXT NOT NULL,
     effective_to TEXT,
@@ -231,12 +232,13 @@ class Database:
     ) -> str:
         with self._conn() as conn:
             conn.execute(
-                """INSERT INTO payees (id, org_id, name, quota, plan_id, effective_from, effective_to)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO payees (id, org_id, name, quota, quotas, plan_id, effective_from, effective_to)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id, org_id) DO UPDATE SET
-                       name=excluded.name, quota=excluded.quota, plan_id=excluded.plan_id,
+                       name=excluded.name, quota=excluded.quota, quotas=excluded.quotas,
+                       plan_id=excluded.plan_id,
                        effective_from=excluded.effective_from, effective_to=excluded.effective_to""",
-                (payee_id, self.org_id, name, quota, plan_id, effective_from, effective_to),
+                (payee_id, self.org_id, name, quota, "{}", plan_id, effective_from, effective_to),
             )
         return payee_id
 

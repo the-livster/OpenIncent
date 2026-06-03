@@ -116,21 +116,52 @@ def _load_payees_csv(path: Path) -> list[Payee]:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValueError(f"CSV file '{path}' has no header row")
-        for i, row in enumerate(reader, start=2):
-            try:
-                effective_to_raw = (row.get("effective_to") or "").strip()
-                payees.append(
-                    Payee(
-                        id=row["id"].strip(),
-                        name=row["name"].strip(),
-                        quota=Decimal(row["quota"].strip()),
-                        plan_id=row["plan_id"].strip(),
-                        effective_from=_parse_date(row["effective_from"].strip()),
-                        effective_to=_parse_date(effective_to_raw) if effective_to_raw else None,
+
+        has_period = "period" in reader.fieldnames
+
+        # If period column exists, merge rows for same payee id into quotas map
+        if has_period:
+            by_id: dict[str, dict[str, Any]] = {}
+            for i, row in enumerate(reader, start=2):
+                try:
+                    pid = row["id"].strip()
+                    period = row.get("period", "").strip()
+                    quota_val = Decimal(row["quota"].strip())
+                    if pid not in by_id:
+                        effective_to_raw = (row.get("effective_to") or "").strip()
+                        by_id[pid] = {
+                            "id": pid,
+                            "name": row["name"].strip(),
+                            "quota": Decimal("0"),
+                            "quotas": {},
+                            "plan_id": row["plan_id"].strip(),
+                            "effective_from": _parse_date(row["effective_from"].strip()),
+                            "effective_to": _parse_date(effective_to_raw) if effective_to_raw else None,
+                        }
+                    if period:
+                        by_id[pid]["quotas"][period] = quota_val
+                    else:
+                        by_id[pid]["quota"] = quota_val
+                except Exception as e:
+                    raise ValueError(f"Row {i} in '{path}': {e}") from e
+            payees = [Payee(**data) for data in by_id.values()]
+        else:
+            for i, row in enumerate(reader, start=2):
+                try:
+                    effective_to_raw = (row.get("effective_to") or "").strip()
+                    payees.append(
+                        Payee(
+                            id=row["id"].strip(),
+                            name=row["name"].strip(),
+                            quota=Decimal(row["quota"].strip()),
+                            plan_id=row["plan_id"].strip(),
+                            effective_from=_parse_date(row["effective_from"].strip()),
+                            effective_to=_parse_date(effective_to_raw) if effective_to_raw else None,
+                        )
                     )
-                )
-            except Exception as e:
-                raise ValueError(f"Row {i} in '{path}': {e}") from e
+                except Exception as e:
+                    raise ValueError(f"Row {i} in '{path}': {e}") from e
+
     return payees
 
 

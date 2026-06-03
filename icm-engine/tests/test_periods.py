@@ -36,7 +36,10 @@ class TestPeriodLocks:
         plan = Plan(plan_id=plan_id, name="P", period_type="monthly", currency="USD",
                     rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
         payees = [Payee(id="P1", name="A", quota=Decimal("0"), plan_id=plan_id, effective_from=date(2026, 1, 1))]
-        txns = [Transaction(id="T1", payee_id="P1", period="2026-01", amount=Decimal("10000"), close_date=date(2026, 1, 10))]
+        txns = [Transaction(
+            id="T1", payee_id="P1", period="2026-01", amount=Decimal("10000"),
+            close_date=date(2026, 1, 10),
+        )]
         result = CommissionEngine().calculate(plan, txns, payees)
         # Get the calculation ID from the API (we used the engine directly, so get from DB)
         db = api_module._get_db()
