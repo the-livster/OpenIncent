@@ -10,9 +10,7 @@ type Tab = "calculator" | "plans" | "ai" | "settings";
 export default function App() {
   const [tab, setTab] = useState<Tab>("calculator");
 
-  // Plan library ↔ calculator bridge
   const [loadedPlan, setLoadedPlan] = useState<{ yaml: string; name: string } | null>(null);
-  // AI builder → plan library bridge
   const [planToSave, setPlanToSave] = useState<{ yaml: string; name: string } | null>(null);
 
   const handleLoadPlan = useCallback((yaml: string, name: string) => {
@@ -25,38 +23,28 @@ export default function App() {
   }, []);
 
   return (
-    <div className="min-h-screen gradient-bg">
-      {/* Header */}
-      <header className="border-b border-surface-300/20">
+    <div className="min-h-screen bg-white">
+      <header className="border-b border-line">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white text-sm font-bold shadow-lg shadow-brand-500/30">
-              O
-            </div>
-            <div>
-              <h1 className="text-base font-bold text-surface-900 tracking-tight">OpenIncent</h1>
-              <p className="text-[10px] text-surface-500 -mt-0.5 tracking-wider uppercase">Incentive Compensation</p>
-            </div>
+          <div className="flex items-center gap-2.5">
+            <span className="logo-wordmark">
+              <span className="logo-open">Open</span><span className="logo-incent">Incent</span>
+            </span>
           </div>
 
-          <nav className="flex items-center gap-1 bg-surface-100/50 rounded-xl p-1 border border-surface-300/30">
-            <NavTab active={tab === "calculator"} onClick={() => setTab("calculator")} label="Calculator" icon="📊" />
-            <NavTab active={tab === "plans"} onClick={() => setTab("plans")} label="Plans" icon="📋" />
-            <NavTab active={tab === "ai"} onClick={() => setTab("ai")} label="AI Builder" icon="✨" />
-            <NavTab active={tab === "settings"} onClick={() => setTab("settings")} label="Settings" icon="⚙️" />
+          <nav className="flex items-center gap-1">
+            <NavTab active={tab === "calculator"} onClick={() => setTab("calculator")} label="Calculator" />
+            <NavTab active={tab === "plans"} onClick={() => setTab("plans")} label="Plans" />
+            <NavTab active={tab === "ai"} onClick={() => setTab("ai")} label="AI Builder" />
+            <NavTab active={tab === "settings"} onClick={() => setTab("settings")} label="Settings" />
           </nav>
         </div>
       </header>
 
-      {/* Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
         {tab === "calculator" && <CalculatorWizard loadedPlan={loadedPlan} onPlanConsumed={() => setLoadedPlan(null)} />}
         {tab === "plans" && (
-          <PlanLibrary
-            onLoadPlan={handleLoadPlan}
-            planToSave={planToSave}
-            onSaved={handlePlanSaved}
-          />
+          <PlanLibrary onLoadPlan={handleLoadPlan} planToSave={planToSave} onSaved={handlePlanSaved} />
         )}
         {tab === "ai" && <PlanGenerator onPlanGenerated={setPlanToSave} />}
         {tab === "settings" && <Settings />}
@@ -65,22 +53,19 @@ export default function App() {
   );
 }
 
-function NavTab({
-  active, onClick, label, icon,
-}: { active: boolean; onClick: () => void; label: string; icon: string }) {
+function NavTab({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
   return (
     <button
       onClick={onClick}
       className={`
-        flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
-        transition-all cursor-pointer
+        px-3 py-1.5 rounded-md text-sm font-medium transition-colors cursor-pointer
         ${active
-          ? "bg-brand-500/15 text-brand-400 shadow-sm"
-          : "text-surface-600 hover:text-surface-700 hover:bg-surface-200/50"
+          ? "text-accent bg-soft2"
+          : "text-ink2 hover:text-ink hover:bg-soft"
         }
       `}
     >
-      <span>{icon}</span> {label}
+      {label}
     </button>
   );
 }

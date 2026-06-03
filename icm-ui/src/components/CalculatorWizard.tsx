@@ -238,21 +238,21 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
             <div key={label} className="flex items-center gap-2">
               <div className={`
                 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all
-                ${i < stepIndex ? "bg-brand-500/15 text-brand-400" : ""}
-                ${i === stepIndex ? "bg-brand-500 text-white" : ""}
-                ${i > stepIndex ? "bg-surface-100 text-surface-500" : ""}
+                ${i < stepIndex ? "bg-accent/15 text-accent" : ""}
+                ${i === stepIndex ? "bg-accent text-white" : ""}
+                ${i > stepIndex ? "bg-soft text-ink2" : ""}
               `}>
                 <span className={`
                   w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold
-                  ${i < stepIndex ? "bg-brand-400 text-white" : ""}
-                  ${i === stepIndex ? "bg-white text-brand-500" : ""}
-                  ${i > stepIndex ? "bg-surface-200 text-surface-500" : ""}
+                  ${i < stepIndex ? "bg-accent text-white" : ""}
+                  ${i === stepIndex ? "bg-white text-accent" : ""}
+                  ${i > stepIndex ? "bg-soft text-ink2" : ""}
                 `}>
                   {i < stepIndex ? "✓" : i + 1}
                 </span>
                 {label}
               </div>
-              {i < 3 && <div className="w-4 h-px bg-surface-300" />}
+              {i < 3 && <div className="w-4 h-px bg-line" />}
             </div>
           ))}
         </div>
@@ -260,9 +260,9 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
       {/* Step 1: Upload Data */}
       {step === "data" && (
-        <div className="glass rounded-xl p-6 space-y-4 animate-in">
-          <h2 className="text-lg font-semibold text-surface-800">Upload Sales Data</h2>
-          <p className="text-sm text-surface-500">
+        <div className="card p-6 space-y-4 animate-in">
+          <h2 className="text-lg font-semibold text-ink">Upload Sales Data</h2>
+          <p className="text-sm text-ink2">
             Drop your sales spreadsheet — CSV or Excel. We will detect the columns automatically.
           </p>
           <DropZone
@@ -274,23 +274,23 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
           {csvPreview && (
             <div className="mt-4">
-              <div className="text-xs font-medium text-surface-600 mb-2">
+              <div className="text-xs font-medium text-ink2 mb-2">
                 Detected {csvPreview.headers.length} columns, {csvPreview.rows.length} rows previewed
               </div>
-              <div className="overflow-x-auto rounded-lg border border-surface-300/50">
+              <div className="overflow-x-auto rounded-lg border border-line">
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="bg-surface-100">
+                    <tr className="bg-soft">
                       {csvPreview.headers.map(h => (
-                        <th key={h} className="px-2.5 py-1.5 text-left font-medium text-surface-700 whitespace-nowrap">{h}</th>
+                        <th key={h} className="px-2.5 py-1.5 text-left font-medium text-ink whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-surface-200/50">
+                  <tbody className="divide-y divide-line">
                     {csvPreview.rows.map((row, ri) => (
                       <tr key={ri}>
                         {row.map((cell, ci) => (
-                          <td key={ci} className="px-2.5 py-1.5 text-surface-600 whitespace-nowrap max-w-[200px] truncate">{cell}</td>
+                          <td key={ci} className="px-2.5 py-1.5 text-ink2 whitespace-nowrap max-w-[200px] truncate">{cell}</td>
                         ))}
                       </tr>
                     ))}
@@ -301,7 +301,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
           )}
 
           {txnFile && !csvPreview && (
-            <div className="text-xs text-surface-500 mt-2">
+            <div className="text-xs text-ink2 mt-2">
               Excel file detected — column mapping will happen automatically on the server.
             </div>
           )}
@@ -316,23 +316,23 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
       {/* Step 2: Map Columns */}
       {step === "map" && (
-        <div className="glass rounded-xl p-6 space-y-4 animate-in">
-          <h2 className="text-lg font-semibold text-surface-800">Map Columns</h2>
-          <p className="text-sm text-surface-500">
+        <div className="card p-6 space-y-4 animate-in">
+          <h2 className="text-lg font-semibold text-ink">Map Columns</h2>
+          <p className="text-sm text-ink2">
             Tell us what each column represents. We guessed based on your headers — adjust if needed.
           </p>
 
           <div className="space-y-3">
             {(Object.keys(FIELD_LABELS) as (keyof ColumnMapping)[]).map(field => (
               <div key={field}>
-                <label className="block text-xs font-medium text-surface-600 mb-1">
+                <label className="block text-xs font-medium text-ink2 mb-1">
                   {FIELD_LABELS[field]}
                 </label>
                 {csvPreview ? (
                   <select
                     value={mapping[field]}
                     onChange={e => setMapping(prev => ({ ...prev, [field]: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg text-sm bg-surface-100 border border-surface-300/50 text-surface-800 focus:outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-400/30 transition-all"
+                    className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/10 transition-all"
                   >
                     <option value="">-- Select column --</option>
                     {csvPreview.headers.map(h => (
@@ -345,13 +345,13 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
                     value={mapping[field]}
                     onChange={e => setMapping(prev => ({ ...prev, [field]: e.target.value }))}
                     placeholder="Type column name"
-                    className="w-full px-3 py-2 rounded-lg text-sm bg-surface-100 border border-surface-300/50 text-surface-800 placeholder:text-surface-500 focus:outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-400/30 transition-all"
+                    className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink placeholder:text-ink2 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/10 transition-all"
                   />
                 )}
               </div>
             ))}
             {!csvPreview && (
-              <div className="text-xs text-surface-500 italic pt-1">
+              <div className="text-xs text-ink2 italic pt-1">
                 Excel file detected — the server will auto-map columns. Type names above to override.
               </div>
             )}
@@ -371,9 +371,9 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
       {/* Step 3: Payees */}
       {step === "payees" && (
-        <div className="glass rounded-xl p-6 space-y-4 animate-in">
-          <h2 className="text-lg font-semibold text-surface-800">Payees</h2>
-          <p className="text-sm text-surface-500">
+        <div className="card p-6 space-y-4 animate-in">
+          <h2 className="text-lg font-semibold text-ink">Payees</h2>
+          <p className="text-sm text-ink2">
             Upload a payee roster, or skip to auto-generate one from the rep names in your data.
           </p>
 
@@ -385,7 +385,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
           />
 
           {!payeeFile && csvPreview && mapping.payeeColumn && (
-            <div className="px-3 py-2 rounded-lg bg-surface-100 text-xs text-surface-600">
+            <div className="px-3 py-2 rounded-lg bg-soft text-xs text-ink2">
               {(() => {
                 const idx = csvPreview.headers.indexOf(mapping.payeeColumn);
                 const count = idx >= 0 ? new Set(csvPreview.rows.map(r => r[idx]).filter(Boolean)).size : 0;
@@ -396,23 +396,23 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
           {payeePreview && (
             <div className="mt-2">
-              <div className="text-xs font-medium text-surface-600 mb-2">
+              <div className="text-xs font-medium text-ink2 mb-2">
                 Detected {payeePreview.headers.length} columns
               </div>
-              <div className="overflow-x-auto rounded-lg border border-surface-300/50">
+              <div className="overflow-x-auto rounded-lg border border-line">
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="bg-surface-100">
+                    <tr className="bg-soft">
                       {payeePreview.headers.map(h => (
-                        <th key={h} className="px-2.5 py-1.5 text-left font-medium text-surface-700 whitespace-nowrap">{h}</th>
+                        <th key={h} className="px-2.5 py-1.5 text-left font-medium text-ink whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-surface-200/50">
+                  <tbody className="divide-y divide-line">
                     {payeePreview.rows.map((row, ri) => (
                       <tr key={ri}>
                         {row.map((cell, ci) => (
-                          <td key={ci} className="px-2.5 py-1.5 text-surface-600 whitespace-nowrap max-w-[200px] truncate">{cell}</td>
+                          <td key={ci} className="px-2.5 py-1.5 text-ink2 whitespace-nowrap max-w-[200px] truncate">{cell}</td>
                         ))}
                       </tr>
                     ))}
@@ -433,14 +433,14 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
       {/* Step 4: Select Plan */}
       {step === "plan" && (
-        <div className="glass rounded-xl p-6 space-y-4 animate-in">
-          <h2 className="text-lg font-semibold text-surface-800">Select Plan</h2>
-          <p className="text-sm text-surface-500">
+        <div className="card p-6 space-y-4 animate-in">
+          <h2 className="text-lg font-semibold text-ink">Select Plan</h2>
+          <p className="text-sm text-ink2">
             Pick a saved plan from your library, or upload a YAML file.
           </p>
 
           {/* Toggle source */}
-          <div className="flex gap-1 bg-surface-100 rounded-lg p-1 w-fit">
+          <div className="flex gap-1 bg-soft rounded-lg p-1 w-fit">
             <SourceToggle active={planSource === "library"} onClick={() => setPlanSource("library")} label="Library" />
             <SourceToggle active={planSource === "file"} onClick={() => setPlanSource("file")} label="Upload File" />
             <SourceToggle active={planSource === "build"} onClick={() => setPlanSource("build")} label="Build New" />
@@ -449,7 +449,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
           {planSource === "library" && (
             <div className="space-y-2 max-h-64 overflow-y-auto">
               {plans.length === 0 && (
-                <div className="text-sm text-surface-500 py-4 text-center">
+                <div className="text-sm text-ink2 py-4 text-center">
                   No saved plans. Switch to Upload File, or build one in the AI Builder tab.
                 </div>
               )}
@@ -460,13 +460,13 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
                   className={`
                     w-full text-left px-4 py-3 rounded-lg border transition-all cursor-pointer
                     ${selectedPlanId === p.id
-                      ? "border-brand-400 bg-brand-500/10"
-                      : "border-surface-300/50 bg-surface-100/50 hover:border-surface-400"
+                      ? "border-accent bg-accent/10"
+                      : "border-line bg-soft hover:border-ink2"
                     }
                   `}
                 >
-                  <div className="text-sm font-medium text-surface-800">{p.name}</div>
-                  {p.description && <div className="text-xs text-surface-500 mt-0.5">{p.description}</div>}
+                  <div className="text-sm font-medium text-ink">{p.name}</div>
+                  {p.description && <div className="text-xs text-ink2 mt-0.5">{p.description}</div>}
                 </button>
               ))}
             </div>
@@ -506,7 +506,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
       {/* Error */}
       {status === "error" && (
-        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/30 text-danger text-sm animate-in select-text">
+        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/20 text-danger text-sm animate-in select-text">
           {error}
         </div>
       )}
@@ -514,8 +514,8 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
       {/* Loading */}
       {status === "loading" && (
         <div className="text-center py-12 animate-in">
-          <div className="inline-block w-8 h-8 border-3 border-brand-400/30 border-t-brand-400 rounded-full animate-spin mb-3" />
-          <p className="text-surface-600 text-sm">Calculating commissions...</p>
+          <div className="inline-block w-8 h-8 border-3 border-accent/30 border-t-accent rounded-full animate-spin mb-3" />
+          <p className="text-ink2 text-sm">Calculating commissions...</p>
         </div>
       )}
 
@@ -535,8 +535,8 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
               onClick={handleExport}
               className="
                 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium
-                bg-surface-100 border border-surface-300/50 text-surface-700
-                hover:bg-surface-200 hover:border-surface-400
+                bg-soft border border-line text-ink
+                hover:bg-soft hover:border-ink2
                 transition-all cursor-pointer
               "
             >
@@ -545,42 +545,42 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
           </div>
 
           {/* Per-payee breakdown */}
-          <div className="glass rounded-xl overflow-hidden">
-            <div className="px-5 py-3 border-b border-surface-300/30">
-              <h3 className="text-sm font-semibold text-surface-800">Per Payee</h3>
+          <div className="card overflow-hidden">
+            <div className="px-5 py-3 border-b border-line">
+              <h3 className="text-sm font-semibold text-ink">Per Payee</h3>
             </div>
-            <div className="divide-y divide-surface-200/50">
+            <div className="divide-y divide-line">
               {Object.entries(data.summary).map(([payee, total]) => (
                 <div key={payee} className="px-5 py-2.5 flex justify-between items-center text-sm">
-                  <span className="text-surface-700 font-medium">{payee}</span>
-                  <span className="text-surface-900 font-mono">${parseFloat(total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  <span className="text-ink font-medium">{payee}</span>
+                  <span className="text-ink font-mono">${parseFloat(total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                 </div>
               ))}
             </div>
           </div>
 
           {/* Commission details */}
-          <div className="glass rounded-xl overflow-hidden">
-            <div className="px-5 py-3 border-b border-surface-300/30">
-              <h3 className="text-sm font-semibold text-surface-800">All Commissions ({data.commissions.length})</h3>
+          <div className="card overflow-hidden">
+            <div className="px-5 py-3 border-b border-line">
+              <h3 className="text-sm font-semibold text-ink">All Commissions ({data.commissions.length})</h3>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="bg-surface-100/50">
-                    <th className="px-3 py-2 text-left font-medium text-surface-600">Deal</th>
-                    <th className="px-3 py-2 text-left font-medium text-surface-600">Payee</th>
-                    <th className="px-3 py-2 text-left font-medium text-surface-600">Rule</th>
-                    <th className="px-3 py-2 text-right font-medium text-surface-600">Amount</th>
+                  <tr className="bg-soft">
+                    <th className="px-3 py-2 text-left font-medium text-ink2">Deal</th>
+                    <th className="px-3 py-2 text-left font-medium text-ink2">Payee</th>
+                    <th className="px-3 py-2 text-left font-medium text-ink2">Rule</th>
+                    <th className="px-3 py-2 text-right font-medium text-ink2">Amount</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-surface-200/30">
+                <tbody className="divide-y divide-line">
                   {data.commissions.map((c, i) => (
-                    <tr key={i} className="hover:bg-surface-100/50">
-                      <td className="px-3 py-1.5 text-surface-700 font-mono">{c.transaction_id}</td>
-                      <td className="px-3 py-1.5 text-surface-700">{c.payee_id}</td>
-                      <td className="px-3 py-1.5 text-surface-500">{c.rule_id}</td>
-                      <td className="px-3 py-1.5 text-surface-900 font-mono text-right">${parseFloat(c.commission_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                    <tr key={i} className="hover:bg-soft">
+                      <td className="px-3 py-1.5 text-ink font-mono">{c.transaction_id}</td>
+                      <td className="px-3 py-1.5 text-ink">{c.payee_id}</td>
+                      <td className="px-3 py-1.5 text-ink2">{c.rule_id}</td>
+                      <td className="px-3 py-1.5 text-ink font-mono text-right">${parseFloat(c.commission_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -636,26 +636,26 @@ function DropZone({ file, onChange, accept, label }: {
       className={`
         rounded-xl border-2 border-dashed p-6 text-center cursor-pointer transition-all
         ${dragOver
-          ? "border-brand-400 bg-brand-500/10 scale-[1.01]"
+          ? "border-accent bg-accent/10 scale-[1.01]"
           : file
-            ? "border-brand-500/40 bg-brand-500/5"
-            : "border-surface-300 bg-surface-100/50 hover:border-surface-400"
+            ? "border-accent bg-accent/5"
+            : "border-line bg-soft hover:border-ink2"
         }
       `}
     >
       {file ? (
         <div>
           <div className="text-lg mb-1">{accept.includes("csv") ? "📊" : accept.includes("yaml") ? "📋" : "📄"}</div>
-          <div className="text-sm font-medium text-surface-800">{file.name}</div>
-          <div className="text-xs text-surface-500 mt-0.5">
+          <div className="text-sm font-medium text-ink">{file.name}</div>
+          <div className="text-xs text-ink2 mt-0.5">
             {(file.size / 1024).toFixed(1)} KB · Click to change
           </div>
         </div>
       ) : (
         <div>
           <div className="text-2xl mb-1 opacity-40">📂</div>
-          <div className="text-sm text-surface-600">{label}</div>
-          <div className="text-xs text-surface-500 mt-0.5">Drag & drop or click to browse</div>
+          <div className="text-sm text-ink2">{label}</div>
+          <div className="text-xs text-ink2 mt-0.5">Drag & drop or click to browse</div>
         </div>
       )}
     </div>
@@ -675,8 +675,8 @@ function StepButton({ onClick, disabled, children, highlight }: {
       className={`
         px-5 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer
         ${highlight
-          ? "bg-gradient-to-r from-brand-500 to-brand-600 text-white shadow-lg shadow-brand-500/20 hover:from-brand-400 hover:to-brand-500"
-          : "bg-brand-500 text-white hover:bg-brand-400"
+          ? "bg-gradient-to-r from-accent to-accent-ink text-white shadow-sm hover:from-accent hover:to-accent"
+          : "bg-accent text-white hover:bg-accent"
         }
         disabled:opacity-40 disabled:cursor-not-allowed
       `}
@@ -688,7 +688,7 @@ function StepButton({ onClick, disabled, children, highlight }: {
 
 function TextButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
   return (
-    <button onClick={onClick} className="text-sm text-surface-500 hover:text-surface-700 transition-colors cursor-pointer">
+    <button onClick={onClick} className="text-sm text-ink2 hover:text-ink transition-colors cursor-pointer">
       {children}
     </button>
   );
@@ -700,7 +700,7 @@ function SourceToggle({ active, onClick, label }: { active: boolean; onClick: ()
       onClick={onClick}
       className={`
         px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer
-        ${active ? "bg-white text-surface-800 shadow-sm" : "text-surface-500 hover:text-surface-700"}
+        ${active ? "bg-white text-ink shadow-sm" : "text-ink2 hover:text-ink"}
       `}
     >
       {label}
@@ -710,9 +710,9 @@ function SourceToggle({ active, onClick, label }: { active: boolean; onClick: ()
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="glass rounded-xl p-4">
-      <div className="text-xs text-surface-500">{label}</div>
-      <div className="text-lg font-bold text-surface-900 mt-0.5">{value}</div>
+    <div className="card p-4">
+      <div className="text-xs text-ink2">{label}</div>
+      <div className="text-lg font-bold text-ink mt-0.5">{value}</div>
     </div>
   );
 }

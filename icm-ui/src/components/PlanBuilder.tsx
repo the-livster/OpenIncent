@@ -101,32 +101,32 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
     <div className="max-w-3xl mx-auto space-y-6 animate-in">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-surface-800">Plan Builder</h2>
+        <h2 className="text-lg font-semibold text-ink">Plan Builder</h2>
         <div className="flex items-center gap-2">
-          <button onClick={onClose} className="text-xs text-surface-500 hover:text-surface-700 cursor-pointer transition-colors">
+          <button onClick={onClose} className="text-xs text-ink2 hover:text-ink cursor-pointer transition-colors">
             ← Back to AI Builder
           </button>
         </div>
       </div>
 
       {/* Plan settings */}
-      <div className="glass rounded-xl p-5 space-y-3">
+      <div className="card p-5 space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs font-medium text-surface-600 mb-1">Plan Name</label>
+            <label className="block text-xs font-medium text-ink2 mb-1">Plan Name</label>
             <input
               type="text"
               value={plan.name}
               onChange={e => updatePlan(p => ({ ...p, name: e.target.value }))}
-              className="w-full px-3 py-2 rounded-lg text-sm bg-surface-100 border border-surface-300/50 text-surface-800 focus:outline-none focus:border-brand-400 transition-all"
+              className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-surface-600 mb-1">Period</label>
+            <label className="block text-xs font-medium text-ink2 mb-1">Period</label>
             <select
               value={plan.period_type}
               onChange={e => updatePlan(p => ({ ...p, period_type: e.target.value }))}
-              className="w-full px-3 py-2 rounded-lg text-sm bg-surface-100 border border-surface-300/50 text-surface-800 focus:outline-none focus:border-brand-400 transition-all"
+              className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
             >
               <option value="monthly">Monthly</option>
               <option value="quarterly">Quarterly</option>
@@ -138,7 +138,7 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
 
       {/* Rules */}
       {plan.rules.map((rule, ri) => (
-        <div key={ri} className="glass rounded-xl p-5 space-y-4">
+        <div key={ri} className="card p-5 space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <select
@@ -154,16 +154,16 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
                   }
                   return r;
                 })}
-                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-surface-100 border border-surface-300/50 text-surface-800 focus:outline-none focus:border-brand-400 transition-all"
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
               >
                 <option value="flat_rate">Flat Rate</option>
                 <option value="tiered">Tiered</option>
                 <option value="accelerator">Accelerator</option>
               </select>
-              <span className="text-xs text-surface-500 font-mono">{rule.id}</span>
+              <span className="text-xs text-ink2 font-mono">{rule.id}</span>
             </div>
             {plan.rules.length > 1 && (
-              <button onClick={() => removeRule(ri)} className="text-xs text-surface-500 hover:text-danger cursor-pointer transition-colors">
+              <button onClick={() => removeRule(ri)} className="text-xs text-ink2 hover:text-danger cursor-pointer transition-colors">
                 Remove
               </button>
             )}
@@ -186,17 +186,17 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
           {rule.type === "tiered" && rule.tiers && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-surface-600">Tiers</label>
-                <button onClick={() => addTier(ri)} className="text-xs text-brand-400 hover:text-brand-300 cursor-pointer transition-colors">
+                <label className="text-xs font-medium text-ink2">Tiers</label>
+                <button onClick={() => addTier(ri)} className="text-xs text-accent hover:text-brand-300 cursor-pointer transition-colors">
                   + Add Tier
                 </button>
               </div>
               {rule.tiers.map((tier, ti) => (
                 <div key={ti} className="flex items-center gap-2">
-                  <span className="text-xs text-surface-500 w-4">{ti + 1}</span>
+                  <span className="text-xs text-ink2 w-4">{ti + 1}</span>
                   <div className="flex-1 grid grid-cols-2 gap-2">
                     <div>
-                      <label className="text-[10px] text-surface-500">Threshold ($)</label>
+                      <label className="text-[10px] text-ink2">Threshold ($)</label>
                       <input
                         type="number"
                         value={parseFloat(tier.threshold)}
@@ -204,11 +204,11 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
                           if (r.tiers) r.tiers[ti].threshold = e.target.value;
                           return r;
                         })}
-                        className="w-full px-2 py-1 rounded text-xs bg-surface-100 border border-surface-300/50 text-surface-800 focus:outline-none focus:border-brand-400 transition-all"
+                        className="w-full px-2 py-1 rounded text-xs bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] text-surface-500">Rate (%)</label>
+                      <label className="text-[10px] text-ink2">Rate (%)</label>
                       <input
                         type="number"
                         step="0.1"
@@ -217,12 +217,12 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
                           if (r.tiers) r.tiers[ti].rate = String(parseFloat(e.target.value || "0") / 100);
                           return r;
                         })}
-                        className="w-full px-2 py-1 rounded text-xs bg-surface-100 border border-surface-300/50 text-surface-800 focus:outline-none focus:border-brand-400 transition-all"
+                        className="w-full px-2 py-1 rounded text-xs bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
                       />
                     </div>
                   </div>
                   {rule.tiers!.length > 1 && (
-                    <button onClick={() => removeTier(ri, ti)} className="text-xs text-surface-500 hover:text-danger cursor-pointer transition-colors">
+                    <button onClick={() => removeTier(ri, ti)} className="text-xs text-ink2 hover:text-danger cursor-pointer transition-colors">
                       ✕
                     </button>
                   )}
@@ -257,15 +257,15 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
 
           {/* Filter */}
           <div>
-            <label className="block text-xs font-medium text-surface-600 mb-1">
-              Filter <span className="text-surface-400">(optional)</span>
+            <label className="block text-xs font-medium text-ink2 mb-1">
+              Filter <span className="text-ink2">(optional)</span>
             </label>
             <input
               type="text"
               value={rule.filter || ""}
               onChange={e => updateRule(ri, r => { r.filter = e.target.value || undefined; return r; })}
               placeholder='e.g. product == "Enterprise"'
-              className="w-full px-3 py-2 rounded-lg text-sm font-mono bg-surface-100 border border-surface-300/50 text-surface-800 placeholder:text-surface-500 focus:outline-none focus:border-brand-400 transition-all"
+              className="w-full px-3 py-2 rounded-lg text-sm font-mono bg-soft border border-line text-ink placeholder:text-ink2 focus:outline-none focus:border-accent transition-all"
             />
           </div>
         </div>
@@ -274,18 +274,18 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
       {/* Add rule button */}
       <button
         onClick={addRule}
-        className="w-full py-3 rounded-xl border-2 border-dashed border-surface-300 text-surface-500 hover:border-brand-400 hover:text-brand-400 text-sm font-medium transition-all cursor-pointer"
+        className="w-full py-3 rounded-xl border-2 border-dashed border-surface-300 text-ink2 hover:border-accent hover:text-accent text-sm font-medium transition-all cursor-pointer"
       >
         + Add Rule
       </button>
 
       {/* YAML preview */}
-      <details className="glass rounded-xl overflow-hidden">
-        <summary className="px-5 py-3 text-sm font-medium text-surface-600 cursor-pointer hover:text-surface-800 transition-colors">
+      <details className="card overflow-hidden">
+        <summary className="px-5 py-3 text-sm font-medium text-ink2 cursor-pointer hover:text-ink transition-colors">
           Preview YAML
         </summary>
         <div className="px-5 pb-4 overflow-x-auto">
-          <pre className="text-xs text-surface-600 font-mono whitespace-pre">{generateYaml(plan)}</pre>
+          <pre className="text-xs text-ink2 font-mono whitespace-pre">{generateYaml(plan)}</pre>
         </div>
       </details>
 
@@ -296,13 +296,13 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
             {error}
           </div>
         )}
-        <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-surface-500 hover:text-surface-700 cursor-pointer transition-colors">
+        <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-ink2 hover:text-ink cursor-pointer transition-colors">
           Cancel
         </button>
         {onUse && (
           <button
             onClick={() => onUse(generateYaml(plan))}
-            className="px-6 py-2 rounded-lg text-sm font-medium bg-brand-500/15 text-brand-400 hover:bg-brand-500/25 transition-all cursor-pointer"
+            className="px-6 py-2 rounded-lg text-sm font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-all cursor-pointer"
           >
             Use This Plan
           </button>
@@ -310,7 +310,7 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-6 py-2 rounded-lg text-sm font-medium bg-brand-500 text-white hover:bg-brand-400 disabled:opacity-40 transition-all cursor-pointer"
+          className="px-6 py-2 rounded-lg text-sm font-medium bg-accent text-white hover:bg-brand-400 disabled:opacity-40 transition-all cursor-pointer"
         >
           {saving ? "Saving..." : saved ? "✓ Saved!" : "Save to Library"}
         </button>
@@ -335,8 +335,8 @@ function SliderField({ label, value, min, max, step, unit, onChange }: {
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <label className="text-xs font-medium text-surface-600">{label}</label>
-        <span className="text-xs font-mono text-surface-800 font-semibold">
+        <label className="text-xs font-medium text-ink2">{label}</label>
+        <span className="text-xs font-mono text-ink font-semibold">
           {value.toFixed(step < 1 ? 1 : 0)}{unit}
         </span>
       </div>

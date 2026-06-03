@@ -99,7 +99,7 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
       {/* Search + filters */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px]">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-surface-500 text-sm">🔍</span>
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-ink2 text-sm">🔍</span>
           <input
             type="text"
             placeholder="Search commissions..."
@@ -107,9 +107,9 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
             onChange={(e) => { setSearch(e.target.value); setPage(0); }}
             className="
               w-full pl-9 pr-3 py-2 rounded-lg text-sm
-              bg-surface-100 border border-surface-300/50
-              text-surface-800 placeholder:text-surface-500
-              focus:outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-400/30
+              bg-soft border border-line
+              text-ink placeholder:text-ink2
+              focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/10
               transition-all
             "
           />
@@ -117,7 +117,7 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
         <FilterSelect label="Payee" value={filterPayee} options={payees} onChange={(v) => { setFilterPayee(v); setPage(0); }} />
         <FilterSelect label="Rule" value={filterRule} options={rules} onChange={(v) => { setFilterRule(v); setPage(0); }} />
         <FilterSelect label="Period" value={filterPeriod} options={periods} onChange={(v) => { setFilterPeriod(v); setPage(0); }} />
-        <span className="text-xs text-surface-500 ml-auto">
+        <span className="text-xs text-ink2 ml-auto">
           {filtered.length} of {commissions.length} rows
         </span>
       </div>
@@ -126,7 +126,7 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
       <div className="overflow-x-auto rounded-xl glass">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-surface-300/30">
+            <tr className="border-b border-line">
               <th className="w-8 px-3 py-3" />
               {COLUMNS.map((col) => (
                 <th
@@ -134,13 +134,13 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
                   onClick={() => toggleSort(col.key)}
                   className={`
                     px-3 py-3 text-xs font-semibold uppercase tracking-wider
-                    text-surface-500 cursor-pointer select-none
-                    hover:text-surface-700 transition-colors
+                    text-ink2 cursor-pointer select-none
+                    hover:text-ink transition-colors
                     ${col.align === "right" ? "text-right" : "text-left"}
                   `}
                 >
                   {col.label}{" "}
-                  <span className="text-surface-400">{sortIcon(col.key)}</span>
+                  <span className="text-ink2">{sortIcon(col.key)}</span>
                 </th>
               ))}
             </tr>
@@ -155,56 +155,56 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
                   <tr
                     onClick={() => toggle(globalIdx)}
                     className="
-                      border-b border-surface-300/20
-                      hover:bg-surface-200/40 cursor-pointer
+                      border-b border-line
+                      hover:bg-soft cursor-pointer
                       transition-colors
                     "
                   >
-                    <td className="px-3 py-2.5 text-surface-500 text-xs">
+                    <td className="px-3 py-2.5 text-ink2 text-xs">
                       {open ? "▾" : "▸"}
                     </td>
-                    <td className="px-3 py-2.5 font-mono text-xs text-surface-800">{c.transaction_id}</td>
-                    <td className="px-3 py-2.5 text-surface-700">{c.payee_id}</td>
-                    <td className="px-3 py-2.5 text-surface-600">{c.period}</td>
+                    <td className="px-3 py-2.5 font-mono text-xs text-ink">{c.transaction_id}</td>
+                    <td className="px-3 py-2.5 text-ink">{c.payee_id}</td>
+                    <td className="px-3 py-2.5 text-ink2">{c.period}</td>
                     <td className="px-3 py-2.5">
-                      <span className="px-1.5 py-0.5 rounded text-xs bg-brand-500/15 text-brand-400 font-medium">
+                      <span className="px-1.5 py-0.5 rounded text-xs bg-accent/15 text-accent font-medium">
                         {c.rule_id}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-right font-mono text-xs text-surface-700">${c.base_amount}</td>
-                    <td className="px-3 py-2.5 text-right font-mono text-xs text-surface-600">{c.rate}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-xs text-ink">${c.base_amount}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-xs text-ink2">{c.rate}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-xs font-semibold text-success">${c.commission_amount}</td>
                   </tr>
                   {open && (
                     <tr>
-                      <td colSpan={8} className="px-4 py-3 bg-surface-100/50">
+                      <td colSpan={8} className="px-4 py-3 bg-soft">
                         <div className="space-y-2 text-xs">
                           {c.notes && (
-                            <div className="text-surface-600">
-                              <span className="text-surface-500 font-medium">Notes:</span> {c.notes}
+                            <div className="text-ink2">
+                              <span className="text-ink2 font-medium">Notes:</span> {c.notes}
                             </div>
                           )}
                           {txnLedger.length > 0 && (
                             <div className="mt-2">
-                              <div className="text-surface-500 font-semibold mb-1.5">Audit Trail</div>
+                              <div className="text-ink2 font-semibold mb-1.5">Audit Trail</div>
                               {txnLedger.map((e, j) => (
                                 <div
                                   key={j}
                                   className="ml-2 pl-3 border-l-2 border-brand-500/30 mb-2"
                                 >
-                                  <div className="text-surface-700">{e.human_readable}</div>
-                                  <div className="text-surface-500 mt-0.5 flex flex-wrap gap-2">
+                                  <div className="text-ink">{e.human_readable}</div>
+                                  <div className="text-ink2 mt-0.5 flex flex-wrap gap-2">
                                     <EventBadge type={e.event_type} />
                                     <span>rule: {e.rule_id}</span>
                                     <span>{e.timestamp}</span>
                                   </div>
                                   {Object.keys(e.inputs).length > 0 && (
-                                    <div className="mt-1 font-mono text-surface-500">
+                                    <div className="mt-1 font-mono text-ink2">
                                       inputs: {JSON.stringify(e.inputs)}
                                     </div>
                                   )}
                                   {Object.keys(e.outputs).length > 0 && (
-                                    <div className="font-mono text-surface-500">
+                                    <div className="font-mono text-ink2">
                                       outputs: {JSON.stringify(e.outputs)}
                                     </div>
                                   )}
@@ -229,17 +229,17 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
           <button
             onClick={() => setPage((p) => Math.max(0, p - 1))}
             disabled={page === 0}
-            className="px-2 py-1 rounded text-xs text-surface-600 hover:bg-surface-200 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1 rounded text-xs text-ink2 hover:bg-surface-200 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
           >
             ← Prev
           </button>
-          <span className="text-xs text-surface-500">
+          <span className="text-xs text-ink2">
             Page {page + 1} of {pageCount}
           </span>
           <button
             onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
             disabled={page >= pageCount - 1}
-            className="px-2 py-1 rounded text-xs text-surface-600 hover:bg-surface-200 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1 rounded text-xs text-ink2 hover:bg-surface-200 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
           >
             Next →
           </button>
@@ -258,9 +258,9 @@ function FilterSelect({
       onChange={(e) => onChange(e.target.value)}
       className="
         px-2 py-2 rounded-lg text-xs
-        bg-surface-100 border border-surface-300/50
-        text-surface-700 cursor-pointer
-        focus:outline-none focus:border-brand-400
+        bg-soft border border-line
+        text-ink cursor-pointer
+        focus:outline-none focus:border-accent
         transition-colors
       "
     >
@@ -277,10 +277,10 @@ function EventBadge({ type }: { type: string }) {
     commission_computed: "bg-success/15 text-success",
     tier_crossed: "bg-warn/15 text-warn",
     rule_skipped: "bg-danger/15 text-danger",
-    rule_evaluated: "bg-brand-500/15 text-brand-400",
+    rule_evaluated: "bg-accent/15 text-accent",
   };
   return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${colors[type] ?? "bg-surface-200 text-surface-600"}`}>
+    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${colors[type] ?? "bg-surface-200 text-ink2"}`}>
       {type}
     </span>
   );
