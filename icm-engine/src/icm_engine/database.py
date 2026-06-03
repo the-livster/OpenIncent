@@ -141,6 +141,20 @@ CREATE INDEX IF NOT EXISTS idx_commission_lines_payee ON commission_lines(org_id
 """
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns/tables that may be missing from older schema versions."""
+    migrations = [
+        "ALTER TABLE calculations ADD COLUMN period TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE calculations ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE payees ADD COLUMN quotas TEXT NOT NULL DEFAULT '{}'",
+    ]
+    for m in migrations:
+        try:
+            conn.execute(m)
+        except sqlite3.OperationalError:
+            pass
+
+
 def default_db_path() -> Path:
     if sys.platform == "win32":
         base = os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")
@@ -161,6 +175,8 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # Schema migrations for existing databases
+            _migrate(conn)
             conn.execute(
                 "INSERT OR IGNORE INTO _schema_version (version) VALUES (?)",
                 (SCHEMA_VERSION,),
