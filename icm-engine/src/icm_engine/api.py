@@ -146,8 +146,10 @@ async def calculate(
         db = _get_db(org)
         calc_id = db.record_calculation(
             plan_obj.plan_id,
+            period="",  # will be set when locked
             input_summary={"txn_count": len(txn_list), "payee_count": len(payee_list)},
         )
+        db.save_commission_lines(calc_id, result.commissions)
         db.save_ledger_entries(calc_id, ledger_dicts)
 
         summary: dict[str, Decimal] = {}
@@ -420,6 +422,52 @@ def delete_api_key(key_id: str, org: str = Depends(get_org)) -> dict[str, str]:
     if not _get_db(org).delete_api_key(key_id):
         raise HTTPException(status_code=404, detail="API key not found")
     return {"status": "deleted"}
+
+
+# ------------------------------------------------------------------
+# v1: Period locks
+# ------------------------------------------------------------------
+
+@v1.post("/periods/{plan_id}/{period}/lock")
+def lock_period(
+    plan_id: str, period: str,
+    calculation_id: str | None = None,
+    org: str = Depends(get_org),
+) -> dict[str, Any]:
+    """Lock a period to a calculation. Defaults to the latest calculation for this plan/period."""
+    db = _get_db(org)
+    if calculation_id is None:
+        calcs = db.list_calculations(plan_id=plan_id, limit=1)
+        if not calcs:
+            raise HTTPException(status_code=404, detail="No calculations found for this plan")
+        calculation_id = calcs[0]["id"]
+    if not db.lock_period(plan_id, period, calculation_id):
+        raise HTTPException(status_code=409, detail="Period already locked")
+    return {"plan_id": plan_id, "period": period, "calculation_id": calculation_id, "status": "locked"}
+
+
+@v1.delete("/periods/{plan_id}/{period}/lock")
+def unlock_period(plan_id: str, period: str, org: str = Depends(get_org)) -> dict[str, str]:
+    if not _get_db(org).unlock_period(plan_id, period):
+        raise HTTPException(status_code=404, detail="Period not locked")
+    return {"plan_id": plan_id, "period": period, "status": "unlocked"}
+
+
+@v1.get("/periods/{plan_id}/{period}/status")
+def period_status(plan_id: str, period: str, org: str = Depends(get_org)) -> dict[str, Any]:
+    db = _get_db(org)
+    locked = db.is_locked(plan_id, period)
+    official = db.get_official_calculation(plan_id, period) if locked else None
+    return {
+        "plan_id": plan_id, "period": period,
+        "locked": locked,
+        "official_calculation_id": official["id"] if official else None,
+    }
+
+
+@v1.get("/periods/{plan_id}")
+def list_periods(plan_id: str, org: str = Depends(get_org)) -> list[dict[str, Any]]:
+    return _get_db(org).get_period_status(plan_id)
 
 
 # ------------------------------------------------------------------

@@ -19,10 +19,11 @@ import sys
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS _schema_version (
@@ -57,9 +58,34 @@ CREATE TABLE IF NOT EXISTS calculations (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL DEFAULT 'default',
     plan_id TEXT NOT NULL,
+    period TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'completed',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     input_summary TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS commission_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    calculation_id TEXT NOT NULL,
+    org_id TEXT NOT NULL DEFAULT 'default',
+    payee_id TEXT NOT NULL,
+    period TEXT NOT NULL,
+    rule_id TEXT NOT NULL,
+    transaction_id TEXT NOT NULL,
+    base_amount TEXT NOT NULL,
+    rate TEXT NOT NULL,
+    commission_amount TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS period_locks (
+    org_id TEXT NOT NULL DEFAULT 'default',
+    plan_id TEXT NOT NULL,
+    period TEXT NOT NULL,
+    calculation_id TEXT NOT NULL,
+    locked_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (org_id, plan_id, period)
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -108,6 +134,9 @@ CREATE INDEX IF NOT EXISTS idx_ledger_payee ON ledger_entries(org_id, payee_id, 
 CREATE INDEX IF NOT EXISTS idx_ledger_calculation ON ledger_entries(calculation_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_timestamp ON ledger_entries(org_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_calculations_period ON calculations(org_id, plan_id, period, version);
+CREATE INDEX IF NOT EXISTS idx_commission_lines_calc ON commission_lines(calculation_id);
+CREATE INDEX IF NOT EXISTS idx_commission_lines_payee ON commission_lines(org_id, payee_id, period);
 """
 
 
@@ -320,16 +349,55 @@ class Database:
     # ------------------------------------------------------------------
 
     def record_calculation(
-        self, plan_id: str, *, status: str = "completed", input_summary: dict[str, Any] | None = None,
+        self, plan_id: str, *, period: str = "", status: str = "completed",
+        input_summary: dict[str, Any] | None = None,
     ) -> str:
         cid = uuid.uuid4().hex
         summary = json.dumps(input_summary or {})
+        # Auto-version: max version for (org, plan, period) + 1
+        version = self._next_version(plan_id, period)
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO calculations (id, org_id, plan_id, status, input_summary) VALUES (?, ?, ?, ?, ?)",
-                (cid, self.org_id, plan_id, status, summary),
+                """INSERT INTO calculations (id, org_id, plan_id, period, version, status, input_summary)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (cid, self.org_id, plan_id, period, version, status, summary),
             )
         return cid
+
+    def _next_version(self, plan_id: str, period: str) -> int:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) + 1 FROM calculations WHERE org_id=? AND plan_id=? AND period=?",
+                (self.org_id, plan_id, period),
+            ).fetchone()
+            return int(row[0]) if row else 1
+
+    def save_commission_lines(self, calculation_id: str, commissions: list[Any]) -> int:
+        """Persist commission lines for a calculation. Returns count saved."""
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO commission_lines
+                   (calculation_id, org_id, payee_id, period, rule_id, transaction_id,
+                    base_amount, rate, commission_amount, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (calculation_id, self.org_id,
+                     _get(c, "payee_id"), _get(c, "period"), _get(c, "rule_id"),
+                     _get(c, "transaction_id"),
+                     str(_get_dec(c, "base_amount")), str(_get_dec(c, "rate")),
+                     str(_get_dec(c, "commission_amount")), _get(c, "notes", ""))
+                    for c in commissions
+                ],
+            )
+        return len(commissions)
+
+    def get_commission_lines(self, calculation_id: str) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM commission_lines WHERE calculation_id=? AND org_id=? ORDER BY id",
+                (calculation_id, self.org_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def list_calculations(self, plan_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         with self._conn() as conn:
@@ -449,6 +517,72 @@ class Database:
             )
         return cur.rowcount > 0
 
+    # ------------------------------------------------------------------
+    # Period locks
+    # ------------------------------------------------------------------
+
+    def lock_period(self, plan_id: str, period: str, calculation_id: str) -> bool:
+        """Lock a period to a specific calculation. Returns True if locked, False if already locked."""
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT calculation_id FROM period_locks WHERE org_id=? AND plan_id=? AND period=?",
+                (self.org_id, plan_id, period),
+            ).fetchone()
+            if existing:
+                return False  # already locked
+            conn.execute(
+                "INSERT INTO period_locks (org_id, plan_id, period, calculation_id) VALUES (?, ?, ?, ?)",
+                (self.org_id, plan_id, period, calculation_id),
+            )
+            conn.execute(
+                "UPDATE calculations SET status='locked' WHERE id=? AND org_id=?",
+                (calculation_id, self.org_id),
+            )
+        return True
+
+    def unlock_period(self, plan_id: str, period: str) -> bool:
+        """Remove a period lock. Returns True if unlocked, False if not locked."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM period_locks WHERE org_id=? AND plan_id=? AND period=?",
+                (self.org_id, plan_id, period),
+            )
+        return cur.rowcount > 0
+
+    def is_locked(self, plan_id: str, period: str) -> bool:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM period_locks WHERE org_id=? AND plan_id=? AND period=?",
+                (self.org_id, plan_id, period),
+            ).fetchone()
+        return row is not None
+
+    def get_official_calculation(self, plan_id: str, period: str) -> dict[str, Any] | None:
+        """Return the locked calculation for a period, or None."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT c.* FROM calculations c
+                   JOIN period_locks p ON c.id = p.calculation_id AND c.org_id = p.org_id
+                   WHERE p.org_id=? AND p.plan_id=? AND p.period=?""",
+                (self.org_id, plan_id, period),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_period_status(self, plan_id: str) -> list[dict[str, Any]]:
+        """Return all periods for a plan with version count and lock state."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT c.period, COUNT(*) as versions, MAX(c.version) as latest_version,
+                   MAX(c.status) as status, p.calculation_id as locked_calc_id
+                   FROM calculations c
+                   LEFT JOIN period_locks p ON c.org_id=p.org_id AND c.plan_id=p.plan_id AND c.period=p.period
+                   WHERE c.org_id=? AND c.plan_id=? AND c.period != ''
+                   GROUP BY c.period
+                   ORDER BY c.period DESC""",
+                (self.org_id, plan_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
 
 # ------------------------------------------------------------------
 # Helpers
@@ -469,3 +603,15 @@ def _unpack_ledger(row: sqlite3.Row) -> dict[str, Any]:
     d["inputs"] = json.loads(d["inputs"])
     d["outputs"] = json.loads(d["outputs"])
     return d
+
+
+def _get(obj: Any, attr: str, default: str = "") -> str:
+    if hasattr(obj, attr):
+        return str(getattr(obj, attr))
+    if isinstance(obj, dict):
+        return str(obj.get(attr, default))
+    return default
+
+
+def _get_dec(obj: Any, attr: str) -> Decimal:
+    return Decimal(_get(obj, attr, "0"))
