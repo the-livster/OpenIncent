@@ -23,7 +23,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS _schema_version (
@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS payees (
     plan_id TEXT NOT NULL,
     effective_from TEXT NOT NULL,
     effective_to TEXT,
+    ramp TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (id, org_id)
 );
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS commission_lines (
     org_id TEXT NOT NULL DEFAULT 'default',
     payee_id TEXT NOT NULL,
     period TEXT NOT NULL,
+    origin_period TEXT NOT NULL DEFAULT '',
     rule_id TEXT NOT NULL,
     transaction_id TEXT NOT NULL,
     base_amount TEXT NOT NULL,
@@ -86,6 +88,8 @@ CREATE TABLE IF NOT EXISTS period_locks (
     period TEXT NOT NULL,
     calculation_id TEXT NOT NULL,
     locked_at TEXT NOT NULL DEFAULT (datetime('now')),
+    locked_by TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (org_id, plan_id, period)
 );
 
@@ -147,6 +151,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE calculations ADD COLUMN period TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE calculations ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE payees ADD COLUMN quotas TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE payees ADD COLUMN ramp TEXT",
+        "ALTER TABLE commission_lines ADD COLUMN origin_period TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE period_locks ADD COLUMN locked_by TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE period_locks ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
     ]
     for m in migrations:
         try:
@@ -245,16 +253,18 @@ class Database:
     def save_payee(
         self, payee_id: str, name: str, quota: str, plan_id: str,
         effective_from: str, effective_to: str | None = None,
+        ramp: str | None = None,
     ) -> str:
         with self._conn() as conn:
             conn.execute(
-                """INSERT INTO payees (id, org_id, name, quota, quotas, plan_id, effective_from, effective_to)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO payees (id, org_id, name, quota, quotas, plan_id, effective_from, effective_to, ramp)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id, org_id) DO UPDATE SET
                        name=excluded.name, quota=excluded.quota, quotas=excluded.quotas,
                        plan_id=excluded.plan_id,
-                       effective_from=excluded.effective_from, effective_to=excluded.effective_to""",
-                (payee_id, self.org_id, name, quota, "{}", plan_id, effective_from, effective_to),
+                       effective_from=excluded.effective_from, effective_to=excluded.effective_to,
+                       ramp=excluded.ramp""",
+                (payee_id, self.org_id, name, quota, "{}", plan_id, effective_from, effective_to, ramp),
             )
         return payee_id
 
@@ -263,11 +273,12 @@ class Database:
             for p in payees:
                 p["org_id"] = self.org_id
             conn.executemany(
-                """INSERT INTO payees (id, org_id, name, quota, plan_id, effective_from, effective_to)
-                   VALUES (:id, :org_id, :name, :quota, :plan_id, :effective_from, :effective_to)
+                """INSERT INTO payees (id, org_id, name, quota, plan_id, effective_from, effective_to, ramp)
+                   VALUES (:id, :org_id, :name, :quota, :plan_id, :effective_from, :effective_to, :ramp)
                    ON CONFLICT(id, org_id) DO UPDATE SET
                        name=excluded.name, quota=excluded.quota, plan_id=excluded.plan_id,
-                       effective_from=excluded.effective_from, effective_to=excluded.effective_to""",
+                       effective_from=excluded.effective_from, effective_to=excluded.effective_to,
+                       ramp=excluded.ramp""",
                 payees,
             )
         return len(payees)
@@ -395,13 +406,13 @@ class Database:
         with self._conn() as conn:
             conn.executemany(
                 """INSERT INTO commission_lines
-                   (calculation_id, org_id, payee_id, period, rule_id, transaction_id,
+                   (calculation_id, org_id, payee_id, period, origin_period, rule_id, transaction_id,
                     base_amount, rate, commission_amount, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (calculation_id, self.org_id,
-                     _get(c, "payee_id"), _get(c, "period"), _get(c, "rule_id"),
-                     _get(c, "transaction_id"),
+                     _get(c, "payee_id"), _get(c, "period"), _get(c, "origin_period", ""),
+                     _get(c, "rule_id"), _get(c, "transaction_id"),
                      str(_get_dec(c, "base_amount")), str(_get_dec(c, "rate")),
                      str(_get_dec(c, "commission_amount")), _get(c, "notes", ""))
                     for c in commissions
@@ -417,13 +428,26 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def list_calculations(self, plan_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def list_calculations(self, plan_id: str | None = None, period: str | None = None,
+                          limit: int = 50) -> list[dict[str, Any]]:
         with self._conn() as conn:
-            if plan_id:
+            if plan_id and period:
+                rows = conn.execute(
+                    """SELECT * FROM calculations WHERE org_id=? AND plan_id=? AND period=?
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (self.org_id, plan_id, period, limit),
+                ).fetchall()
+            elif plan_id:
                 rows = conn.execute(
                     """SELECT * FROM calculations WHERE org_id=? AND plan_id=?
                        ORDER BY created_at DESC LIMIT ?""",
                     (self.org_id, plan_id, limit),
+                ).fetchall()
+            elif period:
+                rows = conn.execute(
+                    """SELECT * FROM calculations WHERE org_id=? AND period=?
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (self.org_id, period, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
@@ -539,7 +563,8 @@ class Database:
     # Period locks
     # ------------------------------------------------------------------
 
-    def lock_period(self, plan_id: str, period: str, calculation_id: str) -> bool:
+    def lock_period(self, plan_id: str, period: str, calculation_id: str,
+                    locked_by: str = "", reason: str = "") -> bool:
         """Lock a period to a specific calculation. Returns True if locked, False if already locked."""
         with self._conn() as conn:
             existing = conn.execute(
@@ -549,8 +574,9 @@ class Database:
             if existing:
                 return False  # already locked
             conn.execute(
-                "INSERT INTO period_locks (org_id, plan_id, period, calculation_id) VALUES (?, ?, ?, ?)",
-                (self.org_id, plan_id, period, calculation_id),
+                "INSERT INTO period_locks (org_id, plan_id, period, calculation_id, locked_by, reason)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (self.org_id, plan_id, period, calculation_id, locked_by, reason),
             )
             conn.execute(
                 "UPDATE calculations SET status='locked' WHERE id=? AND org_id=?",

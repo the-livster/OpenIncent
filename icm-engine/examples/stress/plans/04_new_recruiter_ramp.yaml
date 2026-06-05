@@ -1,0 +1,12 @@
+plan_id: recruiter_ramp
+name: "New Recruiter Ramp — Tiered"
+period_type: monthly
+currency: USD
+rules:
+  - id: ramp_tiered
+    type: tiered
+    tiers:
+      - threshold_pct: 1.0
+        rate: 0.05
+      - threshold_pct: 100.0
+        rate: 0.10

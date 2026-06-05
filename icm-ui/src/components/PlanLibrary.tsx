@@ -108,7 +108,7 @@ export default function PlanLibrary({ onLoadPlan, planToSave, onSaved }: Props) 
         </div>
 
         {error && (
-          <div className="px-5 py-3 text-sm text-danger bg-danger/5 border-b border-danger/10">{error}</div>
+          <div className="px-5 py-3 text-sm text-danger bg-danger/5 border-b border-danger/10 select-text">{error}</div>
         )}
 
         {loading && (

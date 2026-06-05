@@ -53,6 +53,7 @@ def main() -> None:
         "--name", "icm-engine",
         "--windowed",
         "--hidden-import", "icm_engine",
+        "--hidden-import", "cryptography",
         "--collect-all", "icm_engine",
         *data_args,
         str(ROOT / "launcher.py"),

@@ -135,12 +135,56 @@ class Payee(BaseModel):
     effective_from: date | None = None
     effective_to: date | None = None
     email: str | None = None
+    ramp: RampSchedule | None = None
+    draw: Draw | None = None
 
     def quota_for(self, window_key: str) -> Decimal:
-        """Return the quota for a given window key, falling back to default."""
-        if window_key in self.quotas:
-            return self.quotas[window_key]
-        return self.quota
+        """Return the quota for a given window key, falling back to default.
+
+        If a ramp schedule is active for this window, the quota is multiplied
+        by the corresponding ramp multiplier.
+        """
+        base = self.quotas.get(window_key, self.quota)
+        if self.ramp and self.effective_from:
+            mult = self._ramp_multiplier_for(window_key)
+            if mult is not None:
+                return base * mult
+        return base
+
+    def _ramp_multiplier_for(self, window_key: str) -> Decimal | None:
+        """Return the ramp multiplier for a given window, or None if not in ramp.
+
+        Quarterly windows use the last month of the quarter as the reference
+        month (Q2 → June). Annual windows use December.
+        """
+        if not self.ramp or not self.effective_from:
+            return None
+
+        year: int
+        month: int
+        if "-Q" in window_key:
+            year_str, q_str = window_key.split("-Q")
+            year = int(year_str)
+            month = int(q_str) * 3  # last month of quarter
+        elif "-" in window_key:
+            yr_str, mo_str = window_key.split("-")
+            year = int(yr_str)
+            month = int(mo_str)
+        else:
+            # Annual window: e.g. "2026" → use December
+            year = int(window_key)
+            month = 12
+
+        eff = self.effective_from
+        months_since = (year - eff.year) * 12 + (month - eff.month)
+
+        if months_since < 0:
+            return Decimal("0")  # window before start date
+
+        if months_since >= len(self.ramp.schedule):
+            return None  # ramp period over, full quota applies
+
+        return self.ramp.schedule[months_since]
 
     @model_validator(mode="before")
     @classmethod
@@ -165,6 +209,7 @@ class Commission(BaseModel):
     transaction_id: str
     payee_id: str
     period: str
+    origin_period: str = ""  # deal's close period when different from payout period
     rule_id: str
     base_amount: Decimal  # may be negative (refunds/clawbacks)
     rate: Decimal = Field(ge=Decimal("0"))
@@ -175,6 +220,26 @@ class Commission(BaseModel):
 
 
 # --- Plan DSL models ---
+
+
+class RampSchedule(BaseModel):
+    """Quota-relief schedule for new hires.
+
+    schedule[i] is the quota multiplier for calendar-month (i+1) on the job.
+    After months elapse, the full (base or time-varying) quota applies.
+    """
+
+    months: int = Field(gt=0)
+    schedule: list[Decimal]
+
+    @model_validator(mode="after")
+    def _check_length(self) -> RampSchedule:
+        if len(self.schedule) != self.months:
+            raise ValueError(
+                f"Ramp schedule length ({len(self.schedule)}) "
+                f"must equal months ({self.months})"
+            )
+        return self
 
 
 class Credit(BaseModel):
@@ -197,6 +262,8 @@ class FlatRateRule(BaseModel):
     id: str
     filter: str | None = None
     rate: Decimal = Field(ge=Decimal("0"))
+    cap: Decimal | None = Field(default=None, ge=Decimal("0"))
+    min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
 
 
 class TieredRule(BaseModel):
@@ -204,6 +271,8 @@ class TieredRule(BaseModel):
     id: str
     filter: str | None = None
     tiers: list[Tier]
+    cap: Decimal | None = Field(default=None, ge=Decimal("0"))
+    min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
 
     @model_validator(mode="after")
     def _check_tiers_ascending(self) -> TieredRule:
@@ -224,6 +293,8 @@ class AcceleratorRule(BaseModel):
     rate: Decimal = Field(ge=Decimal("0"))
     threshold_pct: Decimal = Field(gt=Decimal("0"))
     multiplier: Decimal = Field(gt=Decimal("0"))
+    cap: Decimal | None = Field(default=None, ge=Decimal("0"))
+    min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
 
 
 Rule = Annotated[
@@ -235,6 +306,39 @@ Rule = Annotated[
 class Plan(BaseModel):
     plan_id: str
     name: str
-    period_type: str = Field(pattern=r"^(monthly|quarterly)$")
+    period_type: str = Field(pattern=r"^(monthly|quarterly|annual)$")
     currency: str
     rules: list[Rule] = Field(default_factory=list)
+    payout_cap: Decimal | None = Field(default=None, ge=Decimal("0"))
+    draw: Draw | None = None
+
+
+# --- Manual adjustments ---
+
+
+class ManualAdjustment(BaseModel):
+    """A manual override added on top of calculated commission (not subject to caps/draws).
+
+    Amount may be negative for clawbacks. Reason is required.
+    """
+
+    id: str = ""
+    payee_id: str = Field(min_length=1)
+    period: str = Field(pattern=r"^\d{4}-\d{2}$")
+    amount: Decimal
+    reason: str = Field(min_length=1)
+
+
+# --- Draws / guarantees ---
+
+
+class Draw(BaseModel):
+    """Per-period draw/guarantee.
+
+    - amount: the minimum payout per period (>= 0).
+    - recoverable: if True, advances are recovered from future earnings.
+      If False, the draw is a simple floor (non-recoverable guarantee).
+    """
+
+    amount: Decimal = Field(ge=Decimal("0"))
+    recoverable: bool = False

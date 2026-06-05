@@ -1,0 +1,2 @@
+id,name,quota,plan_id,effective_from,ramp_months,ramp_schedule
+P1,Alice,100000.00,recruiter_ramp,2026-01-01,3,0.25 0.50 0.75

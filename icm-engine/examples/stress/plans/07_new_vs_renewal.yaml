@@ -1,0 +1,13 @@
+plan_id: new_vs_renewal
+name: "SaaS AE — New Business vs Renewal Rates"
+period_type: monthly
+currency: USD
+rules:
+  - id: new_business
+    type: flat_rate
+    rate: 0.10
+    filter: 'product == "New Business"'
+  - id: renewal
+    type: flat_rate
+    rate: 0.05
+    filter: 'product == "Renewal"'

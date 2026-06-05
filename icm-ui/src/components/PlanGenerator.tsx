@@ -122,7 +122,7 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
       </div>
 
       {status === "error" && (
-        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/30 text-danger text-sm animate-in">
+        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/30 text-danger text-sm animate-in select-text">
           {error}
         </div>
       )}

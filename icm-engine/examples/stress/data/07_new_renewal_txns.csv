@@ -1,0 +1,3 @@
+id,payee_id,period,amount,product,close_date
+T1,P1,2026-06,50000.00,New Business,2026-06-05
+T2,P1,2026-06,30000.00,Renewal,2026-06-15

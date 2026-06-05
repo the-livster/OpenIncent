@@ -104,6 +104,14 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
   const [error, setError] = useState("");
   const [data, setData] = useState<CalculateResponse | null>(null);
 
+  // Export format selection
+  const [exportFormats, setExportFormats] = useState<{ pdf: boolean; xlsx: boolean; html: boolean }>({
+    pdf: true, xlsx: false, html: false,
+  });
+  const [exportStatus, setExportStatus] = useState<"idle" | "loading" | "error" | "done">("idle");
+  const [exportError, setExportError] = useState("");
+  const [savedPath, setSavedPath] = useState("");
+
   const [step, setStep] = useState<Step>("data");
 
   // Load saved plans for step 4
@@ -212,20 +220,79 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
     }
   }, [planSource, selectedPlanId, plans, planFile, payeeFile, buildMappedFile, buildAutoPayees]);
 
-  // Export XLSX statements
+  // Export statements as ZIP
   const handleExport = useCallback(async () => {
-    const plan = planSource === "library" && selectedPlanId
-      ? new File([plans.find(p => p.id === selectedPlanId)!.yaml_content], "plan.yaml", { type: "text/yaml" })
-      : planFile;
-    const txns = buildMappedFile();
-    const pees = payeeFile || buildAutoPayees();
-    if (!plan || !txns) return;
-    try {
-      await exportStatements({ plan, transactions: txns, payees: pees });
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Export failed");
+    setExportError("");
+    setExportStatus("loading");
+
+    // Resolve plan YAML text
+    let planText: string | undefined;
+    let planFileObj: File | undefined;
+    if (planSource === "library" && selectedPlanId) {
+      const p = plans.find(pl => pl.id === selectedPlanId);
+      planText = p?.yaml_content;
+    } else if (planFile) {
+      planText = await planFile.text();
     }
-  }, [planSource, selectedPlanId, plans, planFile, payeeFile, buildMappedFile, buildAutoPayees]);
+
+    if (!planText && !planFile) {
+      setExportError("No plan available for export.");
+      setExportStatus("error");
+      return;
+    }
+
+    // Resolve transaction data — send as text for CSV, as file for XLSX
+    let txnText: string | undefined;
+    let txnFileObj: File | undefined;
+    if (txnFile) {
+      if (txnFile.name.endsWith(".xlsx")) {
+        txnFileObj = txnFile;
+      } else {
+        txnText = await txnFile.text();
+      }
+    }
+
+    if (!txnText && !txnFileObj) {
+      setExportError("No transaction data available for export.");
+      setExportStatus("error");
+      return;
+    }
+
+    // Resolve payee data — send as text for CSV, as file for XLSX
+    let payeeText: string | undefined;
+    let payeeFileObj: File | undefined;
+    const pees = payeeFile || buildAutoPayees();
+    if (pees.name.endsWith(".xlsx")) {
+      payeeFileObj = pees;
+    } else {
+      payeeText = await pees.text();
+    }
+
+    const selectedFormats = Object.entries(exportFormats)
+      .filter(([, v]) => v)
+      .map(([k]) => k)
+      .join(",") || "pdf";
+
+    try {
+      const result = await exportStatements({
+        plan: planFileObj || new File([], "empty"),
+        transactions: txnFileObj || new File([], "empty"),
+        payees: payeeFileObj || new File([], "empty"),
+        plan_text: planText,
+        txn_text: txnText,
+        payee_text: payeeText,
+        formats: selectedFormats,
+      });
+      if (result) {
+        setSavedPath(result);
+      }
+      setExportStatus("done");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Export failed";
+      setExportError(msg);
+      setExportStatus("error");
+    }
+  }, [planSource, selectedPlanId, plans, planFile, txnFile, payeeFile, buildAutoPayees, exportFormats]);
 
   const stepIndex = ["data", "map", "payees", "plan", "results"].indexOf(step);
 
@@ -529,19 +596,78 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
             <StatCard label="Commission Lines" value={String(data.commissions.length)} />
           </div>
 
-          {/* Export button */}
-          <div className="flex justify-end">
-            <button
-              onClick={handleExport}
-              className="
-                inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium
-                bg-soft border border-line text-ink
-                hover:bg-soft hover:border-ink2
-                transition-all cursor-pointer
-              "
-            >
-              ↓ Download Statements (.xlsx)
-            </button>
+          {/* Export section */}
+          <div className="space-y-3">
+            {/* Format checkboxes */}
+            <div className="flex items-center gap-4 flex-wrap">
+              <span className="text-xs text-ink2 font-medium">Formats:</span>
+              {(["pdf", "xlsx", "html"] as const).map(fmt => (
+                <label key={fmt} className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={exportFormats[fmt]}
+                    onChange={() => setExportFormats(prev => ({ ...prev, [fmt]: !prev[fmt] }))}
+                    className="accent-accent"
+                  />
+                  <span className="text-sm text-ink">{fmt.toUpperCase()}</span>
+                </label>
+              ))}
+            </div>
+
+            {/* Error banner */}
+            {exportStatus === "error" && exportError && (
+              <div className="px-4 py-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm select-text">
+                {exportError}
+              </div>
+            )}
+
+            {/* Download button */}
+            <div className="flex justify-end items-center gap-3">
+              {exportError && (
+                <span className="text-danger text-xs">{exportError}</span>
+              )}
+              {exportStatus === "done" && savedPath && (
+                <button
+                  onClick={async () => {
+                    try {
+                      await fetch(`${localStorage.getItem("icm_api_base") || ""}/v1/open-folder`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ path: savedPath }),
+                      });
+                    } catch { /* ignore */ }
+                  }}
+                  className="text-xs text-ink2 hover:text-accent underline cursor-pointer"
+                >
+                  Show in folder
+                </button>
+              )}
+              <button
+                onClick={handleExport}
+                disabled={exportStatus === "loading"}
+                className={`
+                  inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                  transition-all cursor-pointer
+                  ${exportStatus === "loading"
+                    ? "bg-soft border border-line text-ink2 cursor-wait"
+                    : exportStatus === "done"
+                    ? "bg-green-50 border border-green-200 text-green-700"
+                    : "bg-accent/10 border border-accent/20 text-accent hover:bg-accent/15 hover:border-accent/30"
+                  }
+                `}
+              >
+                {exportStatus === "loading" ? (
+                  <>
+                    <span className="inline-block w-3.5 h-3.5 border-2 border-ink2/30 border-t-ink2 rounded-full animate-spin" />
+                    Generating...
+                  </>
+                ) : exportStatus === "done" ? (
+                  "✓ Saved"
+                ) : (
+                  "↓ Download Statements (.zip)"
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Per-payee breakdown */}

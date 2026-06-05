@@ -1,0 +1,12 @@
+plan_id: product_spif
+name: "SaaS AE — Product SPIF"
+period_type: monthly
+currency: USD
+rules:
+  - id: standard
+    type: flat_rate
+    rate: 0.05
+  - id: enterprise_spif
+    type: flat_rate
+    rate: 0.02
+    filter: 'product == "Enterprise"'

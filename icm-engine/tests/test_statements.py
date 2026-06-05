@@ -207,3 +207,97 @@ class TestGenerateStatements:
         assert len(files) == 1
         assert files[0].path.exists()
         assert files[0].path.stat().st_size > 0
+
+    def test_display_rounding_html(self) -> None:
+        """Ragged values (e.g. 0.05 × 1291.90 = 64.595) render as 64.60."""
+        plan = Plan(plan_id="p", name="P", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1", name="Alice")]
+        txns = [Transaction(id="T1", payee_id="P1", period="2026-01",
+                            amount=Decimal("1291.90"), close_date=date(2026, 1, 10))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        out = Path("tests/fixtures/_stmt_round")
+        out.mkdir(parents=True, exist_ok=True)
+
+        files = generate_statements(result.commissions, payees, out_dir=out, formats=("html",))
+        content = files[0].path.read_text(encoding="utf-8")
+        # 0.05 * 1291.90 = 64.595 → rounded to 64.60
+        assert "$64.60" in content
+        assert "$64.59" not in content  # ensure not truncated
+        assert "$64.595" not in content  # ensure raw value not leaked
+
+    def test_format_selection(self) -> None:
+        """Only requested formats are produced."""
+        plan = Plan(plan_id="p", name="P", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1", name="Alice")]
+        txns = [Transaction(id="T1", payee_id="P1", period="2026-01", amount=Decimal("10000"),
+                            close_date=date(2026, 1, 10))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        out = Path("tests/fixtures/_stmt_fmt")
+        out.mkdir(parents=True, exist_ok=True)
+
+        # Request only HTML — no XLSX or PDF should be produced
+        files = generate_statements(result.commissions, payees, out_dir=out, formats=("html",))
+        fmts = {f.fmt for f in files}
+        assert fmts == {"html"}
+
+        # Request multiple
+        files2 = generate_statements(result.commissions, payees, out_dir=out, formats=("xlsx", "html"))
+        fmts2 = {f.fmt for f in files2}
+        assert fmts2 == {"xlsx", "html"}
+
+    def test_adjustment_labels(self) -> None:
+        """Clawbacks and true-ups get labelled in HTML output."""
+        from icm_engine.models import Commission
+
+        payees = [_payee(id="P1", name="Alice")]
+
+        # Build commissions directly: one positive, one clawback, one true-up
+        commissions = [
+            Commission(transaction_id="T1", payee_id="P1", period="2026-01",
+                       rule_id="R1", base_amount=Decimal("10000"), rate=Decimal("0.05"),
+                       commission_amount=Decimal("500"), notes=""),
+            Commission(transaction_id="T2", payee_id="P1", period="2026-01",
+                       rule_id="R1", base_amount=Decimal("-5000"), rate=Decimal("0.05"),
+                       commission_amount=Decimal("-250"), notes="Refund"),
+            Commission(transaction_id="T3", payee_id="P1", period="2026-06",
+                       origin_period="2026-03", rule_id="R1",
+                       base_amount=Decimal("2000"), rate=Decimal("0.05"),
+                       commission_amount=Decimal("100"), notes="true_up: 400 -> 500 (delta 100)"),
+        ]
+        out = Path("tests/fixtures/_stmt_adj")
+        out.mkdir(parents=True, exist_ok=True)
+
+        files = generate_statements(commissions, payees, out_dir=out, formats=("html",))
+        content = files[0].path.read_text(encoding="utf-8")
+        assert "Clawback" in content
+        assert "True-up" in content
+
+    def test_plan_name_in_output(self) -> None:
+        """Plan name appears in HTML, XLSX, and PDF output."""
+        plan = Plan(plan_id="p", name="Enterprise Growth Plan", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1", name="Alice")]
+        txns = [Transaction(id="T1", payee_id="P1", period="2026-01", amount=Decimal("10000"),
+                            close_date=date(2026, 1, 10))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        out = Path("tests/fixtures/_stmt_plan")
+        out.mkdir(parents=True, exist_ok=True)
+
+        files = generate_statements(
+            result.commissions, payees, out_dir=out,
+            formats=("html", "xlsx", "pdf"),
+            plan_name=plan.name,
+        )
+        for sf in files:
+            if sf.fmt == "html":
+                content = sf.path.read_text(encoding="utf-8")
+                assert "Enterprise Growth Plan" in content
+            elif sf.fmt == "xlsx":
+                from icm_engine.excel import read_xlsx_rows
+                _, rows = read_xlsx_rows(sf.path, sheet="Info")
+                all_text = " ".join(str(v) for row in rows for v in row.values())
+                assert "Enterprise Growth Plan" in all_text
+            elif sf.fmt == "pdf":
+                assert sf.path.stat().st_size > 0

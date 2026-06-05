@@ -1,0 +1,4 @@
+id,payee_id,period,amount,product,close_date
+T1,P1,2026-06,60000.00,Pro,2026-06-05
+T2,P1,2026-06,30000.00,Enterprise,2026-06-15
+T3,P1,2026-06,15000.00,Standard,2026-06-25

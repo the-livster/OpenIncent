@@ -143,6 +143,7 @@ class TestGeneratePlanFromText:
 
     def test_missing_api_key(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
+            assert "ICM_LLM_API_KEY" not in os.environ
             assert "ANTHROPIC_API_KEY" not in os.environ
             with pytest.raises(MissingAPIKeyError):
                 generate_plan_from_text("5% on all deals")
@@ -165,6 +166,57 @@ class TestGeneratePlanFromText:
         }):
             plan = generate_plan_from_text("5% on all deals")
             assert isinstance(plan, Plan)
+
+    def test_respects_icm_llm_api_key_env(self) -> None:
+        with mock.patch(
+            "icm_engine.ai.plan_author.Anthropic",
+            return_value=_mock_client([VALID_YAML]),
+        ), mock.patch.dict(os.environ, {
+            "ICM_LLM_API_KEY": "sk-new-key",
+        }):
+            plan = generate_plan_from_text("5% on all deals")
+            assert isinstance(plan, Plan)
+
+    def test_explicit_api_key_overrides_env(self) -> None:
+        with mock.patch(
+            "icm_engine.ai.plan_author.Anthropic",
+            return_value=_mock_client([VALID_YAML]),
+        ):
+            plan = generate_plan_from_text("5% on all deals", api_key="sk-explicit")
+            assert isinstance(plan, Plan)
+
+    def test_openai_compatible_path(self) -> None:
+        """When base_url is set, _call_openai_compatible is used instead of Anthropic."""
+        with mock.patch(
+            "icm_engine.ai.plan_author._call_openai_compatible",
+            return_value=VALID_YAML,
+        ) as mock_call:
+            plan = generate_plan_from_text(
+                "5% on all deals",
+                api_key="sk-test",
+                base_url="https://api.openai.com",
+            )
+            assert isinstance(plan, Plan)
+            mock_call.assert_called_once()
+            # Verify user message passed through (second positional arg)
+            args, _ = mock_call.call_args
+            assert "5% on all deals" in args[1]
+
+    def test_explicit_base_url_overrides_env(self) -> None:
+        """Explicit base_url param takes precedence over env ICM_LLM_BASE_URL."""
+        with mock.patch(
+            "icm_engine.ai.plan_author._call_openai_compatible",
+            return_value=VALID_YAML,
+        ) as mock_call, mock.patch.dict(os.environ, {
+            "ICM_LLM_BASE_URL": "https://ignored.example.com",
+        }):
+            generate_plan_from_text(
+                "5% on all deals",
+                api_key="sk-test",
+                base_url="https://api.openai.com",
+            )
+            _, kwargs = mock_call.call_args
+            assert "openai.com" in kwargs["base_url"]
 
 
 # --- Schema in prompt ------------------------------------------------------
@@ -269,6 +321,27 @@ class TestCLIPlanFromText:
             assert result.exit_code != 0
             assert "bad yaml" in result.stdout
             assert "missing plan_id" in result.stdout
+
+    def test_cli_passes_api_key_and_base_url(self) -> None:
+        with mock.patch(
+            "icm_engine.ai.plan_author.generate_plan_from_text",
+            return_value=Plan(
+                plan_id="gen",
+                name="Generated",
+                period_type="monthly",
+                currency="USD",
+                rules=[FlatRateRule(type="flat_rate", id="R-001", rate=Decimal("0.05"))],
+            ),
+        ) as mock_gen:
+            runner.invoke(app, [
+                "plan-from-text", "5% on all deals",
+                "--api-key", "sk-cli-key",
+                "--api-base-url", "https://api.groq.com",
+            ])
+            mock_gen.assert_called_once()
+            _, kwargs = mock_gen.call_args
+            assert kwargs["api_key"] == "sk-cli-key"
+            assert kwargs["base_url"] == "https://api.groq.com"
 
 
 # --- Live test (opt-in) ----------------------------------------------------

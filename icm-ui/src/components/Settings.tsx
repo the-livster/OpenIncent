@@ -4,12 +4,45 @@ import { deleteSetting, getSetting, healthCheck, setSetting } from "../api";
 const KEY_ANTHROPIC = "anthropic_api_key";
 const KEY_API_BASE = "api_base";
 
+function getBase(): string {
+  const stored = localStorage.getItem("icm_api_base");
+  return stored || "";
+}
+
+interface UpdateStatus {
+  status: string;
+  info?: { version: string; release_notes: string };
+  message?: string;
+}
+
 export default function Settings() {
   const [apiKey, setApiKey] = useState("");
   const [apiBase, setApiBase] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
   const [health, setHealth] = useState<"checking" | "ok" | "error">("checking");
+
+  // Update state
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ status: "idle" });
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateApplying, setUpdateApplying] = useState(false);
+
+  // Poll update status
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const res = await fetch(`${getBase()}/v1/update/status`);
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setUpdateStatus(data as UpdateStatus);
+        }
+      } catch { /* desktop-only endpoint */ }
+    }
+    poll();
+    const interval = setInterval(poll, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   // Load settings from API (fallback to localStorage)
   useEffect(() => {
@@ -26,6 +59,37 @@ export default function Settings() {
 
   useEffect(() => {
     healthCheck().then((ok) => setHealth(ok ? "ok" : "error"));
+  }, []);
+
+  const checkForUpdates = useCallback(async () => {
+    setUpdateChecking(true);
+    try {
+      const res = await fetch(`${getBase()}/v1/update/check`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setUpdateStatus(data as UpdateStatus);
+      }
+    } catch { /* ignore */ }
+    setUpdateChecking(false);
+  }, []);
+
+  const applyUpdate = useCallback(async () => {
+    setUpdateApplying(true);
+    try {
+      const res = await fetch(`${getBase()}/v1/update/apply`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setUpdateStatus(data as UpdateStatus);
+      }
+    } catch { /* ignore */ }
+    setUpdateApplying(false);
+  }, []);
+
+  const skipUpdate = useCallback(async () => {
+    try {
+      await fetch(`${getBase()}/v1/update/skip`, { method: "POST" });
+      setUpdateStatus({ status: "idle" });
+    } catch { /* ignore */ }
   }, []);
 
   const save = useCallback(async () => {
@@ -158,6 +222,66 @@ export default function Settings() {
           "
         >
           {saved ? "\u2713 Saved!" : "Save Settings"}
+        </button>
+      </div>
+
+      {/* Updates */}
+      <div className="card p-6 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-ink">Software Updates</h3>
+          <p className="text-xs text-ink2 mt-0.5">
+            Current version: 0.1.0
+          </p>
+        </div>
+
+        {updateStatus.status === "available" && updateStatus.info && (
+          <div className="px-4 py-3 rounded-lg bg-accent/5 border border-accent/20 space-y-2">
+            <p className="text-sm text-ink font-medium">
+              Update available: v{updateStatus.info.version}
+            </p>
+            {updateStatus.info.release_notes && (
+              <p className="text-xs text-ink2 whitespace-pre-wrap">{updateStatus.info.release_notes}</p>
+            )}
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={applyUpdate}
+                disabled={updateApplying}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent text-white hover:bg-ink transition-colors cursor-pointer"
+              >
+                {updateApplying ? "Installing..." : "Update & Restart"}
+              </button>
+              <button
+                onClick={skipUpdate}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-soft border border-line text-ink2 hover:text-ink transition-colors cursor-pointer"
+              >
+                Skip this version
+              </button>
+            </div>
+          </div>
+        )}
+
+        {updateStatus.status === "checking" && (
+          <p className="text-xs text-ink2">Checking for updates...</p>
+        )}
+
+        {updateStatus.status === "idle" && updateStatus.message && (
+          <p className="text-xs text-ink2">{updateStatus.message}</p>
+        )}
+
+        {updateStatus.status === "error" && (
+          <p className="text-xs text-danger">{updateStatus.message || "Update check failed"}</p>
+        )}
+
+        {updateStatus.status === "installing" && (
+          <p className="text-xs text-ink2">Installing update — app will restart shortly...</p>
+        )}
+
+        <button
+          onClick={checkForUpdates}
+          disabled={updateChecking || updateStatus.status === "downloading" || updateStatus.status === "installing"}
+          className="text-xs text-accent hover:text-ink cursor-pointer transition-colors"
+        >
+          {updateChecking ? "Checking..." : "Check for updates"}
         </button>
       </div>
 

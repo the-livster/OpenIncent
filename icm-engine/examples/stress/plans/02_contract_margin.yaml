@@ -1,0 +1,8 @@
+plan_id: contract_margin
+name: "Contract Margin Commission (GP as amount)"
+period_type: monthly
+currency: USD
+rules:
+  - id: margin_pct
+    type: flat_rate
+    rate: 0.20

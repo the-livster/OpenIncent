@@ -36,6 +36,8 @@ uv run icm \
   --output ./output
 ```
 
+By default, results are written to the output directory **and** persisted to a local SQLite database (`%APPDATA%/OpenIncent/openincent.db` on Windows, `~/.openincent/openincent.db` otherwise). This enables versioning, period locking, and historical lookback. Use `--no-db` to skip database persistence and write files only.
+
 Outputs:
 - `commissions.xlsx` (or `.csv`) — every commission line, with the rule that produced it
 - `summary.xlsx` — per-payee period totals
@@ -46,7 +48,7 @@ Outputs:
 ```yaml
 plan_id: saas_ae
 name: "SaaS AE Plan"
-period_type: monthly
+period_type: monthly  # monthly, quarterly, or annual
 currency: USD
 rules:
   - id: tiered_core
@@ -62,7 +64,7 @@ rules:
     filter: 'product == "Enterprise"'
 ```
 
-Rule types today: **flat-rate**, **tiered** (boundary-crossing attainment), and **accelerator**. Filters support `==`, `!=`, `<`, `>`, `<=`, `>=`, and `in`, combined with `and` / `or`.
+Rule types today: **flat-rate**, **tiered** (boundary-crossing attainment), and **accelerator**. Filters support `==`, `!=`, `<`, `>`, `<=`, `>=`, and `in`, combined with `and` / `or` — on any input column (canonical fields like `amount` and `product`, plus any extra/metadata columns like `region` or `tier`). Values are auto-coerced: numeric strings compare as numbers, date strings as dates. Use backticks for field names with spaces: `` `Deal Type` == "Perm" ``.
 
 ## The audit trail is the point
 
@@ -76,6 +78,26 @@ Every calculation emits ledger entries you can read:
 ```
 
 No number appears in a payout that the ledger can't explain.
+
+## Period locks & versioning
+
+Every calculation run is versioned per `(plan_id, period)`. When you close a period (e.g., March 2026), you **lock** it to pin the official calculation. Later corrections still work:
+
+- **Late transactions** — upload a March deal in June. March attainment is recalculated, but the commission payout is attributed to June (the *effective period*). The March statement stays intact (locked v1); a new draft (v2) shows the updated attainment with a cross-reference to where the commission was paid.
+- **Draft versions** — each recalculation creates a new version. Locks stay on the previously pinned version until you deliberately re-lock.
+- **Origin tracking** — commission lines carry an `origin_period` field showing which period the deal actually closed in, distinct from the payout period.
+
+Lock and unlock via the HTTP API or the CLI (`icm db` subcommands). Recalculation on locked periods is allowed by default; use `--no-allow-recalculate-locked` to enforce strict mode.
+
+CLI flags added for this flow:
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--no-db` | off | Skip database persistence (files only) |
+| `--org ORG` | `default` | Multi-tenancy org ID |
+| `--db-path PATH` | platform default | Custom database location |
+| `--effective-period YYYY-MM` | current month | Payout period for late transactions |
+| `--allow-recalculate-locked` / `--no-allow-recalculate-locked` | allowed | Whether locked periods can be recalculated |
 
 ## Data in
 
@@ -101,10 +123,12 @@ Early, pre-1.0. The calculation core is well-tested, but the plan format and API
 
 ## Roadmap
 
-- Split & overlay crediting (one deal, multiple payees)
-- Retroactive recompute & true-ups (clawbacks and adjustments)
+- ~~Split & overlay crediting (one deal, multiple payees)~~ ✅
+- ~~Retroactive recompute & true-ups (clawbacks and adjustments)~~ ✅
+- ~~Ramp periods~~ ✅
+- ~~Period locking & versioning~~ ✅
 - Per-rep statements (export / email) and an order-level "trace" view
-- Ramp periods
+- Web UI for lock/unlock and period management
 
 ## Develop
 

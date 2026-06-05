@@ -5,12 +5,17 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from icm_engine.engine import CommissionEngine, compile_filter
+from icm_engine.engine import (
+    CommissionEngine,
+    check_filter_fields,
+    compile_filter,
+)
 from icm_engine.models import (
     AcceleratorRule,
     FlatRateRule,
     Payee,
     Plan,
+    RampSchedule,
     Tier,
     TieredRule,
     Transaction,
@@ -108,6 +113,140 @@ class TestFilterParser:
         pred = compile_filter("amount in [100, 200, 300]")
         assert pred(_txn(amount=Decimal("200")))
         assert not pred(_txn(amount=Decimal("500")))
+
+    # -- metadata field resolution ---------------------------------------
+
+    def test_metadata_string_eq(self) -> None:
+        """Filter on metadata column: region == 'EMEA'."""
+        pred = compile_filter('region == "EMEA"')
+        t = _txn(metadata={"region": "EMEA"})
+        assert pred(t)
+        assert not pred(_txn(metadata={"region": "APAC"}))
+
+    def test_metadata_string_in(self) -> None:
+        """Filter: metadata column with 'in'."""
+        pred = compile_filter('deal_type in ["perm", "contract"]')
+        t = _txn(metadata={"deal_type": "perm"})
+        assert pred(t)
+        assert not pred(_txn(metadata={"deal_type": "consulting"}))
+
+    def test_metadata_numeric_gt(self) -> None:
+        """Metadata string '3' coerced to number: tier > 2."""
+        pred = compile_filter("tier > 2")
+        assert pred(_txn(metadata={"tier": "3"}))
+        assert not pred(_txn(metadata={"tier": "1"}))
+
+    def test_metadata_decimal_ge(self) -> None:
+        """Metadata decimal coercion: gp_margin >= 0.3."""
+        pred = compile_filter("gp_margin >= 0.3")
+        assert pred(_txn(metadata={"gp_margin": "0.35"}))
+        assert not pred(_txn(metadata={"gp_margin": "0.25"}))
+
+    def test_metadata_numeric_in(self) -> None:
+        """Metadata numeric coercion in 'in' list."""
+        pred = compile_filter("tier in [1, 2, 3]")
+        assert pred(_txn(metadata={"tier": "2"}))
+        assert not pred(_txn(metadata={"tier": "4"}))
+
+    # -- canonical field still works ------------------------------------
+
+    def test_canonical_product_eq(self) -> None:
+        """product == 'Enterprise' still works unchanged."""
+        pred = compile_filter('product == "Enterprise"')
+        assert pred(_txn(product="Enterprise"))
+        assert not pred(_txn(product="Standard"))
+
+    def test_canonical_amount_gt(self) -> None:
+        """amount > 5000 still works unchanged."""
+        pred = compile_filter("amount > 5000")
+        assert pred(_txn(amount=Decimal("10000")))
+        assert not pred(_txn(amount=Decimal("1000")))
+
+    def test_canonical_overrides_metadata(self) -> None:
+        """Canonical field takes precedence over metadata of same name."""
+        pred = compile_filter("amount == 500")
+        t = _txn(amount=Decimal("1000"), metadata={"amount": "500"})
+        assert not pred(t)  # canonical amount (1000) != 500
+
+    # -- missing field → always False -----------------------------------
+
+    def test_missing_field_eq_always_false(self) -> None:
+        """Field absent from both canonical and metadata → False even for ==."""
+        pred = compile_filter('status != "void"')
+        t = _txn(metadata={"region": "EMEA"})  # no status field
+        assert not pred(t)
+
+    def test_missing_field_in_always_false(self) -> None:
+        """Missing field in 'in' → False."""
+        pred = compile_filter('unknown_col in ["x", "y"]')
+        assert not pred(_txn())
+
+    def test_missing_field_ne_always_false(self) -> None:
+        """Missing field tested with != → False (never-matched-field rule)."""
+        pred = compile_filter('missing_field == "x"')
+        assert not pred(_txn())
+
+    # -- combined metadata + canonical ----------------------------------
+
+    def test_mixed_canonical_and_metadata(self) -> None:
+        """Canonical and metadata fields can be mixed in a filter."""
+        pred = compile_filter('product == "Enterprise" and region == "EMEA"')
+        assert pred(_txn(product="Enterprise", metadata={"region": "EMEA"}))
+        assert not pred(_txn(product="Enterprise", metadata={"region": "APAC"}))
+        assert not pred(_txn(product="Standard", metadata={"region": "EMEA"}))
+
+    # -- date comparisons -----------------------------------------------
+
+    def test_close_date_gt(self) -> None:
+        """close_date >= '2026-04-01' works (date comparison from canonical)."""
+        pred = compile_filter("close_date >= '2026-04-01'")
+        assert pred(_txn(close_date=date(2026, 4, 15)))
+        assert not pred(_txn(close_date=date(2026, 3, 1)))
+
+    def test_metadata_date_eq(self) -> None:
+        """Metadata date string compared as date."""
+        pred = compile_filter("sign_date == '2026-04-15'")
+        assert pred(_txn(metadata={"sign_date": "2026-04-15"}))
+        assert not pred(_txn(metadata={"sign_date": "2026-04-16"}))
+
+    # -- backtick-quoted field names ------------------------------------
+
+    def test_backtick_quoted_field(self) -> None:
+        """`Deal Type` field with spaces works via backtick quoting."""
+        pred = compile_filter('`Deal Type` == "Perm"')
+        assert pred(_txn(metadata={"Deal Type": "Perm"}))
+        assert not pred(_txn(metadata={"Deal Type": "Contract"}))
+
+    def test_backtick_numeric(self) -> None:
+        """`GP %` >= 0.3 with backtick-quoted field."""
+        pred = compile_filter("`GP %` >= 0.3")
+        assert pred(_txn(metadata={"GP %": "0.35"}))
+        assert not pred(_txn(metadata={"GP %": "0.25"}))
+
+    # -- typo guard -----------------------------------------------------
+
+    def test_typo_guard_catches_unused(self) -> None:
+        """check_filter_fields returns fields that appear in no transaction."""
+        from icm_engine.models import Transaction as Txn
+        txns = [Txn(id="T1", payee_id="P1", period="2026-01", amount=Decimal("100"),
+                    metadata={"region": "EMEA"})]
+        unused = check_filter_fields('nonexistent_column == "x"', txns)
+        assert "nonexistent_column" in unused
+
+    def test_typo_guard_ok_for_canonical(self) -> None:
+        """Canonical fields are never flagged by the typo guard."""
+        from icm_engine.models import Transaction as Txn
+        txns = [Txn(id="T1", payee_id="P1", period="2026-01", amount=Decimal("100"))]
+        unused = check_filter_fields("amount > 50", txns)
+        assert "amount" not in unused
+
+    def test_typo_guard_ok_for_present_metadata(self) -> None:
+        """A metadata field that exists in at least one txn is not flagged."""
+        from icm_engine.models import Transaction as Txn
+        txns = [Txn(id="T1", payee_id="P1", period="2026-01", amount=Decimal("100"),
+                    metadata={"region": "EMEA"})]
+        unused = check_filter_fields('region == "EMEA"', txns)
+        assert "region" not in unused
 
 
 # --- flat rate ----------------------------------------------------------
@@ -474,6 +613,28 @@ class TestCalculate:
         periods = {c.period for c in result.commissions}
         assert "2026-01" in periods
         assert "2026-02" in periods
+
+    def test_annual_groups_full_year(self) -> None:
+        """period_type='annual' groups all months into a single year window."""
+        engine = CommissionEngine()
+        plan = Plan(
+            plan_id="a", name="Annual", period_type="annual", currency="USD",
+            rules=[TieredRule(type="tiered", id="t", tiers=[
+                Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05")),
+                Tier(threshold_pct=Decimal("2.0"), rate=Decimal("0.08")),
+            ])],
+        )
+        payees = [_payee(id="P1", name="A", quota=Decimal("100000"), plan_id="a")]
+        txns = [
+            _txn(id="T1", payee_id="P1", period="2026-03", amount=Decimal("80000"), close_date=date(2026, 3, 15)),
+            _txn(id="T2", payee_id="P1", period="2026-07", amount=Decimal("40000"), close_date=date(2026, 7, 15)),
+        ]
+        result = engine.calculate(plan, txns, payees)
+        total = sum(c.commission_amount for c in result.commissions)
+        # 120000 annual vs 100000: 100000@0.05 + 20000@0.08 = 6600
+        assert total == Decimal("6600")
+        periods = {c.period for c in result.commissions}
+        assert periods == {"2026"}
 
 
 # --- credits ------------------------------------------------------------
@@ -963,3 +1124,553 @@ class TestRuleSkipped:
         skipped = [e for e in ledger if e.event_type == "rule_skipped"]
         assert len(skipped) == 1
         assert skipped[0].inputs["reason"] == "zero_quota"
+
+
+# --- ramp periods -------------------------------------------------------
+
+
+class TestRampPeriods:
+    def test_basic_monthly_ramp(self) -> None:
+        """Ramp of [0.5, 1.0] halves quota in month 1, full in month 2."""
+        ramp = RampSchedule(months=2, schedule=[Decimal("0.5"), Decimal("1.0")])
+        payee = Payee(
+            id="P1", name="Alice", quota=Decimal("100000"),
+            effective_from=date(2026, 1, 1), ramp=ramp,
+        )
+        # Month 1: 0.5 * 100000 = 50000
+        assert payee.quota_for("2026-01") == Decimal("50000")
+        # Month 2: 1.0 * 100000 = 100000
+        assert payee.quota_for("2026-02") == Decimal("100000")
+
+    def test_ramp_ends_after_duration(self) -> None:
+        """After ramp months, full quota without multiplier."""
+        ramp = RampSchedule(months=2, schedule=[Decimal("0.5"), Decimal("1.0")])
+        payee = Payee(
+            id="P1", name="Alice", quota=Decimal("100000"),
+            effective_from=date(2026, 1, 1), ramp=ramp,
+        )
+        # Month 3: ramp is over
+        assert payee.quota_for("2026-03") == Decimal("100000")
+
+    def test_window_before_effective_from(self) -> None:
+        """Quota before start date is 0."""
+        ramp = RampSchedule(months=2, schedule=[Decimal("0.5"), Decimal("1.0")])
+        payee = Payee(
+            id="P1", name="Alice", quota=Decimal("100000"),
+            effective_from=date(2026, 3, 1), ramp=ramp,
+        )
+        assert payee.quota_for("2026-01") == Decimal("0")
+
+    def test_mid_month_effective_from(self) -> None:
+        """effective_from mid-month: that calendar month is ramp month 0."""
+        ramp = RampSchedule(months=2, schedule=[Decimal("0.5"), Decimal("1.0")])
+        payee = Payee(
+            id="P1", name="Alice", quota=Decimal("100000"),
+            effective_from=date(2026, 6, 15), ramp=ramp,
+        )
+        # June = same calendar month as effective_from → ramp month 0
+        assert payee.quota_for("2026-06") == Decimal("50000")
+        # July = next calendar month → ramp month 1
+        assert payee.quota_for("2026-07") == Decimal("100000")
+        # August = beyond ramp → full
+        assert payee.quota_for("2026-08") == Decimal("100000")
+
+    def test_quarterly_ramp_uses_last_month(self) -> None:
+        """Quarterly windows use the last month of the quarter as reference."""
+        ramp = RampSchedule(months=3, schedule=[Decimal("0.5"), Decimal("0.75"), Decimal("1.0")])
+        # effective_from=2026-04-01 → month 4,5,6 are ramp months 0,1,2
+        payee = Payee(
+            id="P1", name="Alice", quota=Decimal("100000"),
+            effective_from=date(2026, 4, 1), ramp=ramp,
+        )
+        # Q2 (Apr-Jun): last month is June → months_since = 6-4 = 2 → ramp[2] = 1.0
+        assert payee.quota_for("2026-Q2") == Decimal("100000")
+        # Q1 (Jan-Mar): last month is March → months_since = 3-4 = -1 → 0
+        assert payee.quota_for("2026-Q1") == Decimal("0")
+
+    def test_quarterly_ramp_mid_quarter_start(self) -> None:
+        """Mid-quarter start gets correct ramp month using last-month reference."""
+        ramp = RampSchedule(months=3, schedule=[Decimal("0.5"), Decimal("0.75"), Decimal("1.0")])
+        # effective_from=2026-05-15 (mid Q2)
+        payee = Payee(
+            id="P1", name="Alice", quota=Decimal("100000"),
+            effective_from=date(2026, 5, 15), ramp=ramp,
+        )
+        # Q2: last month = June → months_since = 6-5 = 1 → ramp[1] = 0.75
+        assert payee.quota_for("2026-Q2") == Decimal("75000")
+        # Q3: last month = September → months_since = 9-5 = 4 → beyond ramp → full
+        assert payee.quota_for("2026-Q3") == Decimal("100000")
+
+    def test_ramp_with_explicit_quotas_dict(self) -> None:
+        """Ramp multiplier applies on top of explicit per-window quotas."""
+        ramp = RampSchedule(months=2, schedule=[Decimal("0.5"), Decimal("1.0")])
+        payee = Payee(
+            id="P1", name="Alice", quota=Decimal("100000"),
+            quotas={"2026-01": Decimal("80000")},
+            effective_from=date(2026, 1, 1), ramp=ramp,
+        )
+        # 80000 * 0.5 = 40000
+        assert payee.quota_for("2026-01") == Decimal("40000")
+
+    def test_no_ramp_backward_compat(self) -> None:
+        """Payee without ramp uses raw quota unchanged."""
+        payee = Payee(
+            id="P1", name="Alice", quota=Decimal("100000"),
+            effective_from=date(2026, 1, 1),
+        )
+        assert payee.quota_for("2026-01") == Decimal("100000")
+
+    def test_schedule_length_validation(self) -> None:
+        """Schedule length must match months."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="length"):
+            RampSchedule(months=3, schedule=[Decimal("0.5"), Decimal("0.75")])
+
+    def test_tiered_with_ramp_reduced_attainment(self) -> None:
+        """Tiered rule uses reduced quota, making tiers easier to reach."""
+        ramp = RampSchedule(months=2, schedule=[Decimal("0.5"), Decimal("1.0")])
+        payees = [
+            Payee(id="P1", name="Alice", quota=Decimal("100000"),
+                  effective_from=date(2026, 1, 1), ramp=ramp, plan_id="p"),
+        ]
+        plan = Plan(
+            plan_id="p", name="P", period_type="monthly", currency="USD",
+            rules=[TieredRule(type="tiered", id="t", tiers=[
+                Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05")),
+                Tier(threshold_pct=Decimal("2.0"), rate=Decimal("0.10")),
+            ])],
+        )
+        # 60000 against ramp-adjusted quota of 50000 = 120% attainment
+        # 50000 @ 0.05 = 2500, 10000 @ 0.10 = 1000 → 3500
+        txn = _txn(id="T1", payee_id="P1", amount=Decimal("60000"),
+                   period="2026-01", close_date=date(2026, 1, 15))
+        result = CommissionEngine().calculate(plan, [txn], payees)
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("3500")
+
+    def test_attainment_reflects_ramp_quota(self) -> None:
+        """Attainment computation uses the ramp-reduced quota."""
+        ramp = RampSchedule(months=2, schedule=[Decimal("0.5"), Decimal("1.0")])
+        payees = [
+            Payee(id="P1", name="Alice", quota=Decimal("100000"),
+                  effective_from=date(2026, 1, 1), ramp=ramp, plan_id="p"),
+        ]
+        plan = Plan(
+            plan_id="p", name="P", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))],
+        )
+        txn = _txn(id="T1", payee_id="P1", amount=Decimal("50000"),
+                   period="2026-01", close_date=date(2026, 1, 15))
+        result = CommissionEngine().calculate(plan, [txn], payees)
+        a = result.attainment[0]
+        # 50000 against ramp quota 50000 (50% of 100k) = 100% attainment
+        assert a.quota == Decimal("50000")
+        assert a.attainment_pct == Decimal("1.0")
+
+    def test_zero_ramp_multiplier(self) -> None:
+        """schedule[0]=0 means zero quota, attainment_pct is None, no crash."""
+        ramp = RampSchedule(months=2, schedule=[Decimal("0"), Decimal("0.5")])
+        payees = [
+            Payee(id="P1", name="Alice", quota=Decimal("100000"),
+                  effective_from=date(2026, 1, 1), ramp=ramp, plan_id="p"),
+        ]
+        plan = Plan(
+            plan_id="p", name="P", period_type="monthly", currency="USD",
+            rules=[TieredRule(type="tiered", id="t", tiers=[
+                Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05")),
+                Tier(threshold_pct=Decimal("100.0"), rate=Decimal("0.10")),
+            ])],
+        )
+        txn = _txn(id="T1", payee_id="P1", amount=Decimal("50000"),
+                   period="2026-01", close_date=date(2026, 1, 15))
+        result = CommissionEngine().calculate(plan, [txn], payees)
+        # Zero quota → top tier applied to all
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("5000")  # 50000 * 0.10
+        assert result.attainment[0].attainment_pct is None
+
+    def test_true_up_detects_ramp_change(self) -> None:
+        """Changing a payee's ramp schedule triggers true-up adjustments.
+
+        Uses an accelerator rule because it depends on quota (unlike flat rate)
+        and produces exactly one commission line per (txn, rule, payee) when
+        the deal crosses the threshold in a single transaction (unlike tiered).
+        """
+        plan = Plan(
+            plan_id="p", name="P", period_type="monthly", currency="USD",
+            rules=[AcceleratorRule(
+                type="accelerator", id="accel",
+                rate=Decimal("0.05"), threshold_pct=Decimal("1.0"),
+                multiplier=Decimal("2.0"),
+            )],
+        )
+        txn = _txn(id="T1", payee_id="P1", amount=Decimal("80000"),
+                   period="2026-01", close_date=date(2026, 1, 15))
+        eng = CommissionEngine()
+
+        # Prior: no ramp, quota=100k. 80000 → below threshold → 0 commission
+        prior_payees = [
+            _payee(id="P1", name="Alice", quota=Decimal("100000"), plan_id="p"),
+        ]
+        prior = eng.calculate(plan, [txn], prior_payees).commissions
+        assert sum(c.commission_amount for c in prior) == Decimal("0")
+
+        # Current: ramp 0.5, quota=50k. 80000 → above threshold (160%).
+        # 30000 above threshold * 0.05 * 2.0 = 3000
+        ramp = RampSchedule(months=2, schedule=[Decimal("0.5"), Decimal("1.0")])
+        current_payees = [
+            Payee(id="P1", name="Alice", quota=Decimal("100000"),
+                  effective_from=date(2026, 1, 1), ramp=ramp, plan_id="p"),
+        ]
+        tu = eng.true_up(plan, [txn], current_payees, prior)
+        assert len(tu.adjustments) == 1
+        assert tu.adjustments[0].delta == Decimal("3000")
+
+    def test_ramp_csv_loader(self) -> None:
+        """CSV with ramp_months and ramp_schedule columns parses correctly."""
+        from icm_engine.loader import _parse_ramp
+        row = {"ramp_months": "3", "ramp_schedule": "0.5 0.75 1.0"}
+        ramp = _parse_ramp(row)
+        assert ramp is not None
+        assert ramp.months == 3
+        assert ramp.schedule == [Decimal("0.5"), Decimal("0.75"), Decimal("1.0")]
+
+    def test_ramp_csv_loader_no_columns(self) -> None:
+        """Missing or empty ramp columns return None."""
+        from icm_engine.loader import _parse_ramp
+        assert _parse_ramp({}) is None
+        assert _parse_ramp({"ramp_months": "", "ramp_schedule": ""}) is None
+
+    def test_ramp_serialization_round_trip(self) -> None:
+        """Payee with ramp survives JSON round trip."""
+        ramp = RampSchedule(months=2, schedule=[Decimal("0.5"), Decimal("1.0")])
+        payee = Payee(
+            id="P1", name="Alice", quota=Decimal("100000"),
+            effective_from=date(2026, 1, 1), ramp=ramp,
+        )
+        json_str = payee.model_dump_json()
+        restored = Payee.model_validate_json(json_str)
+        assert restored.ramp is not None
+        assert restored.ramp.months == 2
+        assert restored.ramp.schedule == [Decimal("0.5"), Decimal("1.0")]
+        assert restored.quota_for("2026-01") == Decimal("50000")
+
+
+# ------------------------------------------------------------------
+# Manual adjustments
+# ------------------------------------------------------------------
+
+
+class TestManualAdjustments:
+    def test_positive_adjustment(self) -> None:
+        """Positive adjustment adds to commission total."""
+        from icm_engine.models import ManualAdjustment
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="ADJ1", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        adjustments = [ManualAdjustment(payee_id="P1", period="2026-04", amount=Decimal("500"), reason="Bonus")]
+        result = engine.calculate(plan, txns, payees, adjustments=adjustments)
+
+        assert len(result.commissions) == 2
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("1000")  # 500 rule + 500 adjustment
+
+        adj_line = next(c for c in result.commissions if c.rule_id == "manual_adjustment")
+        assert adj_line.commission_amount == Decimal("500")
+        assert adj_line.notes == "Bonus"
+
+    def test_negative_adjustment(self) -> None:
+        """Negative adjustment reduces commission."""
+        from icm_engine.models import ManualAdjustment
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="ADJ2", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        adj = [ManualAdjustment(payee_id="P1", period="2026-04", amount=Decimal("-200"), reason="Clawback")]
+        result = engine.calculate(plan, txns, payees, adjustments=adj)
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("300")
+
+    def test_adjustment_does_not_affect_attainment(self) -> None:
+        """Attainment unchanged by adjustments."""
+        from icm_engine.models import ManualAdjustment
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="ADJ3", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1", quota=Decimal("100000"))]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        adjustments = [ManualAdjustment(payee_id="P1", period="2026-04",
+                                        amount=Decimal("99999"), reason="Huge")]
+        result = engine.calculate(plan, txns, payees, adjustments=adjustments)
+        att = result.attainment[0]
+        assert att.bookings == Decimal("10000")
+        assert att.attainment_pct is not None
+        assert float(att.attainment_pct) == pytest.approx(0.1)
+
+    def test_adjustment_ledger_event(self) -> None:
+        """Each adjustment emits a ledger entry."""
+        from icm_engine.models import ManualAdjustment
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="ADJ4", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        adjustments = [ManualAdjustment(payee_id="P1", period="2026-04",
+                                        amount=Decimal("42"), reason="Test")]
+        result = engine.calculate(plan, txns, payees, adjustments=adjustments)
+        adj_events = [e for e in result.ledger if e.event_type == "manual_adjustment"]
+        assert len(adj_events) == 1
+
+    def test_no_adjustments_opt_out(self) -> None:
+        """Without adjustments, output is identical to before."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="ADJ5", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, payees)
+        assert len(result.commissions) == 1
+        assert result.commissions[0].commission_amount == Decimal("500")
+
+
+# ------------------------------------------------------------------
+# Caps & thresholds
+# ------------------------------------------------------------------
+
+
+class TestCaps:
+    def test_per_rule_cap(self) -> None:
+        """Per-rule cap limits that rule's output: 5% on 30k = 1500 capped to 1000."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="CAP1", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"),
+                                       cap=Decimal("1000"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("30000"))]
+        result = engine.calculate(plan, txns, payees)
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("1000")  # capped
+
+    def test_plan_payout_cap(self) -> None:
+        """Plan payout_cap applies across all rules: two rules, total 1800 capped to 1500."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="CAP2", name="Test", period_type="monthly", currency="USD",
+                    payout_cap=Decimal("1500"),
+                    rules=[
+                        FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05")),
+                        FlatRateRule(type="flat_rate", id="R2", rate=Decimal("0.04")),
+                    ])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("20000"))]  # 1000 + 800 = 1800
+        result = engine.calculate(plan, txns, payees)
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("1500")
+
+    def test_cap_ledger_event(self) -> None:
+        """Plan cap emits a cap_applied ledger entry."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="CAP3", name="Test", period_type="monthly", currency="USD",
+                    payout_cap=Decimal("100"),
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]  # 500
+        result = engine.calculate(plan, txns, payees)
+        cap_events = [e for e in result.ledger if e.event_type == "cap_applied"]
+        assert len(cap_events) >= 1
+
+    def test_no_cap_opt_out(self) -> None:
+        """Without caps, output unchanged."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="CAP4", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, payees)
+        assert result.commissions[0].commission_amount == Decimal("500")
+
+
+class TestThresholdGate:
+    def test_below_gate_pays_zero(self) -> None:
+        """Rule with min_attainment_pct=0.5: 10% attainment → below gate, pays 0."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="GATE1", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"),
+                                       min_attainment_pct=Decimal("0.5"))])
+        payees = [_payee(id="P1", quota=Decimal("100000"))]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]  # 10%
+        result = engine.calculate(plan, txns, payees)
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("0")
+
+    def test_at_gate_pays(self) -> None:
+        """Attainment exactly at min → rule pays."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="GATE2", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"),
+                                       min_attainment_pct=Decimal("0.1"))])
+        payees = [_payee(id="P1", quota=Decimal("100000"))]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]  # exactly 10%
+        result = engine.calculate(plan, txns, payees)
+        assert result.commissions[0].commission_amount == Decimal("500")
+
+    def test_gate_emits_skip_event(self) -> None:
+        """Below-gate payee gets a rule_skipped ledger entry."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="GATE3", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"),
+                                       min_attainment_pct=Decimal("0.5"))])
+        payees = [_payee(id="P1", quota=Decimal("100000"))]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, payees)
+        skip_events = [e for e in result.ledger
+                       if e.event_type == "rule_skipped"
+                       and e.inputs.get("reason") == "below_threshold_gate"]
+        assert len(skip_events) >= 1
+
+
+# ------------------------------------------------------------------
+# Draws
+# ------------------------------------------------------------------
+
+
+class TestDraws:
+    def test_non_recoverable_floor(self) -> None:
+        """Non-recoverable draw tops up to floor: earned 500, draw 3000 → topup 2500."""
+        from icm_engine.models import Draw
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="DRW1", name="Test", period_type="monthly", currency="USD",
+                    draw=Draw(amount=Decimal("3000"), recoverable=False),
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]  # 500
+        result = engine.calculate(plan, txns, payees)
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("3000")  # 500 + 2500 topup
+
+    def test_non_recoverable_no_topup_when_above(self) -> None:
+        """Above draw → no topup. Earned 5000, draw 3000 → payout 5000."""
+        from icm_engine.models import Draw
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="DRW2", name="Test", period_type="monthly", currency="USD",
+                    draw=Draw(amount=Decimal("3000"), recoverable=False),
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("100000"))]  # 5000
+        result = engine.calculate(plan, txns, payees)
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("5000")
+
+    def test_recoverable_draw_three_periods(self) -> None:
+        """Three-period recoverable draw: P1=topup, P2=recovery, P3=clean."""
+        from icm_engine.models import Draw
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="DRW3", name="Test", period_type="monthly", currency="USD",
+                    draw=Draw(amount=Decimal("3000"), recoverable=True),
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))])
+        payees = [_payee(id="P1")]
+
+        # Period 1: earned 1000, draw 3000 → topup 2000, balance 0→2000
+        txns1 = [_txn(id="T1", payee_id="P1", period="2026-01", amount=Decimal("10000"))]
+        r1 = engine.calculate(plan, txns1, payees)
+        total1 = sum(c.commission_amount for c in r1.commissions)
+        assert total1 == Decimal("3000")
+        assert r1.draw_balances.get("P1") == Decimal("2000")
+
+        # Period 2: earned 5000, draw 3000, balance 2000 → recovers 2000, payout 3000, balance 2000→0
+        txns2 = [_txn(id="T2", payee_id="P1", period="2026-02", amount=Decimal("50000"))]
+        r2 = engine.calculate(plan, txns2, payees, prior_draw_balances=r1.draw_balances)
+        total2 = sum(c.commission_amount for c in r2.commissions)
+        assert total2 == Decimal("3000")  # 5000 - 2000 recovery
+        assert r2.draw_balances.get("P1") == Decimal("0")
+
+        # Period 3: earned 5000, draw 3000, balance 0 → no recovery, payout 5000
+        txns3 = [_txn(id="T3", payee_id="P1", period="2026-03", amount=Decimal("50000"))]
+        r3 = engine.calculate(plan, txns3, payees, prior_draw_balances=r2.draw_balances)
+        total3 = sum(c.commission_amount for c in r3.commissions)
+        assert total3 == Decimal("5000")
+        assert r3.draw_balances.get("P1") == Decimal("0")
+
+    def test_payee_draw_overrides_plan(self) -> None:
+        """Payee-level draw overrides plan-level draw."""
+        from icm_engine.models import Draw
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="DRW4", name="Test", period_type="monthly", currency="USD",
+                    draw=Draw(amount=Decimal("1000"), recoverable=False),
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payee = Payee(id="P1", name="Alice", quota=Decimal("0"), plan_id="DRW4",
+                      effective_from=date(2026, 1, 1),
+                      draw=Draw(amount=Decimal("5000"), recoverable=False))
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]  # 500
+        result = engine.calculate(plan, txns, [payee])
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("5000")  # uses payee draw (5000), not plan draw (1000)
+
+    def test_draw_ledger_event(self) -> None:
+        """Draw emits a ledger event."""
+        from icm_engine.models import Draw
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="DRW5", name="Test", period_type="monthly", currency="USD",
+                    draw=Draw(amount=Decimal("3000"), recoverable=False),
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, payees)
+        draw_events = [e for e in result.ledger if e.event_type == "draw"]
+        assert len(draw_events) >= 1
+
+    def test_no_draw_opt_out(self) -> None:
+        """Without draw, output unchanged."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="DRW6", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, payees)
+        assert result.commissions[0].commission_amount == Decimal("500")
+        assert result.draw_balances == {}
+
+
+# ------------------------------------------------------------------
+# Integration: order of operations
+# ------------------------------------------------------------------
+
+
+class TestIntegration:
+    def test_caps_draws_adjustments_order(self) -> None:
+        """Verify order: caps → draws → manual adjustments."""
+        from icm_engine.models import Draw, ManualAdjustment
+
+        engine = CommissionEngine()
+        # Plan: flat 5%, capped at $400, $5000 draw (non-recoverable)
+        plan = Plan(plan_id="INT1", name="Test", period_type="monthly", currency="USD",
+                    payout_cap=Decimal("400"),
+                    draw=Draw(amount=Decimal("5000"), recoverable=False),
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("20000"))]  # 5% = 1000
+
+        # No adjustments: cap limits to 400, then draw tops up to 5000 → total 5000
+        r1 = engine.calculate(plan, txns, payees)
+        assert sum(c.commission_amount for c in r1.commissions) == Decimal("5000")
+
+        # With adjustments: cap→400, draw→5000, then +200 adjustment = 5200
+        adjustments = [ManualAdjustment(payee_id="P1", period="2026-04",
+                                        amount=Decimal("200"), reason="Bonus")]
+        r2 = engine.calculate(plan, txns, payees, adjustments=adjustments)
+        assert sum(c.commission_amount for c in r2.commissions) == Decimal("5200")
+
+        # Verify adjustment is NOT capped
+        adj_line = next(c for c in r2.commissions if c.rule_id == "manual_adjustment")
+        assert adj_line.commission_amount == Decimal("200")

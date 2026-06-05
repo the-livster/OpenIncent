@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 import yaml
 
-from icm_engine.models import Payee, Plan, Transaction
+from icm_engine.models import Payee, Plan, RampSchedule, Transaction
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +76,16 @@ def _load_transactions_csv(path: Path) -> list[Transaction]:
             deal_id = (row.get("deal_id") or "").strip()
             period = (row.get("period") or "").strip()
             close_date_str = (row.get("close_date") or "").strip()
+            # Auto-generate id if missing
+            txn_id = (row.get("id") or "").strip()
+            if not txn_id:
+                txn_id = f"T{i - 1:03d}"
             t = Transaction(
-                id=row["id"].strip(),
-                payee_id=row["payee_id"].strip(),
+                id=txn_id,
+                payee_id=row.get("payee_id", "").strip(),
                 deal_id=deal_id,
                 period=period,
-                amount=Decimal(row["amount"].strip()),
+                amount=Decimal(row.get("amount", "0").strip() or "0"),
                 product=product,
                 close_date=_parse_date(close_date_str) if close_date_str else None,
                 metadata=meta,
@@ -137,6 +141,7 @@ def _load_payees_csv(path: Path) -> list[Payee]:
                             "plan_id": row["plan_id"].strip(),
                             "effective_from": _parse_date(row["effective_from"].strip()),
                             "effective_to": _parse_date(effective_to_raw) if effective_to_raw else None,
+                            "ramp": _parse_ramp(row),
                         }
                     if period:
                         by_id[pid]["quotas"][period] = quota_val
@@ -157,6 +162,7 @@ def _load_payees_csv(path: Path) -> list[Payee]:
                             plan_id=row["plan_id"].strip(),
                             effective_from=_parse_date(row["effective_from"].strip()),
                             effective_to=_parse_date(effective_to_raw) if effective_to_raw else None,
+                            ramp=_parse_ramp(row),
                         )
                     )
                 except Exception as e:
@@ -239,6 +245,7 @@ def _load_payees_parquet(path: Path) -> list[Payee]:
             effective_from_str = str(effective_from_raw) if effective_from_raw is not None else ""
             effective_to_raw = row.get("effective_to")
             effective_to_str = str(effective_to_raw) if effective_to_raw is not None else ""
+            ramp = _parse_ramp({k: str(v) if v is not None else "" for k, v in row.items()})
             payees.append(
                 Payee(
                     id=str(row["id"]),
@@ -249,6 +256,7 @@ def _load_payees_parquet(path: Path) -> list[Payee]:
                         _parse_date(effective_from_str) if effective_from_str else date.today()
                     ),
                     effective_to=_parse_date(effective_to_str) if effective_to_str else None,
+                    ramp=ramp,
                 )
             )
         except Exception as e:
@@ -263,3 +271,54 @@ def _parse_date(s: str) -> date:
         except ValueError:
             continue
     raise ValueError(f"Cannot parse date: '{s}'")
+
+
+def _parse_ramp(row: dict[str, str]) -> RampSchedule | None:
+    """Parse ramp_months and ramp_schedule columns into a RampSchedule.
+
+    ramp_months: integer duration.
+    ramp_schedule: space-separated decimal multipliers (e.g. "0.5 0.75 1.0").
+    Returns None if either column is missing or empty.
+    """
+    months_raw = (row.get("ramp_months") or "").strip()
+    schedule_raw = (row.get("ramp_schedule") or "").strip()
+    if not months_raw or not schedule_raw:
+        return None
+    months = int(months_raw)
+    schedule = [Decimal(v) for v in schedule_raw.split()]
+    return RampSchedule(months=months, schedule=schedule)
+
+
+# ------------------------------------------------------------------
+# Manual adjustments
+# ------------------------------------------------------------------
+
+
+def load_adjustments(path: str | Path) -> list[Any]:
+    """Load manual adjustments from a CSV file.
+
+    CSV columns: payee_id, period, amount, reason (required), id (optional).
+    """
+    from icm_engine.models import ManualAdjustment
+
+    p = Path(path)
+    with p.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError(f"Adjustments CSV '{path}' has no header row")
+        rows = list(reader)
+
+    adjustments: list[Any] = []
+    for i, row in enumerate(rows, start=2):
+        try:
+            adj = ManualAdjustment(
+                id=(row.get("id") or "").strip(),
+                payee_id=(row["payee_id"]).strip(),
+                period=(row["period"]).strip(),
+                amount=Decimal((row["amount"]).strip()),
+                reason=(row["reason"]).strip(),
+            )
+            adjustments.append(adj)
+        except Exception as e:
+            raise ValueError(f"Row {i} in '{path}': {e}") from e
+    return adjustments

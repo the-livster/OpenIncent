@@ -132,25 +132,62 @@ export async function exportStatements(args: {
   plan: File;
   transactions: File;
   payees: File;
-}): Promise<void> {
+  formats?: string;
+  period?: string;
+  plan_text?: string;
+  txn_text?: string;
+  payee_text?: string;
+}): Promise<string | undefined> {
   const form = new FormData();
-  form.append("plan", args.plan);
-  form.append("transactions", args.transactions);
-  form.append("payees", args.payees);
+  if (args.plan_text) {
+    form.append("plan_text", args.plan_text);
+  } else {
+    form.append("plan", args.plan);
+  }
+  if (args.txn_text) {
+    form.append("txn_text", args.txn_text);
+  } else {
+    form.append("transactions", args.transactions);
+  }
+  if (args.payee_text) {
+    form.append("payee_text", args.payee_text);
+  } else {
+    form.append("payees", args.payees);
+  }
+  if (args.formats) form.append("formats", args.formats);
+  if (args.period) form.append("period", args.period);
 
   const res = await fetch(v1("/export"), { method: "POST", body: form });
-  if (!res.ok) throw new Error("Export failed");
+  if (!res.ok) {
+    const text = await res.text();
+    try {
+      const err = JSON.parse(text);
+      throw new Error(String(err.detail?.detail ?? err.detail?.error ?? "Export failed"));
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("Server error")) throw e;
+      throw new Error(`Server error (${res.status}): ${text.slice(0, 500)}`);
+    }
+  }
 
+  // Desktop mode: server returns JSON with saved path
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const data = await res.json();
+    return data.saved_to as string;
+  }
+
+  // Web mode: download as blob
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "commission_statements.xlsx";
+  a.download = "commission_statements.zip";
   a.style.display = "none";
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 5000);
+  return undefined;
 }
 
 // ------------------------------------------------------------------

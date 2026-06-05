@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from anthropic import Anthropic
@@ -118,8 +118,32 @@ def _build_prompt(
     return system, user
 
 
-def _call_claude(system: str, user: str, *, model: str, api_key: str) -> str:
-    """Call the Claude API and return the raw response text."""
+def _get_api_key() -> str:
+    """Resolve the LLM API key from environment.
+
+    Checks ICM_LLM_API_KEY first, then ANTHROPIC_API_KEY for backward compat.
+    """
+    key = os.getenv("ICM_LLM_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    if not key:
+        raise MissingAPIKeyError()
+    return key
+
+
+def _get_base_url() -> str | None:
+    """Return the OpenAI-compatible base URL if configured, else None."""
+    url = os.getenv("ICM_LLM_BASE_URL")
+    if url:
+        return url.rstrip("/")
+    return None
+
+
+# ------------------------------------------------------------------
+# Anthropic backend
+# ------------------------------------------------------------------
+
+
+def _call_anthropic(system: str, user: str, *, model: str, api_key: str) -> str:
+    """Call the Anthropic Messages API and return the response text."""
     client = Anthropic(api_key=api_key)
     response = client.messages.create(
         model=model,
@@ -131,11 +155,97 @@ def _call_claude(system: str, user: str, *, model: str, api_key: str) -> str:
     return content.text if hasattr(content, "text") else str(content)
 
 
+# ------------------------------------------------------------------
+# OpenAI-compatible backend (stdlib — no extra deps)
+# ------------------------------------------------------------------
+
+
+def _call_openai_compatible(
+    system: str, user: str, *, model: str, api_key: str, base_url: str
+) -> str:
+    """Call an OpenAI-compatible /v1/chat/completions endpoint.
+
+    Works with OpenAI, Groq, Together, Fireworks, DeepSeek, Ollama, LM Studio,
+    and any other provider that implements the OpenAI chat completions API.
+    """
+    import json as _json
+    import urllib.request as _ur
+
+    messages: list[dict[str, str]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": user})
+
+    body = _json.dumps({
+        "model": model,
+        "max_tokens": 2048,
+        "messages": messages,
+    }).encode("utf-8")
+
+    url = f"{base_url}/v1/chat/completions"
+    req = _ur.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+
+    try:
+        with _ur.urlopen(req, timeout=60) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        raise PlanGenerationError(
+            last_yaml="",
+            last_error=f"HTTP request to {url} failed: {e}",
+            attempts=1,
+        ) from e
+
+    # Support both standard and streaming-style response shapes
+    try:
+        return cast(str, data["choices"][0]["message"]["content"])
+    except (KeyError, IndexError, TypeError):
+        # Some providers return text directly under choices[0].text
+        try:
+            return cast(str, data["choices"][0]["text"])
+        except (KeyError, IndexError, TypeError) as inner_err:
+            raise PlanGenerationError(
+                last_yaml="",
+                last_error=f"Unexpected response shape from {url}: {_json.dumps(data)[:500]}",
+                attempts=1,
+            ) from inner_err
+
+
+# ------------------------------------------------------------------
+# Router
+# ------------------------------------------------------------------
+
+
+def _call_llm(
+    system: str, user: str, *, model: str, api_key: str, base_url: str | None
+) -> str:
+    """Route the LLM call to the appropriate backend."""
+    if base_url:
+        return _call_openai_compatible(
+            system, user, model=model, api_key=api_key, base_url=base_url,
+        )
+    return _call_anthropic(system, user, model=model, api_key=api_key)
+
+
+# ------------------------------------------------------------------
+# Public API
+# ------------------------------------------------------------------
+
+
 def generate_plan_from_text(
     description: str,
     *,
     plan_id: str | None = None,
     model: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
     console: Any = None,
 ) -> Plan:
     """Generate a validated Plan from a natural-language description.
@@ -143,7 +253,13 @@ def generate_plan_from_text(
     Args:
         description: free-text description of the comp plan
         plan_id: optional override; if None, LLM proposes one
-        model: optional model override; defaults to env ICM_LLM_MODEL or claude-sonnet-4-5
+        model: optional model override; defaults to env ICM_LLM_MODEL or
+               claude-sonnet-4-5
+        api_key: optional key override; defaults to env ICM_LLM_API_KEY
+                 (falling back to ANTHROPIC_API_KEY)
+        base_url: optional API base URL for OpenAI-compatible providers;
+                  if set, the OpenAI chat completions API is used instead
+                  of the Anthropic SDK. Defaults to env ICM_LLM_BASE_URL.
         console: optional rich Console instance for status output
 
     Returns:
@@ -151,13 +267,17 @@ def generate_plan_from_text(
 
     Raises:
         PlanGenerationError: after 3 failed attempts.
-        MissingAPIKeyError: if ANTHROPIC_API_KEY is unset.
+        MissingAPIKeyError: if no API key is available.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise MissingAPIKeyError()
-
+    resolved_key = api_key or _get_api_key()
+    resolved_base = base_url if base_url is not None else _get_base_url()
     model_name = model or os.getenv("ICM_LLM_MODEL") or _DEFAULT_MODEL
+
+    # Build a human-readable provider label for status messages
+    if resolved_base:
+        provider_label = f"{resolved_base}/v1/chat/completions"
+    else:
+        provider_label = "Anthropic API"
 
     last_yaml = ""
     last_error = ""
@@ -175,14 +295,19 @@ def generate_plan_from_text(
 
         msg = (
             f"Generating plan via {model_name} "
-            f"(~$0.05, attempt {attempt}/{_MAX_ATTEMPTS})..."
+            f"({provider_label}, attempt {attempt}/{_MAX_ATTEMPTS})..."
         )
         if console is not None:
             console.print(f"[dim]{msg}[/dim]")
         else:
             print(msg)
 
-        raw = _call_claude(system, user, model=model_name, api_key=api_key)
+        raw = _call_llm(
+            system, user,
+            model=model_name,
+            api_key=resolved_key,
+            base_url=resolved_base,
+        )
 
         try:
             yaml_text = _extract_yaml(raw)

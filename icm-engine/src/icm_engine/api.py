@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import os
 import tempfile
+from datetime import date as _date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRouter
 from pydantic import BaseModel
 
 from icm_engine.database import Database, default_db_path
 from icm_engine.engine import CommissionEngine
 from icm_engine.loader import load_payees, load_plan, load_transactions
+from icm_engine.models import Commission
 
 app = FastAPI(title="icm-engine")
 
@@ -30,7 +32,7 @@ app.add_middleware(
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc: Exception) -> JSONResponse:
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     import traceback as _tb
     return JSONResponse(
         status_code=500,
@@ -99,6 +101,9 @@ async def calculate(
     plan: UploadFile = File(...),  # noqa: B008
     transactions: UploadFile = File(...),  # noqa: B008
     payees: UploadFile = File(...),  # noqa: B008
+    adjustments: UploadFile | None = File(None),  # noqa: B008
+    effective_period: str | None = None,
+    allow_recalculate_locked: bool = True,
     org: str = Depends(get_org),
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -128,9 +133,68 @@ async def calculate(
         except ValueError as e:
             raise HTTPException(status_code=400, detail={"error": "Invalid payees file", "detail": str(e)}) from e
 
+        # Persist to database
+        db = _get_db(org)
+
+        # Determine locked periods for this plan
+        period_status = db.get_period_status(plan_obj.plan_id)
+        locked_periods = {r["period"] for r in period_status if r.get("locked_calc_id") is not None}
+
+        txn_periods = {t.period for t in txn_list}
+        locked_relevant = txn_periods & locked_periods
+
+        if locked_relevant:
+            if not allow_recalculate_locked:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "Some periods are locked",
+                        "locked_periods": sorted(locked_relevant),
+                        "hint": "Set allow_recalculate_locked=true to create draft versions",
+                    },
+                )
+            # Auto-default effective_period to current month
+            if effective_period is None:
+                today = _date.today()
+                effective_period = today.strftime("%Y-%m")
+
+        # Load prior official commission lines for locked periods
+        prior_commissions: list[Commission] = []
+        if locked_relevant:
+            for period in locked_relevant:
+                official = db.get_official_calculation(plan_obj.plan_id, period)
+                if official:
+                    lines = db.get_commission_lines(official["id"])
+                    for line in lines:
+                        prior_commissions.append(Commission(**{
+                            "transaction_id": line["transaction_id"],
+                            "payee_id": line["payee_id"],
+                            "period": line["period"],
+                            "origin_period": line.get("origin_period", ""),
+                            "rule_id": line["rule_id"],
+                            "base_amount": line["base_amount"],
+                            "rate": line["rate"],
+                            "commission_amount": line["commission_amount"],
+                            "notes": line.get("notes", ""),
+                        }))
+
         try:
             engine = CommissionEngine()
-            result = engine.calculate(plan_obj, txn_list, payee_list)
+            adjustments_list = None
+            if adjustments is not None:
+                adj_bytes = await adjustments.read()
+                if adj_bytes:
+                    adj_path = root / "adjustments.csv"
+                    adj_path.write_bytes(adj_bytes)
+                    from icm_engine.loader import load_adjustments
+                    adjustments_list = load_adjustments(adj_path)
+            result = engine.calculate(
+                plan_obj, txn_list, payee_list,
+                locked_periods=locked_relevant if locked_relevant else None,
+                effective_period=effective_period if locked_relevant else None,
+                prior_commissions=prior_commissions if prior_commissions else None,
+                adjustments=adjustments_list,
+            )
         except Exception as e:
             import traceback as _tb
             raise HTTPException(status_code=500, detail={
@@ -142,25 +206,35 @@ async def calculate(
         commissions = [c.model_dump() for c in result.commissions]
         ledger_dicts = [e.to_dict() for e in result.ledger]
 
-        # Persist to database
-        db = _get_db(org)
-        calc_id = db.record_calculation(
-            plan_obj.plan_id,
-            period="",  # will be set when locked
-            input_summary={"txn_count": len(txn_list), "payee_count": len(payee_list)},
-        )
-        db.save_commission_lines(calc_id, result.commissions)
-        db.save_ledger_entries(calc_id, ledger_dicts)
+        # Split commissions by effective period, record one calculation per period
+        by_period: dict[str, list[dict[str, Any]]] = {}
+        for c_dict in commissions:
+            p = c_dict["period"]
+            by_period.setdefault(p, []).append(c_dict)
+
+        calc_ids: dict[str, str] = {}
+        for period_key, comms in sorted(by_period.items()):
+            calc_id = db.record_calculation(
+                plan_obj.plan_id,
+                period=period_key,
+                input_summary={"txn_count": len(txn_list), "payee_count": len(payee_list)},
+            )
+            db.save_commission_lines(calc_id, comms)
+            # Save ledger under every period calculation for full audit coverage
+            db.save_ledger_entries(calc_id, ledger_dicts)
+            calc_ids[period_key] = calc_id
 
         summary: dict[str, Decimal] = {}
         for c in result.commissions:
             summary[c.payee_id] = summary.get(c.payee_id, Decimal("0")) + c.commission_amount
 
         return cast(dict[str, Any], _serialize({
-            "calculation_id": calc_id,
+            "calculation_ids": calc_ids,
             "commissions": commissions,
             "ledger": ledger_dicts,
             "summary": {k: str(v) for k, v in summary.items()},
+            "effective_period": effective_period,
+            "locked_periods": sorted(locked_relevant) if locked_relevant else [],
             "attainment": [
                 {
                     "payee_id": a.payee_id,
@@ -182,6 +256,7 @@ class PlanFromTextRequest(BaseModel):
     description: str
     plan_id: str | None = None
     api_key: str
+    base_url: str | None = None
 
 
 @v1.post("/plan-from-text")
@@ -189,10 +264,12 @@ async def plan_from_text(req: PlanFromTextRequest) -> dict[str, Any]:
     from icm_engine.ai.plan_author import generate_plan_from_text
     from icm_engine.exceptions import MissingAPIKeyError, PlanGenerationError
 
-    old_key = os.environ.get("ANTHROPIC_API_KEY")
-    os.environ["ANTHROPIC_API_KEY"] = req.api_key
+    old_key = os.environ.get("ICM_LLM_API_KEY")
+    os.environ["ICM_LLM_API_KEY"] = req.api_key
     try:
-        plan = generate_plan_from_text(req.description, plan_id=req.plan_id or None)
+        plan = generate_plan_from_text(
+            req.description, plan_id=req.plan_id or None, base_url=req.base_url,
+        )
     except MissingAPIKeyError as e:
         raise HTTPException(status_code=400, detail={"error": str(e)}) from e
     except PlanGenerationError as e:
@@ -204,9 +281,9 @@ async def plan_from_text(req: PlanFromTextRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail={"error": "Unexpected error", "detail": str(e)}) from e
     finally:
         if old_key is not None:
-            os.environ["ANTHROPIC_API_KEY"] = old_key
-        elif "ANTHROPIC_API_KEY" in os.environ:
-            del os.environ["ANTHROPIC_API_KEY"]
+            os.environ["ICM_LLM_API_KEY"] = old_key
+        elif "ICM_LLM_API_KEY" in os.environ:
+            del os.environ["ICM_LLM_API_KEY"]
 
     import yaml as _yaml
     yaml_text = _yaml.dump(
@@ -309,9 +386,12 @@ def delete_mapping(mapping_id: str, org: str = Depends(get_org)) -> dict[str, st
 
 @v1.get("/calculations")
 def list_calculations(
-    plan_id: str | None = None, limit: int = 50, org: str = Depends(get_org),
+    plan_id: str | None = None,
+    period: str | None = None,
+    limit: int = 50,
+    org: str = Depends(get_org),
 ) -> list[dict[str, Any]]:
-    return _get_db(org).list_calculations(plan_id=plan_id, limit=limit)
+    return _get_db(org).list_calculations(plan_id=plan_id, period=period, limit=limit)
 
 
 # ------------------------------------------------------------------
@@ -373,7 +453,7 @@ async def preview_file(
             headers = [h.strip() for h in next(reader)]
         except StopIteration:
             headers = []
-        rows = [row for row in list(reader)[:5]]
+        rows = [dict(zip(headers, row, strict=False)) for row in list(reader)[:5]]
 
     # Run fuzzy mapping on the detected headers
     mapping: dict[str, str] = {}
@@ -432,16 +512,18 @@ def delete_api_key(key_id: str, org: str = Depends(get_org)) -> dict[str, str]:
 def lock_period(
     plan_id: str, period: str,
     calculation_id: str | None = None,
+    locked_by: str = "",
+    reason: str = "",
     org: str = Depends(get_org),
 ) -> dict[str, Any]:
     """Lock a period to a calculation. Defaults to the latest calculation for this plan/period."""
     db = _get_db(org)
     if calculation_id is None:
-        calcs = db.list_calculations(plan_id=plan_id, limit=1)
+        calcs = db.list_calculations(plan_id=plan_id, period=period, limit=1)
         if not calcs:
-            raise HTTPException(status_code=404, detail="No calculations found for this plan")
+            raise HTTPException(status_code=404, detail="No calculations found for this plan and period")
         calculation_id = calcs[0]["id"]
-    if not db.lock_period(plan_id, period, calculation_id):
+    if not db.lock_period(plan_id, period, calculation_id, locked_by=locked_by, reason=reason):
         raise HTTPException(status_code=409, detail="Period already locked")
     return {"plan_id": plan_id, "period": period, "calculation_id": calculation_id, "status": "locked"}
 
@@ -488,7 +570,7 @@ def order_trace(
         payee_id=payee_id, calculation_id=calculation_id, limit=10000,
     )
     trace = build_order_trace(transaction_id, payee_id, entries)
-    return _serialize({
+    return cast(dict[str, Any], _serialize({
         "transaction_id": trace.transaction_id,
         "payee_id": trace.payee_id,
         "order": trace.order,
@@ -503,53 +585,152 @@ def order_trace(
         ],
         "total": trace.total,
         "summary": trace.summary,
-    })
+    }))
 
 
 # ------------------------------------------------------------------
-# v1: Per-payee XLSX export
+# v1: Per-payee statement export (zip of per-rep files)
 # ------------------------------------------------------------------
+
+
+def _write_internal_summary(
+    commissions: list[Commission],
+    payee_map: dict[str, Any],
+    path: Path,
+) -> None:
+    """Write an internal-only summary workbook (all reps, totals)."""
+    from collections import defaultdict
+
+    from icm_engine.excel import write_xlsx
+
+    totals: dict[str, Decimal] = defaultdict(Decimal)
+    for c in commissions:
+        totals[c.payee_id] += c.commission_amount
+
+    rows: list[dict[str, str]] = []
+    for pid in sorted(totals.keys()):
+        name = payee_map.get(pid, {}).get("name", pid) if isinstance(payee_map.get(pid), dict) else (
+            getattr(payee_map.get(pid), "name", pid) if payee_map.get(pid) else pid
+        )
+        rows.append({
+            "payee_id": pid,
+            "name": str(name),
+            "total_commission": str(totals[pid]),
+        })
+
+    write_xlsx(path, {"Summary": rows})
+
 
 @v1.post("/export")
-async def export_xlsx(
-    plan: UploadFile = File(...),  # noqa: B008
-    transactions: UploadFile = File(...),  # noqa: B008
-    payees: UploadFile = File(...),  # noqa: B008
+async def export_statements(
+    plan: UploadFile | None = File(None),  # noqa: B008
+    transactions: UploadFile | None = File(None),  # noqa: B008
+    payees: UploadFile | None = File(None),  # noqa: B008
+    plan_text: str = Form(""),
+    txn_text: str = Form(""),
+    payee_text: str = Form(""),
+    formats: str = Form("pdf"),
+    period: str = Form(""),
     org: str = Depends(get_org),
-):
-    """Calculate commissions and return a per-payee XLSX statement file."""
-    from fastapi.responses import Response
+    adjustments: UploadFile | None = File(None),  # noqa: B008
+) -> Response:
+    """Calculate commissions and return a ZIP of per-payee statements.
+
+    Accepts plan/transactions/payees either as file uploads (UploadFile) OR
+    as inline text (plan_text / txn_text / payee_text form fields). The text
+    path supports in-app plan building where raw File objects are unavailable.
+    """
+    import io
+    import zipfile
+
+    from icm_engine.statements import generate_statements
+
+    fmt_list = tuple(f.strip() for f in formats.split(",") if f.strip())
+    if not fmt_list:
+        fmt_list = ("pdf",)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
-        files: dict[str, Path] = {}
-        for name, upload in [("plan", plan), ("transactions", transactions), ("payees", payees)]:
-            content = await upload.read()
-            if len(content) > MAX_UPLOAD_BYTES:
-                raise HTTPException(status_code=413, detail={
-                    "error": f"{name} file exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit",
-                })
-            ext = Path(upload.filename or "").suffix or ".csv"
-            filepath = root / f"{name}{ext}"
-            filepath.write_bytes(content)
-            files[name] = filepath
 
+        # --- Resolve plan ---
+        plan_bytes = None
+        plan_ext = ".yaml"
+        if plan is not None:
+            plan_bytes = await plan.read()
+            if len(plan_bytes) > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail={"error": "Plan file too large"})
+            if plan.filename:
+                plan_ext = Path(plan.filename).suffix or ".yaml"
+        if plan_bytes:
+            plan_path = root / f"plan{plan_ext}"
+            plan_path.write_bytes(plan_bytes)
+        elif plan_text.strip():
+            plan_path = root / "plan.yaml"
+            plan_path.write_text(plan_text.strip(), encoding="utf-8")
+        else:
+            raise HTTPException(status_code=400, detail={"error": "plan or plan_text required"})
+
+        # --- Resolve transactions ---
+        txn_bytes = None
+        txn_ext = ".csv"
+        if transactions is not None:
+            txn_bytes = await transactions.read()
+            if len(txn_bytes) > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail={"error": "Transactions file too large"})
+            if transactions.filename:
+                txn_ext = Path(transactions.filename).suffix or ".csv"
+        if txn_bytes:
+            txn_path = root / f"transactions{txn_ext}"
+            txn_path.write_bytes(txn_bytes)
+        elif txn_text.strip():
+            txn_path = root / "transactions.csv"
+            txn_path.write_text(txn_text.strip(), encoding="utf-8")
+        else:
+            raise HTTPException(status_code=400, detail={"error": "transactions or txn_text required"})
+
+        # --- Resolve payees ---
+        pee_bytes = None
+        pee_ext = ".csv"
+        if payees is not None:
+            pee_bytes = await payees.read()
+            if len(pee_bytes) > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail={"error": "Payees file too large"})
+            if payees.filename:
+                pee_ext = Path(payees.filename).suffix or ".csv"
+        if pee_bytes:
+            pee_path = root / f"payees{pee_ext}"
+            pee_path.write_bytes(pee_bytes)
+        elif payee_text.strip():
+            pee_path = root / "payees.csv"
+            pee_path.write_text(payee_text.strip(), encoding="utf-8")
+        else:
+            raise HTTPException(status_code=400, detail={"error": "payees or payee_text required"})
+
+        # --- Load & calculate ---
         try:
-            plan_obj = load_plan(files["plan"])
+            plan_obj = load_plan(plan_path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail={"error": "Invalid plan", "detail": str(e)}) from e
         try:
-            txn_list, _ = load_transactions(files["transactions"])
+            txn_list, _ = load_transactions(txn_path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail={"error": "Invalid transactions", "detail": str(e)}) from e
         try:
-            payee_list, _ = load_payees(files["payees"])
+            payee_list, _ = load_payees(pee_path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail={"error": "Invalid payees", "detail": str(e)}) from e
 
         try:
             engine = CommissionEngine()
-            result = engine.calculate(plan_obj, txn_list, payee_list)
+            adjustments_list = None
+            if adjustments is not None:
+                adj_bytes = await adjustments.read()
+                if adj_bytes:
+                    adj_path = root / "adjustments.csv"
+                    adj_path.write_bytes(adj_bytes)
+                    from icm_engine.loader import load_adjustments
+                    adjustments_list = load_adjustments(adj_path)
+            result = engine.calculate(plan_obj, txn_list, payee_list, adjustments=adjustments_list)
         except Exception as e:
             import traceback as _tb2
             raise HTTPException(status_code=500, detail={
@@ -558,43 +739,61 @@ async def export_xlsx(
                 "traceback": _tb2.format_exc(),
             }) from e
 
-        # Build per-payee sheets
-        from collections import defaultdict
+        period_filter = period.strip() or None
 
-        from icm_engine.excel import write_xlsx
+        # --- Generate per-payee statements ---
+        stmt_dir = root / "statements"
+        stmt_files = generate_statements(
+            result.commissions,
+            payee_list,
+            out_dir=stmt_dir,
+            period=period_filter,
+            formats=fmt_list,
+            attainment=result.attainment,
+            plan_name=plan_obj.name,
+        )
 
-        by_payee: dict[str, list[dict[str, str]]] = defaultdict(list)
-        totals: dict[str, Decimal] = defaultdict(Decimal)
-        for c in result.commissions:
-            by_payee[c.payee_id].append({
-                "transaction_id": c.transaction_id,
-                "period": c.period,
-                "rule_id": c.rule_id,
-                "base_amount": str(c.base_amount),
-                "rate": str(c.rate),
-                "commission": str(c.commission_amount),
-                "notes": c.notes,
+        # --- Internal summary ---
+        payee_map: dict[str, Any] = {}
+        for p in payee_list:
+            payee_map[p.id] = p
+        _write_internal_summary(
+            result.commissions, payee_map,
+            stmt_dir / "_internal_all-reps-summary.xlsx",
+        )
+
+        # --- Build ZIP ---
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Per-rep files
+            for sf in stmt_files:
+                zf.write(sf.path, sf.path.name)
+            # Internal summary
+            summary_path = stmt_dir / "_internal_all-reps-summary.xlsx"
+            if summary_path.exists():
+                zf.write(summary_path, "internal/_all-reps-summary.xlsx")
+
+        zip_buf.seek(0)
+        content_bytes = zip_buf.read()
+
+        # Desktop mode: save to Downloads folder and return the path
+        if os.environ.get("ICM_DESKTOP") == "1":
+            downloads = Path(os.path.expanduser("~")) / "Downloads"
+            downloads.mkdir(parents=True, exist_ok=True)
+            out_zip = downloads / "commission_statements.zip"
+            out_zip.write_bytes(content_bytes)
+            return JSONResponse({
+                "saved_to": str(out_zip),
+                "file_count": len(stmt_files),
+                "payee_count": len(set(sf.payee_id for sf in stmt_files)),
             })
-            totals[c.payee_id] += c.commission_amount
 
-        # Summary sheet
-        summary_rows = [
-            {"payee": pid, "total_commission": str(total)}
-            for pid, total in sorted(totals.items())
-        ]
-
-        sheets: dict[str, list[dict[str, str]]] = {"Summary": summary_rows}
-        for pid, rows in sorted(by_payee.items()):
-            sheets[pid] = rows
-
-        out_path = root / "statements.xlsx"
-        write_xlsx(out_path, sheets)
-
-        content_bytes = out_path.read_bytes()
         return Response(
             content=content_bytes,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename=commission_statements.xlsx"},
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": "attachment; filename=commission_statements.zip",
+            },
         )
 
 
@@ -603,3 +802,40 @@ async def export_xlsx(
 # ------------------------------------------------------------------
 
 app.include_router(v1)
+
+
+# ------------------------------------------------------------------
+# Desktop-only: open folder in OS file manager
+# ------------------------------------------------------------------
+
+
+class OpenFolderRequest(BaseModel):
+    path: str
+
+
+@app.post("/v1/open-folder")
+def open_folder(req: OpenFolderRequest) -> dict[str, str]:
+    """Open a folder in the OS file manager. Desktop mode only."""
+    if os.environ.get("ICM_DESKTOP") != "1":
+        raise HTTPException(status_code=404, detail="Not available")
+    target = Path(req.path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail={"error": f"Path not found: {target}"})
+    import subprocess
+    import sys
+
+    if target.is_file():
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", str(target)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target.parent)])
+    else:
+        if sys.platform == "win32":
+            os.startfile(str(target))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+    return {"opened": str(target)}

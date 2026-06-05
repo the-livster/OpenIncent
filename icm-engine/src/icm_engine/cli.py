@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import logging
 from collections import defaultdict
-from datetime import date
+from datetime import date as _date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from icm_engine.database import Database, default_db_path
 from icm_engine.engine import CalculationResult, CommissionEngine
 from icm_engine.exceptions import MissingAPIKeyError, PlanGenerationError
 from icm_engine.ledger import write_ledger_jsonl
@@ -41,6 +42,25 @@ def main(
     csv_output: bool = typer.Option(
         False, "--csv", help="Output CSV files instead of XLSX"
     ),
+    no_db: bool = typer.Option(
+        False, "--no-db", help="Skip database persistence"
+    ),
+    org: str = typer.Option(
+        "default", "--org", help="Organization ID for multi-tenancy"
+    ),
+    db_path: str = typer.Option(
+        None, "--db-path", help="Database file path (default: platform-specific)"
+    ),
+    effective_period: str = typer.Option(
+        None, "--effective-period", help="Payout period for late transactions (default: current month)"
+    ),
+    allow_recalculate_locked: bool = typer.Option(
+        True, "--allow-recalculate-locked/--no-allow-recalculate-locked",
+        help="Allow recalculation of locked periods"
+    ),
+    adjustments_file: str = typer.Option(
+        None, "--adjustments", help="Path to manual adjustments CSV"
+    ),
 ) -> None:
     """Calculate commissions from a plan, transactions, and payees."""
     if plan is None or transactions is None or payees is None or output is None:
@@ -58,13 +78,116 @@ def main(
     txns, txn_mapping = load_transactions(transactions, mapping=mapping_obj)
     payee_list, payee_mapping = load_payees(payees, mapping=mapping_obj)
 
+    # Filter-field typo guard: warn if any rule filter references a column
+    # that is neither canonical nor present in any transaction's metadata.
+    from icm_engine.engine import check_filter_fields
+    for rule in plan_obj.rules:
+        f_source: str | None = getattr(rule, "filter", None)
+        if f_source:
+            unused = check_filter_fields(f_source, txns)
+            for field in unused:
+                console.print(
+                    f"[yellow]Warning:[/yellow] filter on rule [bold]{rule.id}[/bold] "
+                    f"references field [bold]{field!r}[/bold] which is neither a "
+                    f"canonical field nor present in any transaction's metadata. "
+                    f"It will never match."
+                )
+
     if txn_mapping:
         _print_mapping(txn_mapping)
     if payee_mapping:
         _print_mapping(payee_mapping)
 
     engine = CommissionEngine()
-    result = engine.calculate(plan_obj, txns, payee_list)
+
+    # Determine locked periods and effective period for lock-aware recalculation
+    locked_periods: set[str] = set()
+    eff_period: str | None = effective_period
+    if not no_db:
+        db = Database(db_path or str(default_db_path()), org_id=org)
+        db.init()
+        period_status = db.get_period_status(plan_obj.plan_id)
+        locked_periods = {r["period"] for r in period_status if r.get("locked_calc_id") is not None}
+
+    txn_periods = {t.period for t in txns}
+    locked_relevant = txn_periods & locked_periods
+
+    if locked_relevant:
+        if not allow_recalculate_locked:
+            console.print(
+                f"[red]Error: Some periods are locked: {sorted(locked_relevant)}. "
+                f"Use --allow-recalculate-locked to proceed.[/red]"
+            )
+            raise typer.Exit(code=1)
+        if eff_period is None:
+            today = _date.today()
+            eff_period = today.strftime("%Y-%m")
+        console.print(
+            f"[yellow]Recalculating with locked periods {sorted(locked_relevant)}. "
+            f"Late transactions will be attributed to {eff_period}.[/yellow]"
+        )
+
+    # Load prior official commission lines for locked periods
+    prior_commissions: list[Commission] | None = None
+    if locked_relevant and not no_db:
+        prior_commissions = []
+        for period in locked_relevant:
+            official = db.get_official_calculation(plan_obj.plan_id, period)
+            if official:
+                lines = db.get_commission_lines(official["id"])
+                for line in lines:
+                    prior_commissions.append(Commission(
+                        transaction_id=line["transaction_id"],
+                        payee_id=line["payee_id"],
+                        period=line["period"],
+                        origin_period=line.get("origin_period", ""),
+                        rule_id=line["rule_id"],
+                        base_amount=Decimal(line["base_amount"]),
+                        rate=Decimal(line["rate"]),
+                        commission_amount=Decimal(line["commission_amount"]),
+                        notes=line.get("notes", ""),
+                    ))
+
+    # Load manual adjustments if provided
+    adjustments_list = None
+    if adjustments_file:
+        from icm_engine.loader import load_adjustments
+        adjustments_list = load_adjustments(adjustments_file)
+
+    result = engine.calculate(
+        plan_obj, txns, payee_list,
+        locked_periods=locked_relevant if locked_relevant else None,
+        effective_period=eff_period if locked_relevant else None,
+        prior_commissions=prior_commissions,
+        adjustments=adjustments_list,
+    )
+
+    # Persist to database
+    if not no_db:
+        commissions = [c.model_dump() for c in result.commissions]
+        ledger_dicts = [e.to_dict() for e in result.ledger]
+
+        by_period: dict[str, list[dict[str, Any]]] = {}
+        for c_dict in commissions:
+            p = c_dict["period"]
+            by_period.setdefault(p, []).append(c_dict)
+
+        calc_ids: dict[str, str] = {}
+        for period_key, comms in sorted(by_period.items()):
+            calc_id = db.record_calculation(
+                plan_obj.plan_id,
+                period=period_key,
+                input_summary={"txn_count": len(txns), "payee_count": len(payee_list)},
+            )
+            db.save_commission_lines(calc_id, comms)
+            db.save_ledger_entries(calc_id, ledger_dicts)
+            calc_ids[period_key] = calc_id
+
+        console.print("[green]Saved to database[/green]")
+        for p, cid in sorted(calc_ids.items()):
+            console.print(f"  [dim]{p}: {cid}[/dim]")
+
+    # Write output files
 
     out_dir = Path(output)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -131,13 +254,21 @@ def plan_from_text(
     model: str = typer.Option(
         None, "--model", help="LLM model override"
     ),
+    api_key: str = typer.Option(
+        None, "--api-key", help="API key (overrides env ICM_LLM_API_KEY / ANTHROPIC_API_KEY)"
+    ),
+    api_base_url: str = typer.Option(
+        None, "--api-base-url", help="OpenAI-compatible base URL (e.g. https://api.openai.com)"
+    ),
 ) -> None:
     """Generate a validated plan YAML from a natural-language description via LLM."""
     from icm_engine.ai.plan_author import generate_plan_from_text
 
     try:
         plan_obj = generate_plan_from_text(
-            description, plan_id=plan_id, model=model, console=console,
+            description, plan_id=plan_id, model=model,
+            api_key=api_key, base_url=api_base_url,
+            console=console,
         )
     except MissingAPIKeyError as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -467,6 +598,9 @@ def statements_command(
     period: str = typer.Option(None, "--period", help="Filter to this period (YYYY-MM)"),
     formats: str = typer.Option("xlsx", "--format", help="Comma-separated: xlsx,html,pdf"),
     emit_zero: bool = typer.Option(False, "--emit-zero", help="Emit $0 statements for payees with no lines"),
+    adjustments_file: str = typer.Option(
+        None, "--adjustments", help="Path to manual adjustments CSV"
+    ),
 ) -> None:
     """Generate per-rep commission statements in the requested formats."""
     from icm_engine.engine import CommissionEngine
@@ -476,7 +610,13 @@ def statements_command(
     plan_obj = load_plan(plan)
     txn_list, _ = load_transactions(transactions)
     payee_list, _ = load_payees(payees)
-    result = CommissionEngine().calculate(plan_obj, txn_list, payee_list)
+
+    adjustments_list = None
+    if adjustments_file:
+        from icm_engine.loader import load_adjustments
+        adjustments_list = load_adjustments(adjustments_file)
+
+    result = CommissionEngine().calculate(plan_obj, txn_list, payee_list, adjustments=adjustments_list)
 
     fmt_tuple = tuple(f.strip() for f in formats.split(","))
     out_dir = Path(output)
@@ -601,7 +741,7 @@ def distribute_command(
 
     # Send
     if send:
-        config = SmtpConfig()
+        config = SmtpConfig(host="")
         if smtp_from_env:
             config.host = _os.environ.get("ICM_SMTP_HOST", "")
             config.port = int(_os.environ.get("ICM_SMTP_PORT", "587"))
@@ -664,7 +804,7 @@ def _run_sanity_check(plan: Plan) -> None:
             name="Sanity Check Payee",
             quota=Decimal("100000"),
             plan_id=plan.plan_id,
-            effective_from=date.today(),
+            effective_from=_date.today(),
         )
         txns = [
             Transaction(
@@ -674,7 +814,7 @@ def _run_sanity_check(plan: Plan) -> None:
                 period="2026-04",
                 amount=Decimal("10000"),
                 product=None,
-                close_date=date.today(),
+                close_date=_date.today(),
             ),
             Transaction(
                 id="SANITY-T002",
@@ -683,7 +823,7 @@ def _run_sanity_check(plan: Plan) -> None:
                 period="2026-04",
                 amount=Decimal("5000"),
                 product="Enterprise",
-                close_date=date.today(),
+                close_date=_date.today(),
             ),
             Transaction(
                 id="SANITY-T003",
@@ -692,7 +832,7 @@ def _run_sanity_check(plan: Plan) -> None:
                 period="2026-04",
                 amount=Decimal("20000"),
                 product=None,
-                close_date=date.today(),
+                close_date=_date.today(),
             ),
         ]
         engine = CommissionEngine()

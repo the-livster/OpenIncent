@@ -1,0 +1,8 @@
+plan_id: desk_split
+name: "Desk Split — 180 Model (Sales + Delivery)"
+period_type: monthly
+currency: USD
+rules:
+  - id: perm_fee
+    type: flat_rate
+    rate: 0.10

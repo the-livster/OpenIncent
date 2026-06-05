@@ -47,9 +47,10 @@ def test_calculate_success() -> None:
     assert "commissions" in data
     assert "ledger" in data
     assert "summary" in data
-    assert "calculation_id" in data
+    assert "calculation_ids" in data
     assert len(data["commissions"]) > 0
     assert len(data["ledger"]) > 0
+    assert len(data["calculation_ids"]) >= 1
 
     c = data["commissions"][0]
     assert isinstance(c["commission_amount"], str)
@@ -198,7 +199,8 @@ class TestLedgerAPI:
             )
         assert resp.status_code == 200
         data = resp.json()
-        cid = data["calculation_id"]
+        # Use first period's calculation_id for ledger query
+        cid = next(iter(data["calculation_ids"].values()))
         payee = data["commissions"][0]["payee_id"]
 
         ledger = client.get(f"{V}/ledger", params={"payee_id": payee, "calculation_id": cid})
@@ -278,3 +280,86 @@ class TestCalculationsAPI:
         calcs = client.get(f"{V}/calculations").json()
         assert len(calcs) == 1
         assert calcs[0]["plan_id"] == plan_id
+
+
+class TestExportAPI:
+    def test_zip_export_text_inputs(self) -> None:
+        """/export returns a valid zip with per-rep files + internal summary."""
+        import io
+        import zipfile
+
+        plan_yaml = (
+            "plan_id: export_test\n"
+            "name: Export Test Plan\n"
+            "period_type: monthly\n"
+            "currency: USD\n"
+            "rules:\n"
+            "  - id: R1\n"
+            "    type: flat_rate\n"
+            "    rate: 0.05\n"
+        )
+        txn_csv = (
+            "id,payee_id,period,amount,close_date\n"
+            "T1,P1,2026-01,10000,2026-01-10\n"
+            "T2,P2,2026-01,5000,2026-01-10\n"
+        )
+        payee_csv = (
+            "id,name,quota,plan_id,effective_from\n"
+            "P1,Alice,0,export_test,2026-01-01\n"
+            "P2,Bob,0,export_test,2026-01-01\n"
+        )
+
+        resp = client.post(f"{V}/export", data={
+            "plan_text": plan_yaml,
+            "txn_text": txn_csv,
+            "payee_text": payee_csv,
+            "formats": "html,xlsx",
+        })
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
+        assert "commission_statements.zip" in resp.headers["content-disposition"]
+
+        # Parse the zip
+        zf = zipfile.ZipFile(io.BytesIO(resp.content))
+        names = set(zf.namelist())
+
+        # Each payee should have an html and xlsx file
+        assert any("P1" in n and n.endswith(".html") for n in names)
+        assert any("P1" in n and n.endswith(".xlsx") for n in names)
+        assert any("P2" in n and n.endswith(".html") for n in names)
+        assert any("P2" in n and n.endswith(".xlsx") for n in names)
+
+        # Internal summary must be present
+        assert "internal/_all-reps-summary.xlsx" in names
+
+        # Privacy: P1's HTML must not contain P2's data
+        p1_html = next(n for n in names if "P1" in n and n.endswith(".html"))
+        p1_content = zf.read(p1_html).decode("utf-8")
+        assert "P2" not in p1_content
+        assert "Bob" not in p1_content
+
+    def test_export_format_selection(self) -> None:
+        """Only requested formats appear in the zip."""
+        import io
+        import zipfile
+
+        plan_yaml = (
+            "plan_id: fmt_test\nname: Fmt Test\nperiod_type: monthly\ncurrency: USD\n"
+            "rules:\n  - id: R1\n    type: flat_rate\n    rate: 0.05\n"
+        )
+        txn_csv = "id,payee_id,period,amount,close_date\nT1,P1,2026-01,10000,2026-01-10\n"
+        payee_csv = "id,name,quota,plan_id,effective_from\nP1,Alice,0,fmt_test,2026-01-01\n"
+
+        resp = client.post(f"{V}/export", data={
+            "plan_text": plan_yaml,
+            "txn_text": txn_csv,
+            "payee_text": payee_csv,
+            "formats": "pdf",
+        })
+        assert resp.status_code == 200
+        zf = zipfile.ZipFile(io.BytesIO(resp.content))
+        names = zf.namelist()
+        # Only pdf (and internal summary) should appear
+        has_non_pdf = [n for n in names if not n.endswith(".pdf") and "internal" not in n]
+        assert len(has_non_pdf) == 0
+        assert any(n.endswith(".pdf") for n in names)

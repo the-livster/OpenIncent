@@ -16,10 +16,12 @@ class PlanGenerationError(Exception):
 
 
 class MissingAPIKeyError(Exception):
-    """Raised when ANTHROPIC_API_KEY is not set."""
+    """Raised when no LLM API key is available."""
 
     def __init__(self) -> None:
         super().__init__(
-            "ANTHROPIC_API_KEY environment variable is not set. "
-            "Set it with: export ANTHROPIC_API_KEY=sk-ant-..."
+            "No LLM API key found. Set one of:\n"
+            "  ICM_LLM_API_KEY    (for any OpenAI-compatible provider)\n"
+            "  ANTHROPIC_API_KEY  (for Anthropic, legacy)\n"
+            "Or pass --api-key on the CLI."
         )

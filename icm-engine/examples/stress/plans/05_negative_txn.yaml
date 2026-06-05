@@ -1,0 +1,8 @@
+plan_id: clawback_plan
+name: "Clawback on Guarantee Refund"
+period_type: monthly
+currency: USD
+rules:
+  - id: standard_flat
+    type: flat_rate
+    rate: 0.10

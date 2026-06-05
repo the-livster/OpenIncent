@@ -25,6 +25,10 @@ from icm_engine.models import (
 # Filter expression parser & evaluator
 # ---------------------------------------------------------------------------
 
+_CANONICAL_FIELDS = frozenset({
+    "id", "payee_id", "deal_id", "period", "amount", "product", "close_date",
+})
+
 
 class TokenType(enum.Enum):
     IDENT = enum.auto()
@@ -72,6 +76,70 @@ class _Token:
     pos: int
 
 
+# ------------------------------------------------------------------
+# Field resolution
+# ------------------------------------------------------------------
+
+
+def _resolve_field(txn: Transaction, field: str) -> object:
+    """Resolve a filter field: canonical attribute first, then metadata, else None."""
+    if field in _CANONICAL_FIELDS:
+        return getattr(txn, field, None)
+    meta: dict[str, Any] = getattr(txn, "metadata", None) or {}
+    if field in meta:
+        return meta[field]
+    return None
+
+
+# ------------------------------------------------------------------
+# Type coercion
+# ------------------------------------------------------------------
+
+
+def _try_decimal(v: object) -> Decimal | None:
+    """Attempt to parse a value as Decimal. Returns None on failure."""
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return None
+
+
+def _try_date(v: object) -> date | None:
+    """Attempt to parse a value as a date. Returns None on failure."""
+    if isinstance(v, date):
+        return v
+    try:
+        from datetime import datetime as _dt
+        s = str(v).strip()
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y"):
+            try:
+                return _dt.strptime(s, fmt).date()
+            except ValueError:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _values_match(a: object, b: object) -> bool:
+    """Test equality with progressive type coercion.
+
+    Tries: Decimal equality → date equality → string equality.
+    """
+    da = _try_decimal(a)
+    db = _try_decimal(b)
+    if da is not None and db is not None:
+        return da == db
+    if _try_date(a) is not None and _try_date(b) is not None:
+        return _try_date(a) == _try_date(b)
+    return str(a) == str(b)
+
+
+# ------------------------------------------------------------------
+# AST nodes
+# ------------------------------------------------------------------
+
+
 class _AST(Protocol):
     def eval(self, txn: Transaction) -> bool: ...
 
@@ -83,24 +151,54 @@ class _Comparison:
     value: object
 
     def eval(self, txn: Transaction) -> bool:
-        field_val: object = getattr(txn, self.field, None)
-        rhs: object = self.value
-        if isinstance(field_val, Decimal):
-            rhs = Decimal(str(self.value))
-        if self.op == "==":
-            return bool(field_val == rhs)
-        if self.op == "!=":
-            return bool(field_val != rhs)
-        if self.op in (">", "<", ">=", "<=") and isinstance(field_val, Decimal):
-            d_rhs = Decimal(str(self.value))
+        field_val = _resolve_field(txn, self.field)
+        if field_val is None:
+            return False  # missing field → never match
+
+        rhs = self.value
+
+        # Try numeric comparison first
+        fd = _try_decimal(field_val)
+        rd = _try_decimal(rhs)
+        if fd is not None and rd is not None:
+            if self.op == "==":
+                return fd == rd
+            if self.op == "!=":
+                return fd != rd
             if self.op == ">":
-                return bool(field_val > d_rhs)
+                return fd > rd
             if self.op == "<":
-                return bool(field_val < d_rhs)
+                return fd < rd
             if self.op == ">=":
-                return bool(field_val >= d_rhs)
+                return fd >= rd
             if self.op == "<=":
-                return bool(field_val <= d_rhs)
+                return fd <= rd
+            return False
+
+        # Try date comparison
+        f_date = _try_date(field_val)
+        r_date = _try_date(rhs)
+        if f_date is not None and r_date is not None:
+            if self.op == "==":
+                return f_date == r_date
+            if self.op == "!=":
+                return f_date != r_date
+            if self.op in (">", "<", ">=", "<="):
+                if self.op == ">":
+                    return f_date > r_date
+                if self.op == "<":
+                    return f_date < r_date
+                if self.op == ">=":
+                    return f_date >= r_date
+                if self.op == "<=":
+                    return f_date <= r_date
+            return False
+
+        # Fallback: string comparison (only for == / !=)
+        if self.op == "==":
+            return str(field_val) == str(rhs)
+        if self.op == "!=":
+            return str(field_val) != str(rhs)
         return False
 
 
@@ -110,8 +208,13 @@ class _InExpr:
     values: list[object]
 
     def eval(self, txn: Transaction) -> bool:
-        field_val: object = getattr(txn, self.field, None)
-        return field_val in self.values
+        field_val = _resolve_field(txn, self.field)
+        if field_val is None:
+            return False
+        for v in self.values:
+            if _values_match(field_val, v):
+                return True
+        return False
 
 
 @dataclass
@@ -132,6 +235,11 @@ class _Or:
         return self.left.eval(txn) or self.right.eval(txn)
 
 
+# ------------------------------------------------------------------
+# Tokenizer
+# ------------------------------------------------------------------
+
+
 def _tokenize(source: str) -> list[_Token]:
     tokens: list[_Token] = []
     i = 0
@@ -139,6 +247,16 @@ def _tokenize(source: str) -> list[_Token]:
         c = source[i]
         if c in (" ", "\t", "\n"):
             i += 1
+            continue
+        # Backtick-quoted field names: `Deal Type`
+        if c == "`":
+            j = i + 1
+            while j < len(source) and source[j] != "`":
+                j += 1
+            if j >= len(source):
+                raise ValueError(f"Unclosed backtick at position {i}")
+            tokens.append(_Token(TokenType.IDENT, source[i + 1 : j], i))
+            i = j + 1
             continue
         if source[i : i + 2] in ("==", "!=", ">=", "<="):
             tokens.append(_Token(TOKEN_MAP[source[i : i + 2]], source[i : i + 2], i))
@@ -175,6 +293,11 @@ def _tokenize(source: str) -> list[_Token]:
         raise ValueError(f"Unexpected character '{c}' at position {i}")
     tokens.append(_Token(TokenType.EOF, "", len(source)))
     return tokens
+
+
+# ------------------------------------------------------------------
+# Parser
+# ------------------------------------------------------------------
 
 
 class _Parser:
@@ -259,6 +382,11 @@ class _Parser:
         return _InExpr(field, values)
 
 
+# ------------------------------------------------------------------
+# Compile
+# ------------------------------------------------------------------
+
+
 def compile_filter(source: str | None) -> Callable[[Transaction], bool]:
     """Compile a filter expression string into a callable predicate.
 
@@ -269,6 +397,67 @@ def compile_filter(source: str | None) -> Callable[[Transaction], bool]:
     tokens = _tokenize(source)
     ast: _AST = _Parser(tokens).parse()
     return ast.eval
+
+
+# ------------------------------------------------------------------
+# Field usage check (typo guard)
+# ------------------------------------------------------------------
+
+
+def _collect_filter_fields(ast: _AST) -> set[str]:
+    """Walk an AST and return the set of field names referenced in filters."""
+    fields: set[str] = set()
+    _walk_fields(ast, fields)
+    return fields
+
+
+def _walk_fields(node: object, fields: set[str]) -> None:
+    if isinstance(node, _Comparison):
+        fields.add(node.field)
+    elif isinstance(node, _InExpr):
+        fields.add(node.field)
+    elif isinstance(node, (_And, _Or)):
+        _walk_fields(node.left, fields)
+        _walk_fields(node.right, fields)
+
+
+def check_filter_fields(
+    filter_source: str | None,
+    transactions: list[Transaction],
+) -> list[str]:
+    """Return filter fields that appear in no transaction (canonical or metadata).
+
+    Used as a typo guard: if a filter references a field that exists nowhere,
+    it will silently match nothing. This returns the list of such fields so
+    the caller can warn the user.
+
+    Args:
+        filter_source: The raw filter expression string.
+        transactions: The loaded transactions to check against.
+
+    Returns:
+        List of field names that are neither canonical nor present in any
+        transaction's metadata.
+    """
+    if not filter_source or not transactions:
+        return []
+    try:
+        tokens = _tokenize(filter_source)
+        ast = _Parser(tokens).parse()
+    except ValueError:
+        return []  # don't interfere with parse errors
+    refs = _collect_filter_fields(ast)
+    unused: list[str] = []
+    for f in sorted(refs):
+        if f in _CANONICAL_FIELDS:
+            continue
+        found = any(
+            isinstance(getattr(t, "metadata", None), dict) and f in (t.metadata or {})
+            for t in transactions
+        )
+        if not found:
+            unused.append(f)
+    return unused
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +480,7 @@ def _window_key(period: str, period_type: str) -> str:
 
     monthly:   "2026-02" → "2026-02"  (unchanged)
     quarterly: months 01-03 → "YYYY-Q1", 04-06 → "Q2", 07-09 → "Q3", 10-12 → "Q4"
+    annual:    "2026-03" → "2026" (entire year as one window)
 
     This is the SEAM for future windowing modes (cumulative, YTD, custom).
     Attainment resets each window (v1 design). Cumulative/year-to-date is a
@@ -303,6 +493,8 @@ def _window_key(period: str, period_type: str) -> str:
         m = int(month)
         q = (m - 1) // 3 + 1
         return f"{year}-Q{q}"
+    if period_type == "annual":
+        return period.split("-")[0]
     return period  # unknown period_type — pass through unchanged
 
 
@@ -417,6 +609,7 @@ class CalculationResult:
     commissions: list[Commission] = field(default_factory=list)
     ledger: list[LedgerEntry] = field(default_factory=list)
     attainment: list[AttainmentSummary] = field(default_factory=list)
+    draw_balances: dict[str, Decimal] = field(default_factory=dict)
 
 
 @dataclass
@@ -437,12 +630,178 @@ class TrueUpResult:
     ledger: list[LedgerEntry]
 
 
+@dataclass
+class CommissionDelta:
+    """A per-key delta between prior and current commissions."""
+    transaction_id: str
+    payee_id: str
+    rule_id: str
+    origin_period: str
+    prior_amount: Decimal
+    new_amount: Decimal
+    delta: Decimal  # new - prior
+    is_new: bool    # no prior line
+    is_removed: bool  # no current line
+    # Fields for constructing a Commission object
+    base_amount: Decimal
+    rate: Decimal
+    kind: str
+    split_pct: Decimal
+
+
+def _diff_commissions(
+    prior: list[Commission],
+    current: list[Commission],
+) -> list[CommissionDelta]:
+    """Diff prior vs current commissions, aggregated by (transaction_id, rule_id, payee_id).
+
+    Returns one CommissionDelta per non-zero delta. Aggregates by key because
+    tiered rules can produce multiple Commission objects per (transaction, rule, payee).
+    """
+    def _key(c: Commission) -> tuple[str, str, str]:
+        return (c.transaction_id, c.rule_id, c.payee_id)
+
+    # Aggregate totals by key
+    prior_totals: dict[tuple[str, str, str], Decimal] = {}
+    prior_refs: dict[tuple[str, str, str], Commission] = {}
+    for c in prior:
+        k = _key(c)
+        prior_totals[k] = prior_totals.get(k, Decimal("0")) + c.commission_amount
+        prior_refs[k] = c
+
+    current_totals: dict[tuple[str, str, str], Decimal] = {}
+    current_refs: dict[tuple[str, str, str], Commission] = {}
+    for c in current:
+        k = _key(c)
+        current_totals[k] = current_totals.get(k, Decimal("0")) + c.commission_amount
+        current_refs[k] = c
+
+    all_keys = set(prior_totals.keys()) | set(current_totals.keys())
+
+    deltas: list[CommissionDelta] = []
+    for key in sorted(all_keys):
+        tid, rid, pid = key
+        prior_amt = prior_totals.get(key, Decimal("0"))
+        new_amt = current_totals.get(key, Decimal("0"))
+        delta = new_amt - prior_amt
+
+        if delta == 0:
+            continue
+
+        # Use current as reference, fall back to prior for removed deals
+        ref = current_refs.get(key) or prior_refs.get(key)
+        if ref is None:
+            continue
+
+        deltas.append(CommissionDelta(
+            transaction_id=tid,
+            payee_id=pid,
+            rule_id=rid,
+            origin_period=ref.period,
+            prior_amount=prior_amt,
+            new_amount=new_amt,
+            delta=delta,
+            is_new=prior_amt == 0,
+            is_removed=new_amt == 0,
+            base_amount=delta,
+            rate=Decimal("1"),
+            kind=ref.kind,
+            split_pct=ref.split_pct,
+        ))
+
+    return deltas
+
+
+# ------------------------------------------------------------------
+# Caps
+# ------------------------------------------------------------------
+
+
+def _apply_cap(
+    commissions: list[Commission], cap_amount: Decimal, rule_id: str,
+) -> list[Commission]:
+    """Apply a per-rule cap. Sums payee-period totals and emits negative
+    cap_adjustment lines for any excess.
+    """
+    by_pp: dict[tuple[str, str], list[Commission]] = {}
+    for c in commissions:
+        key = (c.payee_id, c.period)
+        by_pp.setdefault(key, []).append(c)
+
+    result: list[Commission] = []
+    for (pid, period), lines in by_pp.items():
+        total = sum(line.commission_amount for line in lines)
+        if total > cap_amount:
+            excess = total - cap_amount
+            result.extend(lines)
+            result.append(Commission(
+                transaction_id="*",
+                payee_id=pid,
+                period=period,
+                rule_id=rule_id,
+                base_amount=-excess,
+                rate=Decimal("1"),
+                commission_amount=-excess,
+                notes=f"cap_adjustment: {total} capped to {cap_amount}",
+            ))
+        else:
+            result.extend(lines)
+    return result
+
+
+def _apply_plan_payout_cap(
+    all_commissions: list[Commission],
+    payout_cap: Decimal,
+    all_ledger: list[LedgerEntry],
+) -> list[Commission]:
+    """Apply plan-level payout cap per (payee, period), emitting cap_adjustment lines."""
+    by_pp: dict[tuple[str, str], list[Commission]] = {}
+    for c in all_commissions:
+        key = (c.payee_id, c.period)
+        by_pp.setdefault(key, []).append(c)
+
+    result: list[Commission] = []
+    for (pid, period), lines in by_pp.items():
+        total = sum(line.commission_amount for line in lines)
+        if payout_cap is not None and total > payout_cap:
+            excess = total - payout_cap
+            result.extend(lines)
+            cap_line = Commission(
+                transaction_id="*",
+                payee_id=pid,
+                period=period,
+                rule_id="payout_cap",
+                base_amount=-excess,
+                rate=Decimal("1"),
+                commission_amount=-excess,
+                notes=f"plan_cap_adjustment: {total} capped to {payout_cap}",
+            )
+            result.append(cap_line)
+            all_ledger.append(LedgerEntry(
+                transaction_id="*",
+                payee_id=pid,
+                rule_id="payout_cap",
+                event_type="cap_applied",
+                inputs={"total": str(total), "cap": str(payout_cap)},
+                outputs={"cap_adjustment": str(-excess)},
+                human_readable=f"Cap applied for {pid} {period}: {total} → {payout_cap}",
+            ))
+        else:
+            result.extend(lines)
+    return result
+
+
 class CommissionEngine:
     def calculate(
         self,
         plan: Plan,
         transactions: list[Transaction],
         payees: list[Payee],
+        locked_periods: set[str] | None = None,
+        effective_period: str | None = None,
+        prior_commissions: list[Commission] | None = None,
+        adjustments: list[Any] | None = None,
+        prior_draw_balances: dict[str, Decimal] | None = None,
     ) -> CalculationResult:
         all_commissions: list[Commission] = []
         all_ledger: list[LedgerEntry] = []
@@ -488,9 +847,41 @@ class CommissionEngine:
                 ),
             ))
 
+        # Build attainment lookup for threshold gates
+        att_by_payee_window: dict[tuple[str, str], Decimal | None] = {}
+        for a in attainment:
+            att_by_payee_window[(a.payee_id, a.period)] = a.attainment_pct
+
         for rule in plan.rules:
             # Build synthetic transactions for this rule's evaluation
             synth_txns = _make_synthetic_transactions(credits)
+
+            # Threshold gate: filter out payees below min_attainment_pct
+            min_att = getattr(rule, "min_attainment_pct", None)
+            if min_att is not None and min_att > 0:
+                gated_txns: list[Transaction] = []
+                for t in synth_txns:
+                    key = (t.payee_id, _window_key(t.period, pt))
+                    att_pct = att_by_payee_window.get(key)
+                    if att_pct is None or att_pct >= min_att:
+                        gated_txns.append(t)
+                    else:
+                        all_ledger.append(LedgerEntry(
+                            transaction_id=t.id,
+                            payee_id=t.payee_id,
+                            rule_id=rule.id,
+                            event_type="rule_skipped",
+                            inputs={"filter": rule.filter or "(none)",
+                                    "reason": "below_threshold_gate",
+                                    "attainment_pct": str(att_pct),
+                                    "min_attainment_pct": str(min_att)},
+                            human_readable=(
+                                f"Transaction {t.id} skipped by rule {rule.id} "
+                                f"(attainment {att_pct} below gate {min_att})"
+                            ),
+                        ))
+                synth_txns = gated_txns
+
             if isinstance(rule, FlatRateRule):
                 commissions, ledger = self._calc_flat_rate(
                     rule, synth_txns, payee_map, pt
@@ -505,12 +896,204 @@ class CommissionEngine:
                 )
             else:
                 continue
+
+            # Per-rule cap
+            rule_cap = getattr(rule, "cap", None)
+            if rule_cap is not None and rule_cap >= 0:
+                commissions = _apply_cap(commissions, rule_cap, rule.id)
+
             # Stamp credit metadata onto commissions
             _stamp_credits(commissions, credits)
             all_commissions.extend(commissions)
             all_ledger.extend(ledger)
 
-        return CalculationResult(commissions=all_commissions, ledger=all_ledger, attainment=attainment)
+        # Plan-level payout cap (per payee, per period)
+        if plan.payout_cap is not None:
+            all_commissions = _apply_plan_payout_cap(all_commissions, plan.payout_cap, all_ledger)
+
+        # --- Draws / guarantees ---
+        draw_balances: dict[str, Decimal] = {}
+        for pid in {c.payee_id for c in all_commissions}:
+            p = payee_map.get(pid)
+            draw = None
+            if p is not None:
+                draw = getattr(p, "draw", None)
+            if draw is None:
+                draw = getattr(plan, "draw", None)
+            if draw is None:
+                continue
+
+            draw_amt = getattr(draw, "amount", Decimal("0"))
+            recoverable = bool(getattr(draw, "recoverable", False))
+            prior_bal = (prior_draw_balances or {}).get(pid, Decimal("0"))
+
+            # Sum this payee's post-cap commission per period
+            by_period: dict[str, Decimal] = {}
+            for c in all_commissions:
+                if c.payee_id == pid:
+                    by_period[c.period] = by_period.get(c.period, Decimal("0")) + c.commission_amount
+
+            for period, earned in sorted(by_period.items()):
+                if recoverable:
+                    available = max(Decimal("0"), earned - draw_amt)
+                    recovered = min(prior_bal, available)
+                    payout = max(earned - recovered, draw_amt)
+                    new_shortfall = max(Decimal("0"), draw_amt - earned)
+                    new_balance = prior_bal - recovered + new_shortfall
+
+                    if recovered > 0:
+                        all_commissions.append(Commission(
+                            transaction_id="*", payee_id=pid, period=period,
+                            rule_id="draw", base_amount=-recovered, rate=Decimal("1"),
+                            commission_amount=-recovered,
+                            notes=f"draw_recovery: recovered {recovered} toward draw {draw_amt}",
+                        ))
+                    if earned < draw_amt:
+                        topup = draw_amt - earned
+                        all_commissions.append(Commission(
+                            transaction_id="*", payee_id=pid, period=period,
+                            rule_id="draw", base_amount=topup, rate=Decimal("1"),
+                            commission_amount=topup,
+                            notes=f"draw_topup: floor {draw_amt}, earned {earned}",
+                        ))
+
+                    all_ledger.append(LedgerEntry(
+                        transaction_id="*", payee_id=pid, rule_id="draw",
+                        event_type="draw",
+                        inputs={
+                            "earned": str(earned), "draw": str(draw_amt),
+                            "recovered": str(recovered), "prior_balance": str(prior_bal),
+                        },
+                        outputs={"payout": str(payout), "new_balance": str(new_balance)},
+                        human_readable=(
+                            f"Draw for {pid} {period}: earned {earned}, draw {draw_amt}, "
+                            f"recovered {recovered}, balance {prior_bal}→{new_balance}"
+                        ),
+                    ))
+                    draw_balances[pid] = new_balance
+                    prior_bal = new_balance  # carry forward for next period
+                else:
+                    # Non-recoverable: simple floor
+                    if earned < draw_amt:
+                        topup = draw_amt - earned
+                        all_commissions.append(Commission(
+                            transaction_id="*", payee_id=pid, period=period,
+                            rule_id="draw", base_amount=topup, rate=Decimal("1"),
+                            commission_amount=topup,
+                            notes=f"draw_topup: guarantee {draw_amt}, earned {earned}",
+                        ))
+                        all_ledger.append(LedgerEntry(
+                            transaction_id="*", payee_id=pid, rule_id="draw",
+                            event_type="draw",
+                            inputs={"earned": str(earned), "draw": str(draw_amt)},
+                            outputs={"topup": str(topup)},
+                            human_readable=(
+                                f"Draw (non-recoverable) for {pid} {period}: "
+                                f"earned {earned}, topped up to {draw_amt}"
+                            ),
+                        ))
+
+        # Delta-based true-up for locked periods
+        if locked_periods and effective_period:
+            # Retain only non-locked-period commissions at full amount
+            non_locked = [c for c in all_commissions if c.period not in locked_periods]
+
+            if prior_commissions:
+                locked_current = [c for c in all_commissions if c.period in locked_periods]
+                deltas = _diff_commissions(prior_commissions, locked_current)
+            else:
+                # Without prior, emit full amounts as new (backward compat / no lock yet)
+                deltas = [
+                    CommissionDelta(
+                        transaction_id=c.transaction_id,
+                        payee_id=c.payee_id,
+                        rule_id=c.rule_id,
+                        origin_period=c.period,
+                        prior_amount=Decimal("0"),
+                        new_amount=c.commission_amount,
+                        delta=c.commission_amount,
+                        is_new=True,
+                        is_removed=False,
+                        base_amount=c.commission_amount,
+                        rate=Decimal("1"),
+                        kind=c.kind,
+                        split_pct=c.split_pct,
+                    )
+                    for c in all_commissions
+                    if c.period in locked_periods
+                ]
+
+            true_up_lines: list[Commission] = []
+            for d in deltas:
+                notes = f"true_up: {d.prior_amount} → {d.new_amount} (delta {d.delta})"
+                c = Commission(
+                    transaction_id=d.transaction_id,
+                    payee_id=d.payee_id,
+                    period=effective_period,
+                    origin_period=d.origin_period,
+                    rule_id=d.rule_id,
+                    base_amount=d.base_amount,
+                    rate=d.rate,
+                    commission_amount=d.delta,
+                    kind=d.kind,
+                    split_pct=d.split_pct,
+                    notes=notes,
+                )
+                true_up_lines.append(c)
+                all_ledger.append(LedgerEntry(
+                    transaction_id=c.transaction_id,
+                    payee_id=c.payee_id,
+                    rule_id=c.rule_id,
+                    event_type="true_up",
+                    inputs={
+                        "origin_period": c.origin_period,
+                        "effective_period": effective_period,
+                        "prior_amount": str(d.prior_amount),
+                        "new_amount": str(d.new_amount),
+                        "delta": str(d.delta),
+                    },
+                    outputs={"commission_amount": str(c.commission_amount)},
+                    human_readable=(
+                        f"True-up {c.transaction_id} from {c.origin_period} "
+                        f"→ {effective_period}: {c.commission_amount} ({c.notes})"
+                    ),
+                ))
+
+            all_commissions = non_locked + true_up_lines
+
+        # --- Manual adjustments (post-locking, post-caps/draws) ---
+        if adjustments:
+            for adj in adjustments:
+                pid = getattr(adj, "payee_id", "")
+                period_val = getattr(adj, "period", "")
+                amt = Decimal(str(getattr(adj, "amount", "0")))
+                reason = str(getattr(adj, "reason", ""))
+                adj_id = str(getattr(adj, "id", ""))
+                c = Commission(
+                    transaction_id=adj_id or f"adj_{pid}_{period_val}",
+                    payee_id=pid,
+                    period=period_val,
+                    rule_id="manual_adjustment",
+                    base_amount=amt,
+                    rate=Decimal("1"),
+                    commission_amount=amt,
+                    notes=reason,
+                )
+                all_commissions.append(c)
+                all_ledger.append(LedgerEntry(
+                    transaction_id=c.transaction_id,
+                    payee_id=pid,
+                    rule_id="manual_adjustment",
+                    event_type="manual_adjustment",
+                    inputs={"amount": str(amt), "reason": reason},
+                    outputs={"commission_amount": str(amt)},
+                    human_readable=f"Manual adjustment for {pid} {period_val}: {amt} ({reason})",
+                ))
+
+        return CalculationResult(
+            commissions=all_commissions, ledger=all_ledger,
+            attainment=attainment, draw_balances=draw_balances,
+        )
 
     def true_up(
         self,
@@ -526,53 +1109,35 @@ class CommissionEngine:
         """
         current = self.calculate(plan, transactions, payees)
 
-        # Build lookup: key -> Commission for both sides
-        def _key(c: Commission) -> tuple[str, str, str]:
-            return (c.transaction_id, c.rule_id, c.payee_id)
-
-        prior_map: dict[tuple[str, str, str], Commission] = {}
-        for c in prior:
-            prior_map[_key(c)] = c
-
-        current_map: dict[tuple[str, str, str], Commission] = {}
-        for c in current.commissions:
-            current_map[_key(c)] = c
-
-        all_keys = set(prior_map.keys()) | set(current_map.keys())
+        deltas = _diff_commissions(prior, current.commissions)
 
         # Aggregate adjustments by (payee, period)
         adj_map: dict[tuple[str, str], Decimal] = {}
         exceptions: list[dict[str, Any]] = []
 
-        for key in sorted(all_keys):
-            tid, rid, pid = key
-            pc = prior_map.get(key)
-            cc = current_map.get(key)
-            prior_amt = pc.commission_amount if pc else Decimal("0")
-            new_amt = cc.commission_amount if cc else Decimal("0")
-            delta = new_amt - prior_amt
+        for d in deltas:
+            pid = d.payee_id
+            period = d.origin_period
+            adj_key = (pid, period)
+            adj_map[adj_key] = adj_map.get(adj_key, Decimal("0")) + d.delta
 
-            if delta != 0:
-                adj_key = (pid, cc.period if cc else (pc.period if pc else "unknown"))
-                adj_map[adj_key] = adj_map.get(adj_key, Decimal("0")) + delta
+            status: str
+            if d.is_new:
+                status = "new"
+            elif d.is_removed:
+                status = "removed"
+            else:
+                status = "changed"
 
-                status: str
-                if pc is None:
-                    status = "new"
-                elif cc is None:
-                    status = "removed"
-                else:
-                    status = "changed"
-
-                exceptions.append({
-                    "transaction_id": tid,
-                    "payee_id": pid,
-                    "rule_id": rid,
-                    "status": status,
-                    "prior_amount": str(prior_amt),
-                    "new_amount": str(new_amt),
-                    "delta": str(delta),
-                })
+            exceptions.append({
+                "transaction_id": d.transaction_id,
+                "payee_id": pid,
+                "rule_id": d.rule_id,
+                "status": status,
+                "prior_amount": str(d.prior_amount),
+                "new_amount": str(d.new_amount),
+                "delta": str(d.delta),
+            })
 
         # Build sorted adjustments
         adjustments = sorted(
@@ -580,7 +1145,7 @@ class CommissionEngine:
                 Adjustment(
                     payee_id=pid,
                     period=period,
-                    prior_amount=Decimal("0"),  # computed from diff
+                    prior_amount=Decimal("0"),
                     new_amount=Decimal("0"),
                     delta=delta,
                 )
@@ -592,12 +1157,14 @@ class CommissionEngine:
         # Fill in prior/new totals for each adjustment
         for adj in adjustments:
             prior_total = sum(
-                c.commission_amount for c in prior
-                if c.payee_id == adj.payee_id and c.period == adj.period
+                (c.commission_amount for c in prior
+                if c.payee_id == adj.payee_id and c.period == adj.period),
+                Decimal("0")
             )
             new_total = sum(
-                c.commission_amount for c in current.commissions
-                if c.payee_id == adj.payee_id and c.period == adj.period
+                (c.commission_amount for c in current.commissions
+                if c.payee_id == adj.payee_id and c.period == adj.period),
+                Decimal("0")
             )
             adj.prior_amount = prior_total
             adj.new_amount = new_total

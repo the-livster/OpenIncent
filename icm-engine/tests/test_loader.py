@@ -65,9 +65,16 @@ class TestLoadTransactions:
         assert txns[0].product == "Enterprise"
         assert txns[2].product is None
 
-    def test_missing_required_column(self) -> None:
-        with pytest.raises(ValueError, match="Row"):
-            load_transactions("tests/fixtures/bad_transactions.csv")
+    def test_missing_column_falls_back_to_defaults(self) -> None:
+        """Missing columns get safe defaults: auto-id, empty payee_id, 0 amount."""
+        txns, _ = load_transactions("tests/fixtures/bad_transactions.csv")
+        assert len(txns) == 2
+        # First row has id, payee_id, but no amount → defaults to 0
+        assert txns[0].id == "T001"
+        assert txns[0].payee_id == "P001"
+        assert txns[0].amount == Decimal("0")
+        # Second row has no payee_id → empty string
+        assert txns[1].payee_id == ""
 
 
 class TestLoadParquet:

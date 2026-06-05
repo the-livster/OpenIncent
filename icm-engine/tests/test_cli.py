@@ -20,6 +20,7 @@ def test_calculate_end_to_end(tmp_path: Path) -> None:
             "--transactions", txns,
             "--payees", payees,
             "--output", out,
+            "--no-db",
         ],
     )
 
@@ -50,6 +51,7 @@ def test_calculate_missing_plan(tmp_path: Path) -> None:
             "--transactions", "tests/fixtures/sample_transactions.csv",
             "--payees", "tests/fixtures/sample_payees.csv",
             "--output", str(tmp_path / "output"),
+            "--no-db",
         ],
     )
     assert result.exit_code != 0

@@ -134,9 +134,9 @@ class TestPayees:
         db, pid = self._make_db_with_plan(tmp_path)
         count = db.save_payees_batch([
             {"id": "P001", "name": "Alice", "quota": "100000", "plan_id": pid,
-             "effective_from": "2026-01-01", "effective_to": None},
+             "effective_from": "2026-01-01", "effective_to": None, "ramp": None},
             {"id": "P002", "name": "Bob", "quota": "80000", "plan_id": pid,
-             "effective_from": "2026-01-01", "effective_to": "2026-12-31"},
+             "effective_from": "2026-01-01", "effective_to": "2026-12-31", "ramp": None},
         ])
         assert count == 2
         assert len(db.list_payees()) == 2
@@ -263,6 +263,29 @@ class TestCalculations:
         db.record_calculation(pid)
         calcs = db.list_calculations()
         assert calcs[0]["status"] == "completed"
+
+    def test_filter_by_period(self, tmp_path: Path) -> None:
+        db, pid = self._make_db_with_plan(tmp_path)
+        db.record_calculation(pid, period="2026-01")
+        db.record_calculation(pid, period="2026-02")
+        db.record_calculation(pid, period="2026-02")
+
+        jan = db.list_calculations(plan_id=pid, period="2026-01")
+        assert len(jan) == 1
+        assert jan[0]["period"] == "2026-01"
+
+        feb = db.list_calculations(plan_id=pid, period="2026-02")
+        assert len(feb) == 2
+        for c in feb:
+            assert c["period"] == "2026-02"
+
+    def test_version_increments_per_period(self, tmp_path: Path) -> None:
+        db, pid = self._make_db_with_plan(tmp_path)
+        db.record_calculation(pid, period="2026-03")
+        db.record_calculation(pid, period="2026-03")
+        calcs = db.list_calculations(plan_id=pid, period="2026-03")
+        versions = sorted(c["version"] for c in calcs)
+        assert versions == [1, 2]
 
 
 class TestEdgeCases:
