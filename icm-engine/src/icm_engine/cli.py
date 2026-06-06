@@ -309,13 +309,36 @@ def main(
     out_dir = Path(output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Read currency settings from DB
+    rates_json: str | None = None
+    if db is not None:
+        rates_json = db.get_setting("exchange_rates")
+    from icm_engine.currency import load_rates
+    _output_rates = load_rates(rates_json)
+
+    # Determine source and reporting currency from the plan(s)
+    _src_currency = ""
+    _rpt_currency = ""
+    if plan_library:
+        first_plan = list(plan_library.values())[0]
+        _src_currency = first_plan.currency
+        _rpt_currency = (first_plan.reporting_currency or "").strip()
+
     use_xlsx = _is_xlsx(transactions) or _is_xlsx(payees)
     if csv_output or not use_xlsx:
-        _write_commissions_csv(result.commissions, out_dir / "commissions.csv")
-        _write_summary_csv(result.commissions, out_dir / "summary.csv")
+        _write_commissions_csv(result.commissions, out_dir / "commissions.csv",
+                               rates=_output_rates, source_currency=_src_currency,
+                               reporting_currency=_rpt_currency)
+        _write_summary_csv(result.commissions, out_dir / "summary.csv",
+                           rates=_output_rates, source_currency=_src_currency,
+                           reporting_currency=_rpt_currency)
     else:
-        _write_commissions_xlsx(result.commissions, out_dir / "commissions.xlsx")
-        _write_summary_xlsx(result.commissions, out_dir / "summary.xlsx")
+        _write_commissions_xlsx(result.commissions, out_dir / "commissions.xlsx",
+                                rates=_output_rates, source_currency=_src_currency,
+                                reporting_currency=_rpt_currency)
+        _write_summary_xlsx(result.commissions, out_dir / "summary.xlsx",
+                            rates=_output_rates, source_currency=_src_currency,
+                            reporting_currency=_rpt_currency)
     write_ledger_jsonl(result.ledger, out_dir / "ledger.jsonl")
 
     if save_mapping and (txn_mapping or payee_mapping):
@@ -753,6 +776,19 @@ def statements_command(
     fmt_tuple = tuple(f.strip() for f in formats.split(","))
     out_dir = Path(output)
 
+    # Read currency settings
+    from icm_engine.currency import load_rates
+    from icm_engine.database import Database, default_db_path
+    try:
+        _sdb = Database(default_db_path())
+        _rates_json = _sdb.get_setting("exchange_rates")
+        _rates = load_rates(_rates_json)
+    except Exception:
+        _rates = {}
+
+    _src_cur = plan_obj.currency
+    _rpt_cur = (plan_obj.reporting_currency or "").strip()
+
     files = generate_statements(
         result.commissions,
         payee_list,
@@ -761,6 +797,9 @@ def statements_command(
         formats=fmt_tuple,
         emit_zero=emit_zero,
         rounding_mode=parse_rounding_mode(rounding),
+        rates=_rates if _rates else None,
+        reporting_currency=_rpt_cur,
+        source_currency=_src_cur,
     )
 
     console.print(f"[green]Generated {len(files)} statement file(s) in {out_dir}[/green]")
@@ -1131,20 +1170,36 @@ def _print_mapping(m: Any) -> None:
 
 
 def _write_commissions_xlsx(commissions: list[Commission], path: Path,
-                            rounding_mode: str = "half-up") -> None:
+                            rounding_mode: str = "half-up",
+                            rates: dict[str, Decimal] | None = None,
+                            source_currency: str = "",
+                            reporting_currency: str = "") -> None:
     from icm_engine.excel import write_xlsx
+    from icm_engine.currency import convert as _convert, needs_conversion
     from icm_engine.rounding import parse_rounding_mode, round_money
 
     rm = parse_rounding_mode(rounding_mode)
+    do_convert = needs_conversion(source_currency, reporting_currency) and rates
+    _rates = rates or {}
+    _rc = (reporting_currency or "").strip().upper()
+
+    def _amt(v: Decimal) -> str:
+        if do_convert:
+            try:
+                return str(_convert(v, source_currency, _rc, _rates, rounding=rm))
+            except KeyError:
+                pass
+        return str(round_money(v, rm))
+
     rows = [
         {
             "transaction_id": c.transaction_id,
             "payee_id": c.payee_id,
             "period": c.period,
             "rule_id": c.rule_id,
-            "base_amount": str(round_money(c.base_amount, rm)),
+            "base_amount": _amt(c.base_amount),
             "rate": str(c.rate),
-            "commission_amount": str(round_money(c.commission_amount, rm)),
+            "commission_amount": _amt(c.commission_amount),
             "notes": c.notes,
         }
         for c in commissions
@@ -1153,28 +1208,59 @@ def _write_commissions_xlsx(commissions: list[Commission], path: Path,
 
 
 def _write_summary_xlsx(commissions: list[Commission], path: Path,
-                        rounding_mode: str = "half-up") -> None:
+                        rounding_mode: str = "half-up",
+                        rates: dict[str, Decimal] | None = None,
+                        source_currency: str = "",
+                        reporting_currency: str = "") -> None:
     from icm_engine.excel import write_xlsx
+    from icm_engine.currency import convert as _convert, needs_conversion
     from icm_engine.rounding import parse_rounding_mode, round_money
 
     rm = parse_rounding_mode(rounding_mode)
+    do_convert = needs_conversion(source_currency, reporting_currency) and rates
+    _rates = rates or {}
+    _rc = (reporting_currency or "").strip().upper()
+
+    def _amt(v: Decimal) -> str:
+        if do_convert:
+            try:
+                return str(_convert(v, source_currency, _rc, _rates, rounding=rm))
+            except KeyError:
+                pass
+        return str(round_money(v, rm))
     by_payee_period: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
     for c in commissions:
         key = (c.payee_id, c.period)
         by_payee_period[key] += c.commission_amount
 
     rows = [
-        {"payee_id": payee_id, "period": period, "total_commission": str(round_money(total, rm))}
+        {"payee_id": payee_id, "period": period, "total_commission": _amt(total)}
         for (payee_id, period), total in sorted(by_payee_period.items())
     ]
     write_xlsx(path, {"summary": rows})
 
 
 def _write_commissions_csv(commissions: list[Commission], path: Path,
-                           rounding_mode: str = "half-up") -> None:
+                           rounding_mode: str = "half-up",
+                           rates: dict[str, Decimal] | None = None,
+                           source_currency: str = "",
+                           reporting_currency: str = "") -> None:
+    from icm_engine.currency import convert as _convert, needs_conversion
     from icm_engine.rounding import parse_rounding_mode, round_money
 
     rm = parse_rounding_mode(rounding_mode)
+    do_convert = needs_conversion(source_currency, reporting_currency) and rates
+    _rates = rates or {}
+    _rc = (reporting_currency or "").strip().upper()
+
+    def _amt(v: Decimal) -> str:
+        if do_convert:
+            try:
+                return str(_convert(v, source_currency, _rc, _rates, rounding=rm))
+            except KeyError:
+                pass
+        return str(round_money(v, rm))
+
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -1196,19 +1282,34 @@ def _write_commissions_csv(commissions: list[Commission], path: Path,
                     c.payee_id,
                     c.period,
                     c.rule_id,
-                    str(round_money(c.base_amount, rm)),
+                    _amt(c.base_amount),
                     str(c.rate),
-                    str(round_money(c.commission_amount, rm)),
+                    _amt(c.commission_amount),
                     c.notes,
                 ]
             )
 
 
 def _write_summary_csv(commissions: list[Commission], path: Path,
-                       rounding_mode: str = "half-up") -> None:
+                       rounding_mode: str = "half-up",
+                       rates: dict[str, Decimal] | None = None,
+                       source_currency: str = "",
+                       reporting_currency: str = "") -> None:
+    from icm_engine.currency import convert as _convert, needs_conversion
     from icm_engine.rounding import parse_rounding_mode, round_money
 
     rm = parse_rounding_mode(rounding_mode)
+    do_convert = needs_conversion(source_currency, reporting_currency) and rates
+    _rates = rates or {}
+    _rc = (reporting_currency or "").strip().upper()
+
+    def _amt(v: Decimal) -> str:
+        if do_convert:
+            try:
+                return str(_convert(v, source_currency, _rc, _rates, rounding=rm))
+            except KeyError:
+                pass
+        return str(round_money(v, rm))
     by_payee_period: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
     for c in commissions:
         key = (c.payee_id, c.period)
@@ -1218,7 +1319,7 @@ def _write_summary_csv(commissions: list[Commission], path: Path,
         writer = csv.writer(f)
         writer.writerow(["payee_id", "period", "total_commission"])
         for (payee_id, period), total in sorted(by_payee_period.items()):
-            writer.writerow([payee_id, period, str(round_money(total, rm))])
+            writer.writerow([payee_id, period, _amt(total)])
 
 
 def _print_summary(

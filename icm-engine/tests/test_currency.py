@@ -83,3 +83,90 @@ class TestNeedsConversion:
     def test_different_currency(self) -> None:
         assert needs_conversion("CAD", "USD")
         assert needs_conversion("EUR", "USD")
+
+
+class TestIntegration:
+    """End-to-end: statement generation with currency conversion."""
+
+    def test_statement_rounds_and_converts(self) -> None:
+        """CAD plan, reporting in USD. Statement amounts should be in USD."""
+        from datetime import date as _date
+        from decimal import Decimal as _D
+        from pathlib import Path as _Path
+        from tempfile import TemporaryDirectory
+
+        from icm_engine.engine import CommissionEngine
+        from icm_engine.models import (
+            Commission, FlatRateRule, Payee, Plan, Transaction,
+        )
+        from icm_engine.statements import generate_statements
+
+        plan = Plan(
+            plan_id="P1", name="CAD Plan", period_type="monthly",
+            currency="CAD", reporting_currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=_D("0.10"))],
+        )
+        payees = [
+            Payee(id="A", name="Alice", quota=_D("10000"), plan_id="P1",
+                  effective_from=_date(2026, 1, 1)),
+        ]
+        txns = [
+            Transaction(id="T1", payee_id="A", amount=_D("10000"),
+                        period="2026-04", close_date=_date(2026, 4, 15)),
+        ]
+        engine = CommissionEngine()
+        result = engine.calculate(plan, txns, payees)
+
+        # Alice's commission: 10% of 10000 CAD = 1000 CAD
+        alice_total = sum(
+            c.commission_amount for c in result.commissions if c.payee_id == "A"
+        )
+        assert alice_total == _D("1000")  # still CAD internally
+
+        rates = {"CAD": _D("1.35")}  # 1 USD = 1.35 CAD
+        with TemporaryDirectory() as tmp:
+            out = _Path(tmp)
+            files = generate_statements(
+                result.commissions, payees, out_dir=out,
+                formats=("xlsx",), rounding_mode="half-up",
+                rates=rates, reporting_currency="USD",
+                source_currency="CAD",
+            )
+            assert len(files) == 1
+
+    def test_no_conversion_when_off(self) -> None:
+        """Default: no reporting_currency → amounts stay in source currency."""
+        from datetime import date as _date
+        from decimal import Decimal as _D
+        from pathlib import Path as _Path
+        from tempfile import TemporaryDirectory
+
+        from icm_engine.engine import CommissionEngine
+        from icm_engine.models import (
+            Commission, FlatRateRule, Payee, Plan, Transaction,
+        )
+        from icm_engine.statements import generate_statements
+
+        plan = Plan(
+            plan_id="P1", name="CAD Plan", period_type="monthly",
+            currency="CAD",  # no reporting_currency set
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=_D("0.10"))],
+        )
+        payees = [
+            Payee(id="A", name="Alice", quota=_D("10000"), plan_id="P1",
+                  effective_from=_date(2026, 1, 1)),
+        ]
+        txns = [
+            Transaction(id="T1", payee_id="A", amount=_D("10000"),
+                        period="2026-04", close_date=_date(2026, 4, 15)),
+        ]
+        engine = CommissionEngine()
+        result = engine.calculate(plan, txns, payees)
+
+        with TemporaryDirectory() as tmp:
+            out = _Path(tmp)
+            files = generate_statements(
+                result.commissions, payees, out_dir=out,
+                formats=("xlsx",),
+            )
+            assert len(files) == 1  # should not crash

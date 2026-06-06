@@ -47,6 +47,7 @@ def generate_statements(
     rounding_mode: RoundingMode = _DEFAULT_ROUNDING,
     rates: dict[str, Decimal] | None = None,
     reporting_currency: str = "",
+    source_currency: str = "",
 ) -> list[StatementFile]:
     """Generate per-payee commission statements.
 
@@ -94,13 +95,14 @@ def generate_statements(
     _rm = rounding_mode
     _rates = dict(rates or {})
     _rc = (reporting_currency or "").strip().upper()
+    _sc = (source_currency or "").strip().upper()
 
-    def _d(amount: Decimal, source_currency: str = "") -> str:
+    def _d(amount: Decimal) -> str:
         from icm_engine.currency import convert as _convert
         amt = amount
-        if _rc and source_currency and source_currency.upper() != _rc:
+        if _rc and _sc and _sc != _rc:
             try:
-                amt = _convert(amount, source_currency, _rc, _rates, rounding=_rm)
+                amt = _convert(amount, _sc, _rc, _rates, rounding=_rm)
             except KeyError:
                 pass  # fall through — display in original currency
         return str(round_money(amt, _rm))
