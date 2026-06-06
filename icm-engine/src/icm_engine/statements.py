@@ -45,6 +45,8 @@ def generate_statements(
     attainment: list[Any] | None = None,
     plan_name: str = "",
     rounding_mode: RoundingMode = _DEFAULT_ROUNDING,
+    rates: dict[str, Decimal] | None = None,
+    reporting_currency: str = "",
 ) -> list[StatementFile]:
     """Generate per-payee commission statements.
 
@@ -90,9 +92,18 @@ def generate_statements(
 
     # Capture rounding mode as a closure so all _d() calls use it
     _rm = rounding_mode
+    _rates = dict(rates or {})
+    _rc = (reporting_currency or "").strip().upper()
 
-    def _d(amount: Decimal) -> str:  # type: ignore[no-redef]
-        return str(round_money(amount, _rm))
+    def _d(amount: Decimal, source_currency: str = "") -> str:
+        from icm_engine.currency import convert as _convert
+        amt = amount
+        if _rc and source_currency and source_currency.upper() != _rc:
+            try:
+                amt = _convert(amount, source_currency, _rc, _rates, rounding=_rm)
+            except KeyError:
+                pass  # fall through — display in original currency
+        return str(round_money(amt, _rm))
 
     for pid in sorted(all_pids):
         lines = by_payee.get(pid, [])

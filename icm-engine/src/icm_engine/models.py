@@ -325,6 +325,7 @@ class Plan(BaseModel):
     name: str
     period_type: str = Field(pattern=r"^(monthly|quarterly|annual)$")
     currency: str
+    reporting_currency: str = ""  # blank = display in plan's currency (no conversion)
     rules: list[Rule] = Field(default_factory=list)
     payout_cap: Decimal | None = Field(default=None, ge=Decimal("0"))
     draw: Draw | None = None
