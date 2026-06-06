@@ -4,7 +4,7 @@ import enum
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -498,6 +498,73 @@ def _window_key(period: str, period_type: str) -> str:
     return period  # unknown period_type — pass through unchanged
 
 
+def _window_date_range(window_key: str, period_type: str) -> tuple[date, date]:
+    """Return (start_date, end_date_inclusive) for a window key."""
+    if period_type == "monthly":
+        y, m = window_key.split("-")
+        start = date(int(y), int(m), 1)
+        if int(m) == 12:
+            end = date(int(y), 12, 31)
+        else:
+            end = date(int(y), int(m) + 1, 1) - timedelta(days=1)
+        return start, end
+    if period_type == "quarterly":
+        y_str, q_str = window_key.split("-Q")
+        y, q = int(y_str), int(q_str)
+        start_month = (q - 1) * 3 + 1
+        start = date(y, start_month, 1)
+        end_month = start_month + 2
+        if end_month == 12:
+            end = date(y, 12, 31)
+        else:
+            end = date(y, end_month + 1, 1) - timedelta(days=1)
+        return start, end
+    if period_type == "annual":
+        y = int(window_key)
+        return date(y, 1, 1), date(y, 12, 31)
+    # Unknown — return a zero-length range
+    today = date.today()
+    return today, today
+
+
+def _compute_activity_fraction(
+    payee: Payee,
+    window_key: str,
+    period_type: str,
+    pro_rating: str,
+) -> Decimal:
+    """Return the fraction (0.0–1.0) of the window the payee was active.
+
+    full:  always 1.0 (no pro-rating)
+    daily: active_days / days_in_period
+    zero:  1.0 if active the entire period, 0.0 otherwise
+    """
+    if pro_rating == "full":
+        return Decimal("1")
+
+    win_start, win_end = _window_date_range(window_key, period_type)
+    total_days = (win_end - win_start).days + 1  # inclusive
+
+    eff_from = payee.effective_from or win_start
+    eff_to = payee.effective_to or win_end
+
+    # Clamp to window
+    active_start = max(win_start, eff_from)
+    active_end = min(win_end, eff_to)
+
+    if active_start > active_end:
+        return Decimal("0")  # not active at all in this window
+
+    active_days = (active_end - active_start).days + 1
+
+    if pro_rating == "zero":
+        # Payee must be active the entire period
+        return Decimal("1") if active_days >= total_days else Decimal("0")
+
+    # daily
+    return Decimal(active_days) / Decimal(total_days)
+
+
 @dataclass
 class _CreditUnit:
     """A resolved credit: one payee's share of a deal, ready for rule evaluation."""
@@ -598,12 +665,14 @@ def _compute_attainment(
     credits: list[_CreditUnit],
     payee_map: dict[str, Payee],
     period_type: str,
+    fractions: dict[tuple[str, str], Decimal] | None = None,
 ) -> list[AttainmentSummary]:
     """Compute bookings vs quota per (payee, window).
 
     v1: ALL credited bookings count toward attainment. Quota-category filtering
     (e.g. only new-business deals) is a future extension.
     """
+    frac = fractions or {}
     bookings: dict[tuple[str, str], Decimal] = {}
     for cu in credits:
         window = _window_key(cu.period, period_type)
@@ -613,7 +682,8 @@ def _compute_attainment(
     summaries: list[AttainmentSummary] = []
     for (pid, window), booked in sorted(bookings.items()):
         p = payee_map.get(pid)
-        quota = p.quota_for(window) if p else Decimal("0")
+        af = frac.get((pid, window), Decimal("1"))
+        quota = p.quota_for(window, activity_fraction=af) if p else Decimal("0")
         pct = booked / quota if quota != 0 else None
         summaries.append(AttainmentSummary(
             payee_id=pid,
@@ -1001,8 +1071,21 @@ class CommissionEngine:
         all_ledger: list[LedgerEntry] = []
         pt = plan.period_type
 
+        # Pre-compute activity fractions for pro-rating
+        pro_rating = getattr(plan, "pro_rating", "full") or "full"
+        fractions: dict[tuple[str, str], Decimal] = {}
+        if pro_rating != "full":
+            # Collect unique (payee, window) pairs from credits
+            for cu in credits:
+                w = _window_key(cu.period, pt)
+                key = (cu.payee_id, w)
+                if key not in fractions:
+                    p = payee_map.get(cu.payee_id)
+                    if p is not None:
+                        fractions[key] = _compute_activity_fraction(p, w, pt, pro_rating)
+
         # Compute attainment: bookings per (payee, window) vs quota
-        attainment = _compute_attainment(credits, payee_map, pt)
+        attainment = _compute_attainment(credits, payee_map, pt, fractions)
         for a in attainment:
             all_ledger.append(LedgerEntry(
                 transaction_id="*",
@@ -1081,11 +1164,13 @@ class CommissionEngine:
                 commissions, ledger = self._calc_tiered(
                     rule, synth_txns, payee_map, pt,
                     quota_category=getattr(rule, "quota_category", None),
+                    fractions=fractions,
                 )
             elif isinstance(rule, AcceleratorRule):
                 commissions, ledger = self._calc_accelerator(
                     rule, synth_txns, payee_map, pt,
                     quota_category=getattr(rule, "quota_category", None),
+                    fractions=fractions,
                 )
             else:
                 continue
@@ -1160,11 +1245,16 @@ class CommissionEngine:
                     by_period[c.period] = by_period.get(c.period, Decimal("0")) + c.commission_amount
 
             for period, earned in sorted(by_period.items()):
+                # Apply activity fraction to draw amount
+                af_draw = fractions.get((pid, period), Decimal("1"))
+                effective_draw = draw_amt * af_draw
+                if effective_draw == 0:
+                    continue
                 if recoverable:
-                    available = max(Decimal("0"), earned - draw_amt)
+                    available = max(Decimal("0"), earned - effective_draw)
                     recovered = min(prior_bal, available)
-                    payout = max(earned - recovered, draw_amt)
-                    new_shortfall = max(Decimal("0"), draw_amt - earned)
+                    payout = max(earned - recovered, effective_draw)
+                    new_shortfall = max(Decimal("0"), effective_draw - earned)
                     new_balance = prior_bal - recovered + new_shortfall
 
                     if recovered > 0:
@@ -1172,27 +1262,27 @@ class CommissionEngine:
                             transaction_id="*", payee_id=pid, period=period,
                             rule_id="draw", base_amount=-recovered, rate=Decimal("1"),
                             commission_amount=-recovered,
-                            notes=f"draw_recovery: recovered {recovered} toward draw {draw_amt}",
+                            notes=f"draw_recovery: recovered {recovered} toward draw {effective_draw}",
                         ))
-                    if earned < draw_amt:
-                        topup = draw_amt - earned
+                    if earned < effective_draw:
+                        topup = effective_draw - earned
                         all_commissions.append(Commission(
                             transaction_id="*", payee_id=pid, period=period,
                             rule_id="draw", base_amount=topup, rate=Decimal("1"),
                             commission_amount=topup,
-                            notes=f"draw_topup: floor {draw_amt}, earned {earned}",
+                            notes=f"draw_topup: floor {effective_draw}, earned {earned}",
                         ))
 
                     all_ledger.append(LedgerEntry(
                         transaction_id="*", payee_id=pid, rule_id="draw",
                         event_type="draw",
                         inputs={
-                            "earned": str(earned), "draw": str(draw_amt),
+                            "earned": str(earned), "draw": str(effective_draw),
                             "recovered": str(recovered), "prior_balance": str(prior_bal),
                         },
                         outputs={"payout": str(payout), "new_balance": str(new_balance)},
                         human_readable=(
-                            f"Draw for {pid} {period}: earned {earned}, draw {draw_amt}, "
+                            f"Draw for {pid} {period}: earned {earned}, draw {effective_draw}, "
                             f"recovered {recovered}, balance {prior_bal}→{new_balance}"
                         ),
                     ))
@@ -1200,22 +1290,22 @@ class CommissionEngine:
                     prior_bal = new_balance  # carry forward for next period
                 else:
                     # Non-recoverable: simple floor
-                    if earned < draw_amt:
-                        topup = draw_amt - earned
+                    if earned < effective_draw:
+                        topup = effective_draw - earned
                         all_commissions.append(Commission(
                             transaction_id="*", payee_id=pid, period=period,
                             rule_id="draw", base_amount=topup, rate=Decimal("1"),
                             commission_amount=topup,
-                            notes=f"draw_topup: guarantee {draw_amt}, earned {earned}",
+                            notes=f"draw_topup: guarantee {effective_draw}, earned {earned}",
                         ))
                         all_ledger.append(LedgerEntry(
                             transaction_id="*", payee_id=pid, rule_id="draw",
                             event_type="draw",
-                            inputs={"earned": str(earned), "draw": str(draw_amt)},
+                            inputs={"earned": str(earned), "draw": str(effective_draw)},
                             outputs={"topup": str(topup)},
                             human_readable=(
                                 f"Draw (non-recoverable) for {pid} {period}: "
-                                f"earned {earned}, topped up to {draw_amt}"
+                                f"earned {earned}, topped up to {effective_draw}"
                             ),
                         ))
 
@@ -1492,6 +1582,7 @@ class CommissionEngine:
         payee_map: dict[str, Payee],
         period_type: str = "monthly",
         quota_category: str | None = None,
+        fractions: dict[tuple[str, str], Decimal] | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1546,7 +1637,8 @@ class CommissionEngine:
                 )
             )
 
-            quota = payee.quota_for(window, category=quota_category)
+            af_tiered = (fractions or {}).get((payee_id, window), Decimal("1"))
+            quota = payee.quota_for(window, category=quota_category, activity_fraction=af_tiered)
 
             if quota == Decimal("0"):
                 top_tier = rule.tiers[-1]
@@ -1724,6 +1816,7 @@ class CommissionEngine:
         payee_map: dict[str, Payee],
         period_type: str = "monthly",
         quota_category: str | None = None,
+        fractions: dict[tuple[str, str], Decimal] | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1761,7 +1854,8 @@ class CommissionEngine:
                         ),
                     ))
                 continue
-            quota = payee.quota_for(window, category=quota_category)
+            af_accel = (fractions or {}).get((payee_id, window), Decimal("1"))
+            quota = payee.quota_for(window, category=quota_category, activity_fraction=af_accel)
             if quota == Decimal("0"):
                 for t in txn_group:
                     ledger.append(LedgerEntry(

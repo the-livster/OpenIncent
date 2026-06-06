@@ -141,7 +141,8 @@ class Payee(BaseModel):
     manager_id: str = ""
     manager_override: Decimal | None = Field(default=None, ge=Decimal("0"), le=Decimal("1"))
 
-    def quota_for(self, window_key: str, category: str | None = None) -> Decimal:
+    def quota_for(self, window_key: str, category: str | None = None,
+                  activity_fraction: Decimal = Decimal("1")) -> Decimal:
         """Return the quota for a given window key, falling back to default.
 
         If a category is provided and category_quotas is set, uses the
@@ -149,6 +150,8 @@ class Payee(BaseModel):
 
         If a ramp schedule is active for this window, the quota is multiplied
         by the corresponding ramp multiplier.
+
+        If activity_fraction < 1, the quota is pro-rated (partial periods).
         """
         if category and category in self.category_quotas:
             base = self.category_quotas[category]
@@ -157,7 +160,9 @@ class Payee(BaseModel):
         if self.ramp and self.effective_from:
             mult = self._ramp_multiplier_for(window_key)
             if mult is not None:
-                return base * mult
+                base = base * mult
+        if activity_fraction != Decimal("1"):
+            base = base * activity_fraction
         return base
 
     def _ramp_multiplier_for(self, window_key: str) -> Decimal | None:
@@ -323,6 +328,7 @@ class Plan(BaseModel):
     rules: list[Rule] = Field(default_factory=list)
     payout_cap: Decimal | None = Field(default=None, ge=Decimal("0"))
     draw: Draw | None = None
+    pro_rating: str = Field(default="full", pattern=r"^(full|daily|zero)$")
 
 
 # --- Manual adjustments ---
