@@ -804,13 +804,138 @@ class CommissionEngine:
         prior_draw_balances: dict[str, Decimal] | None = None,
         mbos: list[Any] | None = None,
     ) -> CalculationResult:
+        payee_map = {p.id: p for p in payees}
+        credits = _resolve_credits(transactions)
+        return self._run_plan_pipeline(
+            plan, credits, payee_map,
+            locked_periods=locked_periods,
+            effective_period=effective_period,
+            prior_commissions=prior_commissions,
+            adjustments=adjustments,
+            prior_draw_balances=prior_draw_balances,
+            mbos=mbos,
+        )
+
+    def calculate_run(
+        self,
+        plans: dict[str, Plan],
+        transactions: list[Transaction],
+        payees: list[Payee],
+        *,
+        locked_periods: dict[str, set[str]] | None = None,
+        effective_period: str | None = None,
+        prior_commissions: dict[str, list[Commission]] | None = None,
+        adjustments: list[Any] | None = None,
+        prior_draw_balances: dict[str, Decimal] | None = None,
+        mbos: list[Any] | None = None,
+    ) -> CalculationResult:
+        """Compute commissions for payees on DIFFERENT plans in a SINGLE run.
+
+        Each payee is governed by the plan whose id == payee.plan_id. Credits
+        are resolved once globally, then evaluated under each payee's plan.
+        """
+        payee_map = {p.id: p for p in payees}
+
+        # Validate: every payee's plan_id must exist in the plan library
+        for p in payees:
+            if p.plan_id not in plans:
+                raise ValueError(
+                    f"Payee {p.id!r} references plan_id {p.plan_id!r}, "
+                    f"which is not in the plan library. "
+                    f"Available plans: {sorted(plans.keys())}"
+                )
+
+        # Resolve credits once, globally
+        credits = _resolve_credits(transactions)
+
+        # Group credit units by each payee's plan
+        plan_credits: dict[str, list[_CreditUnit]] = {pid: [] for pid in plans}
+        for cu in credits:
+            p = payee_map.get(cu.payee_id)
+            if p is None:
+                continue
+            pid = p.plan_id
+            if pid in plan_credits:
+                plan_credits[pid].append(cu)
+
+        # Group payees by plan
+        plan_payees: dict[str, dict[str, Payee]] = {pid: {} for pid in plans}
+        for p in payees:
+            if p.plan_id in plan_payees:
+                plan_payees[p.plan_id][p.id] = p
+
+        # Filter MBOs and adjustments per plan (by payee)
+        plan_mbos: dict[str, list[Any]] = {pid: [] for pid in plans}
+        if mbos:
+            for mbo in mbos:
+                pid = getattr(mbo, "payee_id", "")
+                p = payee_map.get(pid)
+                if p and p.plan_id in plan_mbos:
+                    plan_mbos[p.plan_id].append(mbo)
+
+        plan_adj: dict[str, list[Any]] = {pid: [] for pid in plans}
+        if adjustments:
+            for adj in adjustments:
+                pid = getattr(adj, "payee_id", "")
+                p = payee_map.get(pid)
+                if p and p.plan_id in plan_adj:
+                    plan_adj[p.plan_id].append(adj)
+
+        # Run each plan's pipeline independently
         all_commissions: list[Commission] = []
         all_ledger: list[LedgerEntry] = []
-        payee_map = {p.id: p for p in payees}
-        pt = plan.period_type
+        all_attainment: list[AttainmentSummary] = []
+        all_draw_balances: dict[str, Decimal] = {}
 
-        # Resolve credits — expand multi-payee transactions into credit units
-        credits = _resolve_credits(transactions)
+        for plan_id in sorted(plans.keys()):
+            plan = plans[plan_id]
+            plan_result = self._run_plan_pipeline(
+                plan,
+                plan_credits.get(plan_id, []),
+                plan_payees.get(plan_id, {}),
+                locked_periods=(locked_periods or {}).get(plan_id),
+                effective_period=effective_period,
+                prior_commissions=(prior_commissions or {}).get(plan_id),
+                adjustments=plan_adj.get(plan_id) or None,
+                prior_draw_balances=prior_draw_balances,
+                mbos=plan_mbos.get(plan_id) or None,
+            )
+            all_commissions.extend(plan_result.commissions)
+            all_ledger.extend(plan_result.ledger)
+            all_attainment.extend(plan_result.attainment)
+            all_draw_balances.update(plan_result.draw_balances)
+
+        # Merge results in deterministic order
+        all_commissions.sort(key=lambda c: (c.payee_id, c.rule_id, c.transaction_id))
+        all_attainment.sort(key=lambda a: (a.payee_id, a.period))
+
+        return CalculationResult(
+            commissions=all_commissions,
+            ledger=all_ledger,
+            attainment=all_attainment,
+            draw_balances=all_draw_balances,
+        )
+
+    def _run_plan_pipeline(
+        self,
+        plan: Plan,
+        credits: list[_CreditUnit],
+        payee_map: dict[str, Payee],
+        *,
+        locked_periods: set[str] | None = None,
+        effective_period: str | None = None,
+        prior_commissions: list[Commission] | None = None,
+        adjustments: list[Any] | None = None,
+        prior_draw_balances: dict[str, Decimal] | None = None,
+        mbos: list[Any] | None = None,
+    ) -> CalculationResult:
+        """Core pipeline: attainment → rule eval → MBOs → cap → draw → locking → adjustments.
+
+        Operates on pre-resolved credit units and a single plan. Used by both
+        calculate() (single-plan) and calculate_run() (multi-plan)."""
+        all_commissions: list[Commission] = []
+        all_ledger: list[LedgerEntry] = []
+        pt = plan.period_type
 
         # Compute attainment: bookings per (payee, window) vs quota
         attainment = _compute_attainment(credits, payee_map, pt)

@@ -291,6 +291,39 @@ class Database:
             )
         return cur.rowcount > 0
 
+    def load_plan_library(self) -> dict[str, Any]:
+        """Load all plans for this org into a {plan_id: Plan} dict.
+
+        Parses stored YAML via load_plan / Plan.model_validate. Plans that
+        fail to parse are skipped with a warning logged, but the method
+        continues — a corrupted plan file should not block the entire library.
+        """
+        import logging
+        import tempfile
+
+        from icm_engine.loader import load_plan
+
+        _log = logging.getLogger(__name__)
+        library: dict[str, Any] = {}
+
+        for row in self.list_plans():
+            pid = row["id"]
+            yaml_text = row.get("yaml_content", "")
+            if not yaml_text.strip():
+                continue
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".yaml", delete=False, encoding="utf-8",
+                ) as tf:
+                    tf.write(yaml_text)
+                    tf.flush()
+                    plan = load_plan(Path(tf.name))
+                    library[pid] = plan
+            except Exception as e:
+                _log.warning("Failed to parse plan %s: %s", pid, e)
+
+        return library
+
     # ------------------------------------------------------------------
     # Payees
     # ------------------------------------------------------------------

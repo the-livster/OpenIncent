@@ -49,6 +49,44 @@ A single `calculate()` runs these stages in order:
 
 Output `Commission.period` is always the **window key** (e.g. `2026-Q1`), not the raw transaction month.
 
+### 2.1 Multi-plan runs
+
+`calculate_run(plans, transactions, payees, ...)` computes commissions for payees on **different plans**
+in a **single call**, routing each payee's deals through the plan named by their `Payee.plan_id`.
+
+**Routing semantics:**
+
+- **Plan resolution.** Each payee is governed by the plan whose `plan_id == payee.plan_id`. Plans are
+  resolved from a `{plan_id: Plan}` library. If a payee's `plan_id` has no matching plan, the engine
+  raises a clear error naming the payee and the missing plan_id — no silent skipping.
+
+- **Cross-plan splits.** A single deal may credit multiple payees on different plans (splits/overlays).
+  The split is applied first (credit resolution), then each resulting credit unit is evaluated under its
+  payee's plan. Credits are routed at the **credit-unit level**, not the transaction level — the split
+  is never re-split or re-validated per plan.
+
+- **Per-payee windowing.** Attainment windows use each payee's own plan's `period_type`. A payee on a
+  quarterly plan and one on a monthly plan can run together, each windowed correctly.
+
+- **Per-plan Tier-A.** Each plan's `payout_cap` and `draw` apply only to that plan's payees. MBOs and
+  manual adjustments are per-payee/period and route to that payee's plan run; `prior_draw_balances`
+  route by payee.
+
+- **Per-plan locking.** Locked periods and prior commissions are resolved per-(plan, period). In
+  multi-plan mode, `locked_periods` is `dict[plan_id, set[period]]` and `prior_commissions` is
+  `dict[plan_id, list[Commission]]`.
+
+**Scope limits:**
+
+- Assignment is **one plan per payee** for the run (via `payee.plan_id`). Period-scoped reassignment
+  (a payee on Plan A in January, Plan B in February within a single run) is a future extension.
+- Cross-plan locking interactions: each plan's locking is handled independently.
+
+**Implementation note.** `calculate_run()` resolves credits once globally, then groups credit units by
+each payee's plan and runs the post-credit pipeline (`_run_plan_pipeline`) independently per plan.
+Results are merged deterministically (by `plan_id`, then `payee_id`). `calculate()` remains the
+single-plan entry point, byte-for-byte identical to before.
+
 ---
 
 ## 3. Periods & windows

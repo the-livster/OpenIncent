@@ -17,7 +17,7 @@ from icm_engine.database import Database, default_db_path
 from icm_engine.engine import CommissionEngine
 from icm_engine.ledger import LedgerEntry
 from icm_engine.loader import load_payees, load_plan, load_transactions
-from icm_engine.models import Commission
+from icm_engine.models import Commission, Plan
 
 app = FastAPI(title="icm-engine")
 
@@ -99,7 +99,7 @@ def _serialize(obj: Any) -> Any:
 
 @v1.post("/calculate")
 async def calculate(
-    plan: UploadFile = File(...),  # noqa: B008
+    plan: UploadFile | None = File(None),  # noqa: B008
     transactions: UploadFile = File(...),  # noqa: B008
     payees: UploadFile = File(...),  # noqa: B008
     adjustments: UploadFile | None = File(None),  # noqa: B008
@@ -108,10 +108,16 @@ async def calculate(
     allow_recalculate_locked: bool = True,
     org: str = Depends(get_org),
 ) -> dict[str, Any]:
+    """Calculate commissions.
+
+    Single-plan mode: upload a plan file.
+    Multi-plan mode: omit the plan file — resolves each payee's plan from
+    the saved DB library by payee.plan_id.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
         files: dict[str, Path] = {}
-        for name, upload in [("plan", plan), ("transactions", transactions), ("payees", payees)]:
+        for name, upload in [("transactions", transactions), ("payees", payees)]:
             content = await upload.read()
             if len(content) > MAX_UPLOAD_BYTES:
                 raise HTTPException(status_code=413, detail={
@@ -123,10 +129,6 @@ async def calculate(
             files[name] = filepath
 
         try:
-            plan_obj = load_plan(files["plan"])
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail={"error": "Invalid plan file", "detail": str(e)}) from e
-        try:
             txn_list, _ = load_transactions(files["transactions"])
         except ValueError as e:
             raise HTTPException(status_code=400, detail={"error": "Invalid transactions file", "detail": str(e)}) from e
@@ -135,12 +137,52 @@ async def calculate(
         except ValueError as e:
             raise HTTPException(status_code=400, detail={"error": "Invalid payees file", "detail": str(e)}) from e
 
-        # Persist to database
         db = _get_db(org)
 
-        # Determine locked periods for this plan
-        period_status = db.get_period_status(plan_obj.plan_id)
-        locked_periods = {r["period"] for r in period_status if r.get("locked_calc_id") is not None}
+        # --- Resolve plan(s) ---
+        plan_library: dict[str, Plan] = {}
+        single_plan_mode = plan is not None
+
+        if single_plan_mode:
+            assert plan is not None  # type guard
+            content = await plan.read()
+            if len(content) > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail={"error": "Plan file exceeds limit"})
+            ext = Path(plan.filename or "").suffix or ".yaml"
+            plan_path = root / f"plan{ext}"
+            plan_path.write_bytes(content)
+            try:
+                plan_obj = load_plan(plan_path)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail={"error": "Invalid plan file", "detail": str(e)}) from e
+            plan_library[plan_obj.plan_id] = plan_obj
+        else:
+            # Multi-plan: resolve from DB based on payee plan_ids
+            plan_library = db.load_plan_library()
+            if not plan_library:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error": "No plans in library. Upload a plan file or save plans to the DB first."},
+                )
+
+        if not plan_library:
+            raise HTTPException(status_code=400, detail={"error": "No plan available"})
+
+        use_multi_plan = len(plan_library) > 1 or (
+            not single_plan_mode and any(
+                p.plan_id != (list(plan_library.keys())[0]) for p in payee_list
+            )
+        )
+
+        # Determine locked periods
+        locked_by_plan: dict[str, set[str]] = {}
+        locked_periods: set[str] = set()
+        for pid in plan_library:
+            period_status = db.get_period_status(pid)
+            lp = {r["period"] for r in period_status if r.get("locked_calc_id") is not None}
+            if lp:
+                locked_by_plan[pid] = lp
+                locked_periods |= lp
 
         txn_periods = {t.period for t in txn_list}
         locked_relevant = txn_periods & locked_periods
@@ -155,30 +197,36 @@ async def calculate(
                         "hint": "Set allow_recalculate_locked=true to create draft versions",
                     },
                 )
-            # Auto-default effective_period to current month
             if effective_period is None:
                 today = _date.today()
                 effective_period = today.strftime("%Y-%m")
 
         # Load prior official commission lines for locked periods
         prior_commissions: list[Commission] = []
+        prior_by_plan: dict[str, list[Commission]] = {}
         if locked_relevant:
-            for period in locked_relevant:
-                official = db.get_official_calculation(plan_obj.plan_id, period)
-                if official:
-                    lines = db.get_commission_lines(official["id"])
-                    for line in lines:
-                        prior_commissions.append(Commission(**{
-                            "transaction_id": line["transaction_id"],
-                            "payee_id": line["payee_id"],
-                            "period": line["period"],
-                            "origin_period": line.get("origin_period", ""),
-                            "rule_id": line["rule_id"],
-                            "base_amount": line["base_amount"],
-                            "rate": line["rate"],
-                            "commission_amount": line["commission_amount"],
-                            "notes": line.get("notes", ""),
-                        }))
+            for pid in plan_library:
+                plan_priors: list[Commission] = []
+                for period in locked_by_plan.get(pid, set()):
+                    official = db.get_official_calculation(pid, period)
+                    if official:
+                        lines = db.get_commission_lines(official["id"])
+                        for line in lines:
+                            c = Commission(**{
+                                "transaction_id": line["transaction_id"],
+                                "payee_id": line["payee_id"],
+                                "period": line["period"],
+                                "origin_period": line.get("origin_period", ""),
+                                "rule_id": line["rule_id"],
+                                "base_amount": line["base_amount"],
+                                "rate": line["rate"],
+                                "commission_amount": line["commission_amount"],
+                                "notes": line.get("notes", ""),
+                            })
+                            plan_priors.append(c)
+                            prior_commissions.append(c)
+                if plan_priors:
+                    prior_by_plan[pid] = plan_priors
 
         try:
             engine = CommissionEngine()
@@ -198,14 +246,26 @@ async def calculate(
                     mbo_path.write_bytes(mbo_bytes)
                     from icm_engine.loader import load_mbos
                     mbos_list = load_mbos(mbo_path)
-            result = engine.calculate(
-                plan_obj, txn_list, payee_list,
-                locked_periods=locked_relevant if locked_relevant else None,
-                effective_period=effective_period if locked_relevant else None,
-                prior_commissions=prior_commissions if prior_commissions else None,
-                adjustments=adjustments_list,
-                mbos=mbos_list,
-            )
+
+            if use_multi_plan:
+                result = engine.calculate_run(
+                    plan_library, txn_list, payee_list,
+                    locked_periods=locked_by_plan if locked_by_plan else None,
+                    effective_period=effective_period if locked_relevant else None,
+                    prior_commissions=prior_by_plan if prior_by_plan else None,
+                    adjustments=adjustments_list,
+                    mbos=mbos_list,
+                )
+            else:
+                plan_obj = list(plan_library.values())[0]
+                result = engine.calculate(
+                    plan_obj, txn_list, payee_list,
+                    locked_periods=locked_relevant if locked_relevant else None,
+                    effective_period=effective_period if locked_relevant else None,
+                    prior_commissions=prior_commissions if prior_commissions else None,
+                    adjustments=adjustments_list,
+                    mbos=mbos_list,
+                )
         except Exception as e:
             import traceback as _tb
             raise HTTPException(status_code=500, detail={
@@ -223,15 +283,24 @@ async def calculate(
             p = c_dict["period"]
             by_period.setdefault(p, []).append(c_dict)
 
+        # Map payee_id → plan_id for per-plan persistence
+        payee_plan: dict[str, str] = {p.id: p.plan_id for p in payee_list}
+
         calc_ids: dict[str, str] = {}
         for period_key, comms in sorted(by_period.items()):
+            # Determine which plan this period's commission lines belong to
+            plan_for_period = list(plan_library.keys())[0]
+            for c_dict in comms:
+                ppid = payee_plan.get(c_dict["payee_id"])
+                if ppid and ppid in plan_library:
+                    plan_for_period = ppid
+                    break
             calc_id = db.record_calculation(
-                plan_obj.plan_id,
+                plan_for_period,
                 period=period_key,
                 input_summary={"txn_count": len(txn_list), "payee_count": len(payee_list)},
             )
             db.save_commission_lines(calc_id, comms)
-            # Save ledger under every period calculation for full audit coverage
             db.save_ledger_entries(calc_id, ledger_dicts)
             calc_ids[period_key] = calc_id
 

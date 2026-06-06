@@ -149,9 +149,9 @@ Shipped:
 - ~~Period locking & versioning~~ ✅ · ~~Per-rep statements + order trace~~ ✅
 - ~~Draws & guarantees~~ ✅ · ~~Caps, thresholds & MBOs~~ ✅ · ~~Manual adjustments~~ ✅
 - ~~Quota categories~~ ✅ · ~~Metadata-aware filters~~ ✅ · ~~Desktop auto-update~~ ✅
+- ~~Multi-plan runs~~ ✅ — route each payee through their assigned plan in a single run
 
 Next:
-- **Multi-plan runs** — route each payee through their assigned plan in a single run (the payee→plan roster)
 - **Payroll-ready payout register** and an approval / sign-off record
 - **Plan effective-dating**, what-if modeling, and org-level reporting
 

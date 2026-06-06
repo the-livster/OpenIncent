@@ -27,7 +27,10 @@ console = Console()
 
 @app.callback(invoke_without_command=True)
 def main(
-    plan: str = typer.Option(None, "--plan", help="Path to plan YAML file"),
+    plan: str = typer.Option(None, "--plan", help="Path to plan YAML file (single-plan mode)"),
+    plans: list[str] = typer.Option(
+        None, "--plans", help="Paths to plan YAML files for multi-plan run"
+    ),
     transactions: str = typer.Option(
         None, "--transactions", help="Path to transactions CSV or XLSX"
     ),
@@ -65,13 +68,22 @@ def main(
         None, "--mbos", help="Path to MBOs/bonuses CSV"
     ),
 ) -> None:
-    """Calculate commissions from a plan, transactions, and payees."""
-    if plan is None or transactions is None or payees is None or output is None:
+    """Calculate commissions from a plan, transactions, and payees.
+
+    Single-plan mode (--plan):
+      icm --plan plan.yaml --transactions deals.csv --payees reps.csv --output out/
+
+    Multi-plan mode (--plans or auto-resolve from DB):
+      icm --plans plan_a.yaml plan_b.yaml --transactions deals.csv --payees reps.csv --output out/
+      icm --transactions deals.csv --payees reps.csv --output out/   (resolves plans from DB)
+    """
+    if transactions is None or payees is None or output is None:
         return
+    if plan is None and not plans and no_db:
+        console.print("[red]Either --plan, --plans, or DB access is required[/red]")
+        raise typer.Exit(code=1)
 
     _setup_logging()
-
-    plan_obj = load_plan(plan)
 
     mapping_obj = None
     if mapping:
@@ -81,20 +93,72 @@ def main(
     txns, txn_mapping = load_transactions(transactions, mapping=mapping_obj)
     payee_list, payee_mapping = load_payees(payees, mapping=mapping_obj)
 
-    # Filter-field typo guard: warn if any rule filter references a column
-    # that is neither canonical nor present in any transaction's metadata.
+    # --- Resolve plans (single-plan or multi-plan) ---
+    plan_library: dict[str, Plan] = {}
+    single_plan_mode = plan is not None
+
+    db: Database | None = None
+    if not no_db:
+        db = Database(db_path or str(default_db_path()), org_id=org)
+        db.init()
+
+    if single_plan_mode:
+        p_obj = load_plan(plan)
+        plan_library[p_obj.plan_id] = p_obj
+    elif plans:
+        for pf in plans:
+            p_obj = load_plan(pf)
+            plan_library[p_obj.plan_id] = p_obj
+    elif db is not None:
+        # Auto-resolve from DB using payee plan_ids
+        try:
+            plan_library = db.load_plan_library()
+        except Exception:
+            plan_library = {}
+        if not plan_library:
+            # Fall back: try loading a single plan from any payee's plan_id
+            plan_ids_in_use = {p.plan_id for p in payee_list if p.plan_id}
+            for pid in plan_ids_in_use:
+                row = db.get_plan(pid)
+                if row and row.get("yaml_content"):
+                    import tempfile
+                    from pathlib import Path as _Path
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".yaml", delete=False, encoding="utf-8",
+                    ) as tf:
+                        tf.write(row["yaml_content"])
+                        tf.flush()
+                        p_obj = load_plan(_Path(tf.name))
+                        plan_library[p_obj.plan_id] = p_obj
+
+    if not plan_library:
+        console.print("[red]No plans available. Provide --plan, --plans, or save plans to the DB.[/red]")
+        raise typer.Exit(code=1)
+
+    use_multi_plan = len(plan_library) > 1 or (
+        not single_plan_mode and any(p.plan_id != (list(plan_library.keys())[0]) for p in payee_list)
+    )
+
+    if use_multi_plan:
+        console.print(
+            f"[cyan]Multi-plan run: {len(plan_library)} plan(s), "
+            f"{len(payee_list)} payee(s), {len(txns)} transaction(s)[/cyan]"
+        )
+
+    # Filter-field typo guard
     from icm_engine.engine import check_filter_fields
-    for rule in plan_obj.rules:
-        f_source: str | None = getattr(rule, "filter", None)
-        if f_source:
-            unused = check_filter_fields(f_source, txns)
-            for field in unused:
-                console.print(
-                    f"[yellow]Warning:[/yellow] filter on rule [bold]{rule.id}[/bold] "
-                    f"references field [bold]{field!r}[/bold] which is neither a "
-                    f"canonical field nor present in any transaction's metadata. "
-                    f"It will never match."
-                )
+    for p in plan_library.values():
+        for rule in p.rules:
+            f_source: str | None = getattr(rule, "filter", None)
+            if f_source:
+                unused = check_filter_fields(f_source, txns)
+                for field in unused:
+                    console.print(
+                        f"[yellow]Warning:[/yellow] filter on rule [bold]{rule.id}[/bold] "
+                        f"(plan [bold]{p.plan_id}[/bold]) references field "
+                        f"[bold]{field!r}[/bold] which is neither a canonical field "
+                        f"nor present in any transaction's metadata. It will never match."
+                    )
 
     if txn_mapping:
         _print_mapping(txn_mapping)
@@ -103,14 +167,17 @@ def main(
 
     engine = CommissionEngine()
 
-    # Determine locked periods and effective period for lock-aware recalculation
+    # Determine locked periods and effective period
     locked_periods: set[str] = set()
+    locked_by_plan: dict[str, set[str]] = {}
     eff_period: str | None = effective_period
-    if not no_db:
-        db = Database(db_path or str(default_db_path()), org_id=org)
-        db.init()
-        period_status = db.get_period_status(plan_obj.plan_id)
-        locked_periods = {r["period"] for r in period_status if r.get("locked_calc_id") is not None}
+    if db is not None:
+        for pid in plan_library:
+            period_status = db.get_period_status(pid)
+            lp = {r["period"] for r in period_status if r.get("locked_calc_id") is not None}
+            if lp:
+                locked_by_plan[pid] = lp
+                locked_periods |= lp
 
     txn_periods = {t.period for t in txns}
     locked_relevant = txn_periods & locked_periods
@@ -132,24 +199,31 @@ def main(
 
     # Load prior official commission lines for locked periods
     prior_commissions: list[Commission] | None = None
-    if locked_relevant and not no_db:
+    prior_by_plan: dict[str, list[Commission]] = {}
+    if locked_relevant and db is not None:
         prior_commissions = []
-        for period in locked_relevant:
-            official = db.get_official_calculation(plan_obj.plan_id, period)
-            if official:
-                lines = db.get_commission_lines(official["id"])
-                for line in lines:
-                    prior_commissions.append(Commission(
-                        transaction_id=line["transaction_id"],
-                        payee_id=line["payee_id"],
-                        period=line["period"],
-                        origin_period=line.get("origin_period", ""),
-                        rule_id=line["rule_id"],
-                        base_amount=Decimal(line["base_amount"]),
-                        rate=Decimal(line["rate"]),
-                        commission_amount=Decimal(line["commission_amount"]),
-                        notes=line.get("notes", ""),
-                    ))
+        for pid in plan_library:
+            plan_priors: list[Commission] = []
+            for period in locked_by_plan.get(pid, set()):
+                official = db.get_official_calculation(pid, period)
+                if official:
+                    lines = db.get_commission_lines(official["id"])
+                    for line in lines:
+                        c = Commission(
+                            transaction_id=line["transaction_id"],
+                            payee_id=line["payee_id"],
+                            period=line["period"],
+                            origin_period=line.get("origin_period", ""),
+                            rule_id=line["rule_id"],
+                            base_amount=Decimal(line["base_amount"]),
+                            rate=Decimal(line["rate"]),
+                            commission_amount=Decimal(line["commission_amount"]),
+                            notes=line.get("notes", ""),
+                        )
+                        plan_priors.append(c)
+                        prior_commissions.append(c)
+            if plan_priors:
+                prior_by_plan[pid] = plan_priors
 
     # Load manual adjustments if provided
     adjustments_list = None
@@ -163,17 +237,29 @@ def main(
         from icm_engine.loader import load_mbos
         mbos_list = load_mbos(mbos_file)
 
-    result = engine.calculate(
-        plan_obj, txns, payee_list,
-        locked_periods=locked_relevant if locked_relevant else None,
-        effective_period=eff_period if locked_relevant else None,
-        prior_commissions=prior_commissions,
-        adjustments=adjustments_list,
-        mbos=mbos_list,
-    )
+    if use_multi_plan:
+        result = engine.calculate_run(
+            plan_library, txns, payee_list,
+            locked_periods=locked_by_plan if locked_by_plan else None,
+            effective_period=eff_period if locked_relevant else None,
+            prior_commissions=prior_by_plan if prior_by_plan else None,
+            adjustments=adjustments_list,
+            prior_draw_balances=None,
+            mbos=mbos_list,
+        )
+    else:
+        single_plan = list(plan_library.values())[0]
+        result = engine.calculate(
+            single_plan, txns, payee_list,
+            locked_periods=locked_relevant if locked_relevant else None,
+            effective_period=eff_period if locked_relevant else None,
+            prior_commissions=prior_commissions,
+            adjustments=adjustments_list,
+            mbos=mbos_list,
+        )
 
     # Persist to database
-    if not no_db:
+    if not no_db and db is not None:
         commissions = [c.model_dump() for c in result.commissions]
         ledger_dicts = [e.to_dict() for e in result.ledger]
 
@@ -182,10 +268,24 @@ def main(
             p = c_dict["period"]
             by_period.setdefault(p, []).append(c_dict)
 
+        # Group commission lines by (plan, period) for per-plan persistence
+        # In single-plan mode, all lines belong to the same plan.
+        # In multi-plan mode, we assign lines to the plan of their payee's plan_id.
+        payee_plan: dict[str, str] = {p.id: p.plan_id for p in payee_list}
+
+        period_plan: dict[str, str] = {}
+        for c_dict in commissions:
+            p = c_dict["period"]
+            pid = payee_plan.get(c_dict["payee_id"], list(plan_library.keys())[0])
+            # Use the first plan_id seen for this period as the "primary" plan
+            if p not in period_plan:
+                period_plan[p] = pid
+
         calc_ids: dict[str, str] = {}
         for period_key, comms in sorted(by_period.items()):
+            plan_for_period = period_plan.get(period_key, list(plan_library.keys())[0])
             calc_id = db.record_calculation(
-                plan_obj.plan_id,
+                plan_for_period,
                 period=period_key,
                 input_summary={"txn_count": len(txns), "payee_count": len(payee_list)},
             )
@@ -237,7 +337,7 @@ def main(
             _save_mapping_file(m, save_path)
             console.print(f"[green]Saved mapping to {save_mapping}[/green]")
 
-    _print_summary(result, plan_obj, txns, payee_list)
+    _print_summary(result, plan_library, txns, payee_list)
 
 
 @app.command("serve")
@@ -975,7 +1075,7 @@ def _write_summary_csv(commissions: list[Commission], path: Path) -> None:
 
 def _print_summary(
     result: CalculationResult,
-    plan_obj: Plan,
+    plan_library: dict[str, Plan],
     txns: list[Transaction],
     payee_list: list[Payee],
 ) -> None:
@@ -986,7 +1086,12 @@ def _print_summary(
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="green")
 
-    table.add_row("Plan", plan_obj.name)
+    if len(plan_library) == 1:
+        plan_obj: Plan = list(plan_library.values())[0]
+        table.add_row("Plan", plan_obj.name)
+    else:
+        plan_names = ", ".join(p.name for p in plan_library.values())
+        table.add_row("Plans", plan_names)
     table.add_row("Total commission", str(total_commission))
     table.add_row("Payees (in output)", str(unique_payees))
     table.add_row("Transactions processed", str(len(txns)))

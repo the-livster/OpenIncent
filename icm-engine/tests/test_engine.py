@@ -1844,3 +1844,267 @@ class TestIntegration:
         # Verify adjustment is NOT capped
         adj_line = next(c for c in r2.commissions if c.rule_id == "manual_adjustment")
         assert adj_line.commission_amount == Decimal("200")
+
+
+# ------------------------------------------------------------------
+# Multi-plan tests
+# ------------------------------------------------------------------
+
+
+class TestCalculateRun:
+    """Tests for calculate_run() — multi-plan commission runs."""
+
+    def test_two_payees_two_plans(self) -> None:
+        """Two payees on different plans — each computed under their own plan."""
+        engine = CommissionEngine()
+        plan_a = Plan(
+            plan_id="A", name="Plan A", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))],
+        )
+        plan_b = Plan(
+            plan_id="B", name="Plan B", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        payees = [
+            _payee(id="P001", plan_id="A"),
+            _payee(id="P002", plan_id="B"),
+        ]
+        txns = [
+            _txn(id="T001", payee_id="P001", amount=Decimal("10000")),
+            _txn(id="T002", payee_id="P002", amount=Decimal("10000")),
+        ]
+        result = engine.calculate_run({"A": plan_a, "B": plan_b}, txns, payees)
+
+        # P001 under Plan A: 5% of 10000 = 500
+        # P002 under Plan B: 10% of 10000 = 1000
+        p001_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "P001")
+        p002_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "P002")
+        assert p001_total == Decimal("500")
+        assert p002_total == Decimal("1000")
+
+    def test_cross_plan_split(self) -> None:
+        """One deal split 60/40 between payees on different plans."""
+        engine = CommissionEngine()
+        from icm_engine.models import Credit
+
+        plan_a = Plan(
+            plan_id="A", name="Plan A", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        plan_b = Plan(
+            plan_id="B", name="Plan B", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))],
+        )
+        payees = [
+            _payee(id="P001", plan_id="A"),
+            _payee(id="P002", plan_id="B"),
+        ]
+        txns = [
+            Transaction(
+                id="T001", payee_id="P001", amount=Decimal("10000"),
+                period="2026-04", close_date=date(2026, 4, 15),
+                credits=[
+                    Credit(payee_id="P001", split_pct=Decimal("0.6"), kind="split"),
+                    Credit(payee_id="P002", split_pct=Decimal("0.4"), kind="split"),
+                ],
+            ),
+        ]
+        result = engine.calculate_run({"A": plan_a, "B": plan_b}, txns, payees)
+
+        # P001: 60% of 10000 = 6000, 10% rate = 600
+        # P002: 40% of 10000 = 4000, 5% rate = 200
+        p001_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "P001")
+        p002_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "P002")
+        assert p001_total == Decimal("600")
+        assert p002_total == Decimal("200")
+
+    def test_mixed_period_types(self) -> None:
+        """Payee on quarterly plan, another on monthly — each windowed correctly."""
+        engine = CommissionEngine()
+        plan_q = Plan(
+            plan_id="Q", name="Quarterly", period_type="quarterly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        plan_m = Plan(
+            plan_id="M", name="Monthly", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        payees = [
+            _payee(id="P001", plan_id="Q", quota=Decimal("30000")),
+            _payee(id="P002", plan_id="M", quota=Decimal("10000")),
+        ]
+        txns = [
+            _txn(id="T001", payee_id="P001", amount=Decimal("10000"), period="2026-01"),
+            _txn(id="T002", payee_id="P001", amount=Decimal("10000"), period="2026-02"),
+            _txn(id="T003", payee_id="P001", amount=Decimal("10000"), period="2026-03"),
+            _txn(id="T004", payee_id="P002", amount=Decimal("5000"), period="2026-01"),
+        ]
+        result = engine.calculate_run({"Q": plan_q, "M": plan_m}, txns, payees)
+
+        # P001 quarterly: 3 months in Q1 = 30000 bookings, 30000 quota = 100% attainment
+        # Window is "2026-Q1"
+        p001_periods = {c.period for c in result.commissions if c.payee_id == "P001"}
+        assert p001_periods == {"2026-Q1"}
+
+        # P002 monthly: period is "2026-01"
+        p002_periods = {c.period for c in result.commissions if c.payee_id == "P002"}
+        assert p002_periods == {"2026-01"}
+
+        # Both should have correct commission at 10%
+        p001_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "P001")
+        p002_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "P002")
+        assert p001_total == Decimal("3000")  # 30000 * 0.10
+        assert p002_total == Decimal("500")   # 5000 * 0.10
+
+    def test_per_plan_tier_a(self) -> None:
+        """Plan A has payout_cap and draw, Plan B does not — applied only to right payees."""
+        engine = CommissionEngine()
+        from icm_engine.models import Draw
+
+        plan_a = Plan(
+            plan_id="A", name="Plan A", period_type="monthly", currency="USD",
+            payout_cap=Decimal("500"),
+            draw=Draw(amount=Decimal("1000"), recoverable=False),
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        plan_b = Plan(
+            plan_id="B", name="Plan B", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        payees = [
+            _payee(id="P001", plan_id="A"),
+            _payee(id="P002", plan_id="B"),
+        ]
+        txns = [
+            _txn(id="T001", payee_id="P001", amount=Decimal("10000")),  # 10% = 1000, cap→500, draw→1000
+            _txn(id="T002", payee_id="P002", amount=Decimal("10000")),  # 10% = 1000, no cap
+        ]
+        result = engine.calculate_run({"A": plan_a, "B": plan_b}, txns, payees)
+
+        p001_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "P001")
+        p002_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "P002")
+
+        # P001: 1000 capped to 500, then draw tops up to 1000
+        assert p001_total == Decimal("1000")
+        # P002: 1000, no cap
+        assert p002_total == Decimal("1000")
+
+        # Verify cap was applied to P001
+        cap_lines = [c for c in result.commissions if c.rule_id == "payout_cap" and c.payee_id == "P001"]
+        assert len(cap_lines) == 1
+        assert cap_lines[0].commission_amount == Decimal("-500")
+        # No cap on P002
+        cap_lines_p2 = [c for c in result.commissions if c.rule_id == "payout_cap" and c.payee_id == "P002"]
+        assert len(cap_lines_p2) == 0
+
+        # Verify draw was applied to P001
+        draw_lines = [c for c in result.commissions if c.rule_id == "draw" and c.payee_id == "P001"]
+        assert len(draw_lines) == 1
+        # No draw on P002
+        draw_lines_p2 = [c for c in result.commissions if c.rule_id == "draw" and c.payee_id == "P002"]
+        assert len(draw_lines_p2) == 0
+
+    def test_missing_plan_raises_error(self) -> None:
+        """Payee whose plan_id is not in the library → clear error."""
+        engine = CommissionEngine()
+        plan_a = Plan(
+            plan_id="A", name="Plan A", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))],
+        )
+        payees = [
+            _payee(id="P001", plan_id="A"),
+            _payee(id="P002", plan_id="MISSING"),
+        ]
+        txns = [
+            _txn(id="T001", payee_id="P001", amount=Decimal("1000")),
+        ]
+        with pytest.raises(ValueError, match="MISSING"):
+            engine.calculate_run({"A": plan_a}, txns, payees)
+
+    def test_golden_equivalence(self) -> None:
+        """A run where every payee is on the SAME plan produces output identical to calculate()."""
+        engine = CommissionEngine()
+        plan = Plan(
+            plan_id="SINGLE", name="Single", period_type="monthly", currency="USD",
+            payout_cap=Decimal("2000"),
+            rules=[
+                FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05")),
+                TieredRule(
+                    type="tiered", id="R2",
+                    tiers=[
+                        Tier(threshold_pct=Decimal("0.5"), rate=Decimal("0.08")),
+                        Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.12")),
+                    ],
+                ),
+            ],
+        )
+        payees = [
+            _payee(id="P001", plan_id="SINGLE", quota=Decimal("10000")),
+            _payee(id="P002", plan_id="SINGLE", quota=Decimal("20000")),
+            _payee(id="P003", plan_id="SINGLE", quota=Decimal("50000")),
+        ]
+        txns = [
+            _txn(id="T001", payee_id="P001", amount=Decimal("5000")),
+            _txn(id="T002", payee_id="P002", amount=Decimal("15000")),
+            _txn(id="T003", payee_id="P003", amount=Decimal("30000")),
+        ]
+        r_single = engine.calculate(plan, txns, payees)
+        r_multi = engine.calculate_run({"SINGLE": plan}, txns, payees)
+
+        assert len(r_multi.commissions) == len(r_single.commissions)
+        for mc, sc in zip(
+            sorted(r_multi.commissions, key=lambda c: (c.payee_id, c.rule_id, c.transaction_id)),
+            sorted(r_single.commissions, key=lambda c: (c.payee_id, c.rule_id, c.transaction_id)),
+            strict=True,
+        ):
+            assert mc.payee_id == sc.payee_id
+            assert mc.rule_id == sc.rule_id
+            assert mc.transaction_id == sc.transaction_id
+            assert mc.commission_amount == sc.commission_amount
+            assert mc.period == sc.period
+
+        assert len(r_multi.ledger) == len(r_single.ledger)
+        assert len(r_multi.attainment) == len(r_single.attainment)
+        assert r_multi.draw_balances == r_single.draw_balances
+
+    def test_golden_equivalence_with_all_params(self) -> None:
+        """Equivalence with MBOs, adjustments, caps, and draws."""
+        engine = CommissionEngine()
+        from icm_engine.models import MBO, Draw, ManualAdjustment
+
+        plan = Plan(
+            plan_id="FULL", name="Full", period_type="monthly", currency="USD",
+            payout_cap=Decimal("5000"),
+            draw=Draw(amount=Decimal("3000"), recoverable=False),
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        payees = [
+            _payee(id="P001", plan_id="FULL"),
+        ]
+        txns = [
+            _txn(id="T001", payee_id="P001", amount=Decimal("40000")),  # 10% = 4000, cap under 5000
+        ]
+        mbos = [MBO(payee_id="P001", period="2026-04", amount=Decimal("500"), label="Q1 bonus")]
+        adjustments = [ManualAdjustment(payee_id="P001", period="2026-04",
+                                         amount=Decimal("-200"), reason="Clawback")]
+
+        r_single = engine.calculate(
+            plan, txns, payees,
+            adjustments=adjustments, mbos=mbos,
+        )
+        r_multi = engine.calculate_run(
+            {"FULL": plan}, txns, payees,
+            adjustments=adjustments, mbos=mbos,
+        )
+
+        assert len(r_multi.commissions) == len(r_single.commissions)
+        for mc, sc in zip(
+            sorted(r_multi.commissions, key=lambda c: (c.payee_id, c.rule_id, c.transaction_id)),
+            sorted(r_single.commissions, key=lambda c: (c.payee_id, c.rule_id, c.transaction_id)),
+            strict=True,
+        ):
+            assert mc.commission_amount == sc.commission_amount
+            assert mc.rule_id == sc.rule_id
+            assert mc.payee_id == sc.payee_id
+
+        assert len(r_multi.ledger) == len(r_single.ledger)
