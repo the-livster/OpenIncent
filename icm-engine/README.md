@@ -2,7 +2,7 @@
 
 **Commission math you can actually see.**
 
-OpenIncent is an open-source incentive-compensation engine. Give it your comp plan and your deal data; it returns every commission payout — with a full audit trail explaining how each number was produced. Self-host it, read the source, own your comp logic.
+OpenIncent is an open-source **incentive-compensation system**. Give it your comp plans, your payees, and your deal data; it computes every payout — crediting, quota attainment, draws, caps, bonuses, and adjustments — with a full audit trail explaining how each number was produced. Self-host it, read the source, own your comp logic.
 
 No black box. No per-seat SaaS. Your comp and payee data never leave your control.
 
@@ -17,14 +17,24 @@ Most commission tools are closed SaaS: you upload sensitive pay data to someone 
 - **Self-hosted** — runs locally or on your own infrastructure. Your data stays yours.
 - **Open source (AGPL-3.0)** — read and audit every line. No lock-in, no per-seat fees.
 - **Penny-precise** — all money uses `Decimal`. No floating-point drift.
+- **Complete** — not just a rate calculator: the whole comp workflow, from crediting through draws, caps, adjustments, and locked, audited statements.
 
-## Who it's for
+## What it does
 
-- RevOps, data, and finance engineers who want to **own their comp logic** instead of renting a black box.
-- Teams with comp too custom for cheap tools, or who need **self-hosting and auditability** for privacy or compliance.
-- Anyone tired of reconciling commissions in a spreadsheet they don't fully trust.
+A run takes your **plans**, **payees**, and **deals** and produces audited payouts. It handles:
 
-**Not for you if** you have a handful of reps on a flat percentage and you're happy in a spreadsheet — you won't feel the pain this solves.
+- **Rule types** — flat-rate, tiered (marginal / boundary-crossing attainment), and accelerator. Each rule can carry a **cap** and a **minimum-attainment gate**.
+- **Crediting** — splits (carve up a deal; must total 100%) and overlays (additive double-credit).
+- **Quotas** — per-payee, with per-period overrides, **quota categories**, and new-hire **ramp** schedules.
+- **Draws & guarantees** — recoverable draws (advances recovered from future earnings, balance carried across periods) and non-recoverable guarantees (a per-period floor).
+- **Caps & thresholds** — per-rule caps, a per-payee/period plan payout cap, and minimum-attainment gates.
+- **MBOs / bonuses** — non-commission period payouts (KPI bonuses, SPIFs).
+- **Manual adjustments** — audited one-off corrections and discretionary amounts, each with a required reason.
+- **Period locking, versioning & true-ups** — lock a closed period; late deals and clawbacks become delta true-ups attributed to the payout period, with origin tracking, while the locked statement stays intact.
+- **Per-rep statements** — one privacy-isolated file per payee, in PDF, XLSX, or HTML, rounded to cents.
+- **Audit ledger & order trace** — every figure backed by a readable ledger entry; trace one deal through the whole plan.
+
+Money is exact `Decimal` throughout, and every run is deterministic.
 
 ## 60-second example
 
@@ -43,28 +53,35 @@ Outputs:
 - `summary.xlsx` — per-payee period totals
 - `ledger.jsonl` — the full audit trail of every decision
 
+Per-rep statements (`icm statements`) and natural-language plan drafting (`icm plan-from-text`) are separate commands.
+
 ## Define a plan in YAML
 
 ```yaml
 plan_id: saas_ae
 name: "SaaS AE Plan"
-period_type: monthly  # monthly, quarterly, or annual
+period_type: monthly   # monthly, quarterly, or annual
 currency: USD
+payout_cap: "20000"    # optional: max commission per payee per period
 rules:
   - id: tiered_core
     type: tiered
     tiers:
       - threshold_pct: "1.0"    # up to 100% of quota
         rate: "0.05"
-      - threshold_pct: "100.0"  # above 100%
+      - threshold_pct: "100.0"  # above 100% (sentinel for "the rest")
         rate: "0.10"
   - id: enterprise_spif
     type: flat_rate
     rate: "0.02"
     filter: 'product == "Enterprise"'
+    cap: "5000"               # optional: cap this rule
+    min_attainment_pct: "0.5" # optional: pays nothing until 50% of quota
 ```
 
-Rule types today: **flat-rate**, **tiered** (boundary-crossing attainment), and **accelerator**. Filters support `==`, `!=`, `<`, `>`, `<=`, `>=`, and `in`, combined with `and` / `or` — on any input column (canonical fields like `amount` and `product`, plus any extra/metadata columns like `region` or `tier`). Values are auto-coerced: numeric strings compare as numbers, date strings as dates. Use backticks for field names with spaces: `` `Deal Type` == "Perm" ``.
+Rule types: **flat-rate**, **tiered** (boundary-crossing attainment), and **accelerator** — each optionally capped and/or gated by minimum attainment. Plans may also carry a per-period **payout cap** and a **draw**; payees may carry a draw, ramp, and quota categories.
+
+Filters support `==`, `!=`, `<`, `>`, `<=`, `>=`, and `in`, combined with `and` / `or` — on **any input column** (canonical fields like `amount` and `product`, plus any extra/metadata column like `region` or `tier`). Values are auto-coerced: numeric strings compare as numbers, date strings as dates. Use backticks for field names with spaces: `` `Deal Type` == "Perm" ``.
 
 ## The audit trail is the point
 
@@ -77,7 +94,7 @@ Every calculation emits ledger entries you can read:
  "human_readable": "Tiered: 7000 @ 0.10 (at 107% of quota) = 700.00"}
 ```
 
-No number appears in a payout that the ledger can't explain.
+Caps, draws, MBOs, manual adjustments, and true-ups each emit their own ledger event and commission line — nothing silently mutates a rule's output, so the sum of lines always equals the payout. No number appears in a payout that the ledger can't explain.
 
 ## Period locks & versioning
 
@@ -89,8 +106,6 @@ Every calculation run is versioned per `(plan_id, period)`. When you close a per
 
 Lock and unlock via the HTTP API or the CLI (`icm db` subcommands). Recalculation on locked periods is allowed by default; use `--no-allow-recalculate-locked` to enforce strict mode.
 
-CLI flags added for this flow:
-
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--no-db` | off | Skip database persistence (files only) |
@@ -99,10 +114,18 @@ CLI flags added for this flow:
 | `--effective-period YYYY-MM` | current month | Payout period for late transactions |
 | `--allow-recalculate-locked` / `--no-allow-recalculate-locked` | allowed | Whether locked periods can be recalculated |
 
+> **Note:** period locking and true-ups are fully exercised for `monthly` plans. Quarterly/annual locking is not yet verified, and recoverable draws are not yet reconciled against locked-period true-ups — see [`docs/commission_logic.md`](./docs/commission_logic.md) for current limitations.
+
 ## Data in
 
-- **CSV** and **Excel (.xlsx)** — with fuzzy column mapping, so `Rep Name`, `ACV ($)`, and `Close` map to the right fields automatically
+- **CSV** and **Excel (.xlsx)** — with fuzzy column mapping, so `Rep Name`, `ACV ($)`, and `Close` map to the right fields automatically. Unrecognized columns are preserved as metadata and are filterable.
 - **Parquet** — feed warehouse exports (Snowflake, BigQuery, DuckDB) straight in
+
+## Interfaces
+
+- **CLI** — `uv run icm …` (calculate, `statements`, `trace`, `distribute`, `plan-from-text`, `db` subcommands)
+- **HTTP API** — `icm serve`
+- **Desktop app** — a local native window (with auto-update; see [`RELEASING.md`](./RELEASING.md))
 
 ## Install
 
@@ -110,25 +133,27 @@ Requires Python 3.11+. Using [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv sync                 # core engine + CLI
-uv sync --extra all     # + Excel, Parquet, and AI features
+uv sync --extra all     # + Excel, Parquet, PDF, and AI features
 ```
 
-Optional extras: `excel` (xlsx + fuzzy mapping), `parquet` (warehouse exports), `ai` (generate a plan from a plain-English description).
-
-It also ships a local desktop app and an HTTP API (`icm serve`) for non-CLI workflows.
+Optional extras: `excel` (xlsx + fuzzy mapping), `parquet` (warehouse exports), `pdf` (PDF statements), `ai` (generate a plan from a plain-English description).
 
 ## Status
 
-Early, pre-1.0. The calculation core is well-tested, but the plan format and API may still change. Use it, file issues, and tell us what your plans need — that's what shapes the roadmap.
+Pre-1.0. The calculation core is well-tested (340+ tests, type-checked) and covers a full single-plan comp workflow. The plan format and API may still change. Use it, file issues, and tell us what your plans need — that's what shapes the roadmap.
 
 ## Roadmap
 
-- ~~Split & overlay crediting (one deal, multiple payees)~~ ✅
-- ~~Retroactive recompute & true-ups (clawbacks and adjustments)~~ ✅
-- ~~Ramp periods~~ ✅
-- ~~Period locking & versioning~~ ✅
-- Per-rep statements (export / email) and an order-level "trace" view
-- Web UI for lock/unlock and period management
+Shipped:
+- ~~Split & overlay crediting~~ ✅ · ~~Retroactive recompute & true-ups~~ ✅ · ~~Ramp periods~~ ✅
+- ~~Period locking & versioning~~ ✅ · ~~Per-rep statements + order trace~~ ✅
+- ~~Draws & guarantees~~ ✅ · ~~Caps, thresholds & MBOs~~ ✅ · ~~Manual adjustments~~ ✅
+- ~~Quota categories~~ ✅ · ~~Metadata-aware filters~~ ✅ · ~~Desktop auto-update~~ ✅
+
+Next:
+- **Multi-plan runs** — route each payee through their assigned plan in a single run (the payee→plan roster)
+- **Payroll-ready payout register** and an approval / sign-off record
+- **Plan effective-dating**, what-if modeling, and org-level reporting
 
 ## Develop
 

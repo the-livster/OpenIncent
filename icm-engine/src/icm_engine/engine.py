@@ -802,6 +802,7 @@ class CommissionEngine:
         prior_commissions: list[Commission] | None = None,
         adjustments: list[Any] | None = None,
         prior_draw_balances: dict[str, Decimal] | None = None,
+        mbos: list[Any] | None = None,
     ) -> CalculationResult:
         all_commissions: list[Commission] = []
         all_ledger: list[LedgerEntry] = []
@@ -884,15 +885,18 @@ class CommissionEngine:
 
             if isinstance(rule, FlatRateRule):
                 commissions, ledger = self._calc_flat_rate(
-                    rule, synth_txns, payee_map, pt
+                    rule, synth_txns, payee_map, pt,
+                    quota_category=getattr(rule, "quota_category", None),
                 )
             elif isinstance(rule, TieredRule):
                 commissions, ledger = self._calc_tiered(
-                    rule, synth_txns, payee_map, pt
+                    rule, synth_txns, payee_map, pt,
+                    quota_category=getattr(rule, "quota_category", None),
                 )
             elif isinstance(rule, AcceleratorRule):
                 commissions, ledger = self._calc_accelerator(
-                    rule, synth_txns, payee_map, pt
+                    rule, synth_txns, payee_map, pt,
+                    quota_category=getattr(rule, "quota_category", None),
                 )
             else:
                 continue
@@ -906,6 +910,39 @@ class CommissionEngine:
             _stamp_credits(commissions, credits)
             all_commissions.extend(commissions)
             all_ledger.extend(ledger)
+
+        # --- MBOs / bonuses (after rules, before caps/draws) ---
+        if mbos:
+            for mbo in mbos:
+                pid = getattr(mbo, "payee_id", "")
+                period_val = getattr(mbo, "period", "")
+                amt = Decimal(str(getattr(mbo, "amount", "0")))
+                label = str(getattr(mbo, "label", ""))
+                mbo_id = str(getattr(mbo, "id", ""))
+                c = Commission(
+                    transaction_id=mbo_id or f"mbo_{pid}_{period_val}",
+                    payee_id=pid,
+                    period=period_val,
+                    rule_id="mbo",
+                    base_amount=amt,
+                    rate=Decimal("1"),
+                    commission_amount=amt,
+                    origin_period=period_val,
+                    notes=label,
+                )
+                all_commissions.append(c)
+                all_ledger.append(LedgerEntry(
+                    transaction_id=c.transaction_id,
+                    payee_id=pid,
+                    rule_id="mbo",
+                    event_type="mbo",
+                    inputs={"amount": str(amt), "label": label},
+                    outputs={"commission_amount": str(amt)},
+                    human_readable=(
+                        f"MBO {label} for {pid} {period_val}: {amt}"
+                        if label else f"MBO for {pid} {period_val}: {amt}"
+                    ),
+                ))
 
         # Plan-level payout cap (per payee, per period)
         if plan.payout_cap is not None:
@@ -1205,6 +1242,7 @@ class CommissionEngine:
         transactions: list[Transaction],
         payee_map: dict[str, Payee],
         period_type: str = "monthly",
+        quota_category: str | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1264,6 +1302,7 @@ class CommissionEngine:
         transactions: list[Transaction],
         payee_map: dict[str, Payee],
         period_type: str = "monthly",
+        quota_category: str | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1318,7 +1357,8 @@ class CommissionEngine:
                 )
             )
 
-            quota = payee.quota_for(window)
+            quota = payee.quota_for(window, category=quota_category)
+
             if quota == Decimal("0"):
                 top_tier = rule.tiers[-1]
                 for txn in txn_group:
@@ -1494,6 +1534,7 @@ class CommissionEngine:
         transactions: list[Transaction],
         payee_map: dict[str, Payee],
         period_type: str = "monthly",
+        quota_category: str | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1531,7 +1572,7 @@ class CommissionEngine:
                         ),
                     ))
                 continue
-            quota = payee.quota_for(window)
+            quota = payee.quota_for(window, category=quota_category)
             if quota == Decimal("0"):
                 for t in txn_group:
                     ledger.append(LedgerEntry(
@@ -1609,3 +1650,173 @@ class CommissionEngine:
             key = _window_key(txn.period, period_type)
             grouped[(txn.payee_id, key)].append(txn)
         return grouped
+
+
+# ------------------------------------------------------------------
+# Payee trace — full pipeline breakdown per payee/period
+# ------------------------------------------------------------------
+
+
+def build_payee_trace(
+    payee_id: str,
+    period: str,
+    *,
+    commissions: list[Commission],
+    ledger: list[LedgerEntry],
+    attainment: list[Any],
+    plan_name: str = "",
+    payout_cap: Decimal | None = None,
+    draw_cfg: Any = None,
+) -> dict[str, Any]:
+    """Build a self-describing pipeline trace for one payee in one period.
+
+    Returns a list of stage dicts that the UI renders in order.
+    Each stage has an id, label, kind, inputs, and output.
+    """
+
+    # Filter commissions for this payee+period
+    my_commissions = [
+        c for c in commissions
+        if c.payee_id == payee_id and (c.period == period or c.origin_period == period)
+    ]
+
+    # Filter ledger for this payee+period
+    my_ledger = [
+        e for e in ledger
+        if e.payee_id == payee_id
+        and (e.transaction_id != "*" or e.event_type not in ("credit_allocated", "attainment_computed"))
+    ]
+
+    stages: list[dict[str, Any]] = []
+
+    # --- Attainment header ---
+    att_info: dict[str, Any] = {}
+    for a in attainment:
+        if getattr(a, "payee_id", "") == payee_id:
+            att_info = {
+                "bookings": str(getattr(a, "bookings", "0")),
+                "quota": str(getattr(a, "quota", "0")),
+                "pct": str(getattr(a, "attainment_pct", "N/A")),
+            }
+            break
+
+    # --- Stage 1: Rules ---
+    rule_lines: dict[str, list[dict[str, Any]]] = {}
+    for c in my_commissions:
+        if c.rule_id in ("payout_cap", "draw", "manual_adjustment"):
+            continue
+        rule_lines.setdefault(c.rule_id, []).append({
+            "txn_id": c.transaction_id,
+            "base": str(c.base_amount),
+            "rate": str(c.rate),
+            "amount": str(c.commission_amount),
+            "notes": c.notes,
+        })
+    rule_total = sum(
+        (Decimal(r["amount"]) for lines in rule_lines.values() for r in lines),
+        Decimal("0")
+    )
+    stages.append({
+        "id": "rules", "label": "Rules", "kind": "computation",
+        "inputs": {"attainment": att_info},
+        "output": {
+            "total": str(rule_total),
+            "by_rule": {rid: {"lines": lines, "total": str(sum(Decimal(r["amount"]) for r in lines))}
+                        for rid, lines in sorted(rule_lines.items())},
+        },
+    })
+
+    # --- Stage 2: Plan cap ---
+    cap_line = next((c for c in my_commissions if c.rule_id == "payout_cap"), None)
+    if cap_line is not None or payout_cap is not None:
+        cap_val = str(payout_cap) if payout_cap is not None else "N/A"
+        cap_adj = str(cap_line.commission_amount) if cap_line else "0"
+        post_cap = rule_total + (cap_line.commission_amount if cap_line else Decimal("0"))
+        stages.append({
+            "id": "plan_cap", "label": "Plan Cap", "kind": "adjustment",
+            "inputs": {"earned": str(rule_total), "cap": cap_val},
+            "output": {
+                "total": str(post_cap),
+                "adjustment": cap_adj,
+                "note": f"capped: {rule_total} → {post_cap}" if cap_line else "no cap applied",
+            },
+        })
+        running_total = post_cap
+    else:
+        running_total = rule_total
+
+    # --- Stage 3: Draw ---
+    draw_lines = [c for c in my_commissions if c.rule_id == "draw"]
+    if draw_lines:
+        draw_total = sum(c.commission_amount for c in draw_lines)
+        draw_ledger = [e for e in my_ledger if e.event_type == "draw"]
+        draw_inputs: dict[str, str] = {}
+        if draw_ledger:
+            draw_inputs = draw_ledger[0].inputs
+        stages.append({
+            "id": "draw", "label": "Draw", "kind": "adjustment",
+            "inputs": draw_inputs,
+            "output": {
+                "total": str(running_total + draw_total),
+                "adjustment": str(draw_total),
+                "note": draw_ledger[0].human_readable if draw_ledger else "",
+            },
+        })
+        running_total = running_total + draw_total
+
+    # --- Stage 4: Cross-period ---
+    cross_items: list[dict[str, Any]] = []
+    for c in my_commissions:
+        if c.origin_period and c.origin_period != c.period and c.rule_id != "draw":
+            cross_items.append({
+                "type": "true_up",
+                "origin": c.origin_period,
+                "amount": str(c.commission_amount),
+                "note": c.notes,
+            })
+    # Add draw recovery as cross-period if it references prior balance
+    for e in my_ledger:
+        if e.event_type == "draw" and e.inputs.get("recovered", "0") != "0":
+            cross_items.append({
+                "type": "draw_carry",
+                "origin": "prior periods",
+                "amount": "-" + e.inputs.get("recovered", "0"),
+                "note": f"draw recovery from prior balance {e.inputs.get('prior_balance', '?')}",
+            })
+    if cross_items:
+        cross_total = sum(Decimal(it["amount"]) for it in cross_items)
+        stages.append({
+            "id": "cross_period", "label": "Cross-Period", "kind": "cross_period",
+            "items": cross_items,
+            "output": {"cross_period_total": str(cross_total)},
+        })
+        running_total = running_total + cross_total
+
+    # --- Stage 5: Manual adjustments ---
+    manual_lines = [c for c in my_commissions if c.rule_id == "manual_adjustment"]
+    if manual_lines:
+        manual_items = [
+            {"type": "manual_adjustment", "amount": str(c.commission_amount),
+             "reason": c.notes}
+            for c in manual_lines
+        ]
+        manual_total = sum(c.commission_amount for c in manual_lines)
+        stages.append({
+            "id": "manual", "label": "Manual Adjustments", "kind": "manual",
+            "items": manual_items,
+            "output": {"manual_total": str(manual_total)},
+        })
+        running_total = running_total + manual_total
+
+    # --- Stage 6: Final ---
+    stages.append({
+        "id": "final", "label": "Payout", "kind": "final",
+        "output": {"total": str(running_total), "currency": "USD"},
+    })
+
+    return {
+        "payee_id": payee_id,
+        "period": period,
+        "plan_name": plan_name,
+        "stages": stages,
+    }

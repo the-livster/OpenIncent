@@ -1,11 +1,12 @@
 import { useCallback, useState } from "react";
 
 import CalculatorWizard from "./components/CalculatorWizard";
+import PayeeManager from "./components/PayeeManager";
 import PlanGenerator from "./components/PlanGenerator";
 import PlanLibrary from "./components/PlanLibrary";
 import Settings from "./components/Settings";
 
-type Tab = "calculator" | "plans" | "ai" | "settings";
+type Tab = "calculator" | "plans" | "ai" | "payees" | "settings";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("calculator");
@@ -35,6 +36,7 @@ export default function App() {
           <nav className="flex items-center gap-1">
             <NavTab active={tab === "calculator"} onClick={() => setTab("calculator")} label="Calculator" />
             <NavTab active={tab === "plans"} onClick={() => setTab("plans")} label="Plans" />
+            <NavTab active={tab === "payees"} onClick={() => setTab("payees")} label="Payees" />
             <NavTab active={tab === "ai"} onClick={() => setTab("ai")} label="AI Builder" />
             <NavTab active={tab === "settings"} onClick={() => setTab("settings")} label="Settings" />
           </nav>
@@ -47,6 +49,7 @@ export default function App() {
           <PlanLibrary onLoadPlan={handleLoadPlan} planToSave={planToSave} onSaved={handlePlanSaved} />
         )}
         {tab === "ai" && <PlanGenerator onPlanGenerated={setPlanToSave} />}
+        {tab === "payees" && <PayeeManager />}
         {tab === "settings" && <Settings />}
       </main>
     </div>

@@ -1,0 +1,3 @@
+transaction_id,payee_id,period,rule_id,base_amount,rate,commission_amount,notes
+T1,P1,2026-06,new_business,50000.00,0.1,5000.000,Flat rate 0.1 on 50000.00
+T2,P1,2026-06,renewal,30000.00,0.05,1500.0000,Flat rate 0.05 on 30000.00

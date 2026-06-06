@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('D:\\OpenIncent\\icm-engine\\desktop\\ui_dist', 'ui_dist')]
 binaries = []
-hiddenimports = ['icm_engine']
+hiddenimports = ['icm_engine', 'cryptography']
 tmp_ret = collect_all('icm_engine')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 

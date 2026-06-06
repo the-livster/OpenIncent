@@ -61,6 +61,9 @@ def main(
     adjustments_file: str = typer.Option(
         None, "--adjustments", help="Path to manual adjustments CSV"
     ),
+    mbos_file: str = typer.Option(
+        None, "--mbos", help="Path to MBOs/bonuses CSV"
+    ),
 ) -> None:
     """Calculate commissions from a plan, transactions, and payees."""
     if plan is None or transactions is None or payees is None or output is None:
@@ -154,12 +157,19 @@ def main(
         from icm_engine.loader import load_adjustments
         adjustments_list = load_adjustments(adjustments_file)
 
+    # Load MBOs if provided
+    mbos_list = None
+    if mbos_file:
+        from icm_engine.loader import load_mbos
+        mbos_list = load_mbos(mbos_file)
+
     result = engine.calculate(
         plan_obj, txns, payee_list,
         locked_periods=locked_relevant if locked_relevant else None,
         effective_period=eff_period if locked_relevant else None,
         prior_commissions=prior_commissions,
         adjustments=adjustments_list,
+        mbos=mbos_list,
     )
 
     # Persist to database
@@ -182,6 +192,13 @@ def main(
             db.save_commission_lines(calc_id, comms)
             db.save_ledger_entries(calc_id, ledger_dicts)
             calc_ids[period_key] = calc_id
+
+        # Persist transactions and link them to all calculations in this run
+        txn_dicts = [t.model_dump() for t in txns]
+        db.save_transactions(txn_dicts)
+        all_txn_ids = [t.id for t in txns]
+        for cid in calc_ids.values():
+            db.link_transactions(cid, all_txn_ids)
 
         console.print("[green]Saved to database[/green]")
         for p, cid in sorted(calc_ids.items()):
@@ -601,6 +618,9 @@ def statements_command(
     adjustments_file: str = typer.Option(
         None, "--adjustments", help="Path to manual adjustments CSV"
     ),
+    mbos_file: str = typer.Option(
+        None, "--mbos", help="Path to MBOs/bonuses CSV"
+    ),
 ) -> None:
     """Generate per-rep commission statements in the requested formats."""
     from icm_engine.engine import CommissionEngine
@@ -616,7 +636,15 @@ def statements_command(
         from icm_engine.loader import load_adjustments
         adjustments_list = load_adjustments(adjustments_file)
 
-    result = CommissionEngine().calculate(plan_obj, txn_list, payee_list, adjustments=adjustments_list)
+    mbos_list = None
+    if mbos_file:
+        from icm_engine.loader import load_mbos
+        mbos_list = load_mbos(mbos_file)
+
+    result = CommissionEngine().calculate(
+        plan_obj, txn_list, payee_list,
+        adjustments=adjustments_list, mbos=mbos_list,
+    )
 
     fmt_tuple = tuple(f.strip() for f in formats.split(","))
     out_dir = Path(output)

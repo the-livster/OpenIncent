@@ -36,13 +36,16 @@ A single `calculate()` runs these stages in order:
 4. **Evaluate each rule, in plan order**, over the credit-expanded transactions. Each rule emits commission
    lines and ledger entries. Rules with `min_attainment_pct` gates skip payees below threshold.
    Per-rule `cap` is applied after each rule. See [§7](#7-rule-types).
-5. **Apply plan payout cap** — if `Plan.payout_cap` is set, per-payee totals are capped. See [§9.1](#91-caps--threshold-gates).
-6. **Resolve draw** — if a draw (guarantee) is configured, the post-cap total is compared against the draw
+5. **Add MBOs / bonuses** — any `MBO` (a non-commission period payout) is added on top of rule output. MBOs
+   do not affect attainment.
+6. **Apply plan payout cap** — if `Plan.payout_cap` is set, per-payee totals are capped. See [§9.1](#91-caps--threshold-gates).
+7. **Resolve draw** — if a draw (guarantee) is configured, the post-cap total is compared against the draw
    amount. Non-recoverable draws top up; recoverable draws thread a balance across periods. See [§9.2](#92-draws--guarantees).
-7. **Apply manual adjustments** — each `ManualAdjustment` is added (not subject to caps or draws). See [§9.3](#93-manual-adjustments).
 8. **Apply locked-period adjustments** (only if some transaction periods are locked) — convert locked-period
    changes into delta true-ups attributed to the payout period. See [§8](#8-locking-versioning--payout-adjustments).
-9. **Return** the commission lines, the attainment summary, draw balances, and the full ledger.
+9. **Apply manual adjustments** — each `ManualAdjustment` is added last, not subject to caps, draws, or the
+   locked-period diff. See [§9.3](#93-manual-adjustments).
+10. **Return** the commission lines, the attainment summary, draw balances, and the full ledger.
 
 Output `Commission.period` is always the **window key** (e.g. `2026-Q1`), not the raw transaction month.
 

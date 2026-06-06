@@ -2,6 +2,7 @@ export interface Commission {
   transaction_id: string;
   payee_id: string;
   period: string;
+  origin_period: string;
   rule_id: string;
   base_amount: string;
   rate: string;
@@ -24,6 +25,7 @@ export interface CalculateResponse {
   commissions: Commission[];
   ledger: LedgerEntry[];
   summary: Record<string, string>;
+  calculation_ids?: Record<string, string>;
 }
 
 export interface PlanFromTextRequest {
@@ -55,4 +57,29 @@ export interface SavedPlan {
   yaml_content: string;
   created_at: string;
   updated_at: string;
+}
+
+// ------------------------------------------------------------------
+// Order trace
+// ------------------------------------------------------------------
+
+export interface TraceStep {
+  rule_id: string;
+  status: "matched" | "skipped";
+  reason: string | null;
+  events: {
+    event_type: string;
+    human_readable: string;
+    inputs: Record<string, string>;
+    outputs: Record<string, string>;
+  }[];
+}
+
+export interface OrderTrace {
+  transaction_id: string;
+  payee_id: string;
+  order: Record<string, string>;
+  steps: TraceStep[];
+  total: string;
+  summary: string;
 }

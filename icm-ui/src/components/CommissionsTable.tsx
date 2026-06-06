@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useMemo, useState } from "react";
 import type { Commission, LedgerEntry, SortState } from "../types";
+import TracePanel from "./TracePanel";
 
 interface Props {
   commissions: Commission[];
@@ -26,6 +27,10 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
   const [filterPeriod, setFilterPeriod] = useState("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [page, setPage] = useState(0);
+
+  // Trace panel state
+  const [traceTxn, setTraceTxn] = useState("");
+  const [tracePayee, setTracePayee] = useState("");
 
   // Derived filter options
   const payees = useMemo(() => [...new Set(commissions.map((c) => c.payee_id))].sort(), [commissions]);
@@ -174,6 +179,17 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
                     <td className="px-3 py-2.5 text-right font-mono text-xs text-ink">${c.base_amount}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-xs text-ink2">{c.rate}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-xs font-semibold text-success">${c.commission_amount}</td>
+                    <td className="px-2 py-2.5 w-0">
+                      {c.transaction_id !== "*" && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setTraceTxn(c.transaction_id); setTracePayee(c.payee_id); }}
+                          title="View order trace"
+                          className="text-xs text-ink2 hover:text-accent cursor-pointer px-1 py-0.5 rounded hover:bg-accent/10 transition-colors"
+                        >
+                          🔍
+                        </button>
+                      )}
+                    </td>
                   </tr>
                   {open && (
                     <tr>
@@ -244,6 +260,18 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
             Next →
           </button>
         </div>
+      )}
+
+      {/* Trace panel */}
+      {traceTxn && tracePayee && (
+        <>
+          <div className="fixed inset-0 bg-black/20 z-40" onClick={() => { setTraceTxn(""); setTracePayee(""); }} />
+          <TracePanel
+            transactionId={traceTxn}
+            payeeId={tracePayee}
+            onClose={() => { setTraceTxn(""); setTracePayee(""); }}
+          />
+        </>
       )}
     </div>
   );

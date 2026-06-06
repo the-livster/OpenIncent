@@ -23,7 +23,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS _schema_version (
@@ -42,6 +42,27 @@ CREATE TABLE IF NOT EXISTS plans (
     PRIMARY KEY (id, org_id)
 );
 
+CREATE TABLE IF NOT EXISTS transactions (
+    id TEXT NOT NULL,
+    org_id TEXT NOT NULL DEFAULT 'default',
+    payee_id TEXT NOT NULL,
+    deal_id TEXT NOT NULL DEFAULT '',
+    period TEXT NOT NULL DEFAULT '',
+    amount TEXT NOT NULL,
+    product TEXT,
+    close_date TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (id, org_id)
+);
+
+CREATE TABLE IF NOT EXISTS calculation_inputs (
+    calculation_id TEXT NOT NULL,
+    org_id TEXT NOT NULL DEFAULT 'default',
+    transaction_id TEXT NOT NULL,
+    PRIMARY KEY (calculation_id, org_id, transaction_id)
+);
+
 CREATE TABLE IF NOT EXISTS payees (
     id TEXT NOT NULL,
     org_id TEXT NOT NULL DEFAULT 'default',
@@ -52,6 +73,8 @@ CREATE TABLE IF NOT EXISTS payees (
     effective_from TEXT NOT NULL,
     effective_to TEXT,
     ramp TEXT,
+    email TEXT,
+    category_quotas TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (id, org_id)
 );
@@ -155,6 +178,28 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE commission_lines ADD COLUMN origin_period TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE period_locks ADD COLUMN locked_by TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE period_locks ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
+        # v5 → v6: category_quotas on payees
+        "ALTER TABLE payees ADD COLUMN category_quotas TEXT",
+        # v6 → v7: transactions persistence + calculation_inputs
+        """CREATE TABLE IF NOT EXISTS transactions (
+            id TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'default',
+            payee_id TEXT NOT NULL,
+            deal_id TEXT NOT NULL DEFAULT '',
+            period TEXT NOT NULL DEFAULT '',
+            amount TEXT NOT NULL,
+            product TEXT,
+            close_date TEXT,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (id, org_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS calculation_inputs (
+            calculation_id TEXT NOT NULL,
+            org_id TEXT NOT NULL DEFAULT 'default',
+            transaction_id TEXT NOT NULL,
+            PRIMARY KEY (calculation_id, org_id, transaction_id)
+        )""",
     ]
     for m in migrations:
         try:
@@ -254,17 +299,20 @@ class Database:
         self, payee_id: str, name: str, quota: str, plan_id: str,
         effective_from: str, effective_to: str | None = None,
         ramp: str | None = None,
+        category_quotas: str | None = None,
     ) -> str:
         with self._conn() as conn:
             conn.execute(
-                """INSERT INTO payees (id, org_id, name, quota, quotas, plan_id, effective_from, effective_to, ramp)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO payees (id, org_id, name, quota, quotas, plan_id,
+                   effective_from, effective_to, ramp, category_quotas)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id, org_id) DO UPDATE SET
                        name=excluded.name, quota=excluded.quota, quotas=excluded.quotas,
                        plan_id=excluded.plan_id,
                        effective_from=excluded.effective_from, effective_to=excluded.effective_to,
-                       ramp=excluded.ramp""",
-                (payee_id, self.org_id, name, quota, "{}", plan_id, effective_from, effective_to, ramp),
+                       ramp=excluded.ramp, category_quotas=excluded.category_quotas""",
+                 (payee_id, self.org_id, name, quota, "{}", plan_id,
+                  effective_from, effective_to, ramp, category_quotas),
             )
         return payee_id
 
@@ -622,9 +670,76 @@ class Database:
                    LEFT JOIN period_locks p ON c.org_id=p.org_id AND c.plan_id=p.plan_id AND c.period=p.period
                    WHERE c.org_id=? AND c.plan_id=? AND c.period != ''
                    GROUP BY c.period
-                   ORDER BY c.period DESC""",
-                (self.org_id, plan_id),
+                    ORDER BY c.period DESC""",
+                 (self.org_id, plan_id),
+             ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Transactions persistence
+    # ------------------------------------------------------------------
+
+    def save_transactions(self, txns: list[dict[str, Any]]) -> int:
+        """UPSERT a batch of transactions. Returns count saved."""
+        import json as _json
+        with self._conn() as conn:
+            for t in txns:
+                t["org_id"] = self.org_id
+                # Convert Decimal amount to string for SQLite
+                if "amount" in t and not isinstance(t["amount"], str):
+                    t["amount"] = str(t["amount"])
+                if "metadata" in t and isinstance(t["metadata"], dict):
+                    t["metadata"] = _json.dumps(t["metadata"])
+            conn.executemany(
+                """INSERT INTO transactions
+                   (id, org_id, payee_id, deal_id, period, amount, product, close_date, metadata)
+                   VALUES (:id, :org_id, :payee_id, :deal_id, :period, :amount, :product, :close_date, :metadata)
+                   ON CONFLICT(id, org_id) DO UPDATE SET
+                       payee_id=excluded.payee_id, deal_id=excluded.deal_id,
+                       period=excluded.period, amount=excluded.amount,
+                       product=excluded.product, close_date=excluded.close_date,
+                       metadata=excluded.metadata""",
+                txns,
+            )
+        return len(txns)
+
+    def link_transactions(self, calculation_id: str, transaction_ids: list[str]) -> int:
+        """Link transactions to a calculation via calculation_inputs."""
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT OR IGNORE INTO calculation_inputs (calculation_id, org_id, transaction_id)
+                   VALUES (?, ?, ?)""",
+                [(calculation_id, self.org_id, tid) for tid in transaction_ids],
+            )
+        return len(transaction_ids)
+
+    def get_transactions_for_calculation(self, calculation_id: str) -> list[dict[str, Any]]:
+        """Return all transactions linked to a calculation."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT t.* FROM transactions t
+                   JOIN calculation_inputs ci ON ci.transaction_id = t.id AND ci.org_id = t.org_id
+                   WHERE ci.calculation_id = ? AND ci.org_id = ?
+                   ORDER BY t.close_date, t.id""",
+                (calculation_id, self.org_id),
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_transactions(
+        self, period: str | None = None, limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """List transactions for this org, optionally filtered by period."""
+        with self._conn() as conn:
+            if period:
+                rows = conn.execute(
+                    "SELECT * FROM transactions WHERE org_id=? AND period=? ORDER BY close_date, id LIMIT ?",
+                    (self.org_id, period, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM transactions WHERE org_id=? ORDER BY created_at DESC LIMIT ?",
+                    (self.org_id, limit),
+                ).fetchall()
         return [dict(r) for r in rows]
 
 

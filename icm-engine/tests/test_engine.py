@@ -1643,8 +1643,178 @@ class TestDraws:
 
 
 # ------------------------------------------------------------------
-# Integration: order of operations
+# MBOs / bonuses
 # ------------------------------------------------------------------
+
+
+class TestMBOs:
+    def test_mbo_adds_to_total(self) -> None:
+        """MBO amount appears in commission total."""
+        from icm_engine.models import MBO
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="MBO1", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]  # 500
+        mbos = [MBO(payee_id="P1", period="2026-04", amount=Decimal("2000"), label="Q2 Bonus")]
+        result = engine.calculate(plan, txns, payees, mbos=mbos)
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("2500")  # 500 + 2000
+
+    def test_mbo_subject_to_cap(self) -> None:
+        """Plan cap applies to commission + MBO combined."""
+        from icm_engine.models import MBO
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="MBO2", name="Test", period_type="monthly", currency="USD",
+                    payout_cap=Decimal("1000"),
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]  # 500
+        mbos = [MBO(payee_id="P1", period="2026-04", amount=Decimal("2000"), label="Bonus")]
+        result = engine.calculate(plan, txns, payees, mbos=mbos)
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("1000")  # capped
+
+    def test_mbo_covered_by_draw(self) -> None:
+        """Draw floor covers commission + MBO. Earned 500 + 0, draw 3000 → topup 2500."""
+        from icm_engine.models import MBO, Draw
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="MBO3", name="Test", period_type="monthly", currency="USD",
+                    draw=Draw(amount=Decimal("3000"), recoverable=False),
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]  # 500
+        mbos = [MBO(payee_id="P1", period="2026-04", amount=Decimal("0"), label="No bonus")]
+        result = engine.calculate(plan, txns, payees, mbos=mbos)
+        total = sum(c.commission_amount for c in result.commissions)
+        assert total == Decimal("3000")  # 500 earned, topped up to 3000
+
+    def test_mbo_does_not_affect_attainment(self) -> None:
+        """Attainment is bookings-only, unaffected by MBO."""
+        from icm_engine.models import MBO
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="MBO4", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1", quota=Decimal("100000"))]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        mbos = [MBO(payee_id="P1", period="2026-04", amount=Decimal("50000"), label="Huge")]
+        result = engine.calculate(plan, txns, payees, mbos=mbos)
+        assert result.attainment[0].attainment_pct is not None
+        assert float(result.attainment[0].attainment_pct) == pytest.approx(0.1)
+
+    def test_mbo_ledger_event(self) -> None:
+        """MBO emits a ledger event."""
+        from icm_engine.models import MBO
+
+        engine = CommissionEngine()
+        plan = Plan(plan_id="MBO5", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        mbos = [MBO(payee_id="P1", period="2026-04", amount=Decimal("42"), label="Test")]
+        result = engine.calculate(plan, txns, payees, mbos=mbos)
+        mbo_events = [e for e in result.ledger if e.event_type == "mbo"]
+        assert len(mbo_events) == 1
+
+    def test_mbo_opt_out(self) -> None:
+        """Without mbos, output unchanged."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="MBO6", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, payees)
+        assert result.commissions[0].commission_amount == Decimal("500")
+
+
+# ------------------------------------------------------------------
+# Per-category quotas
+# ------------------------------------------------------------------
+
+
+class TestCategoryQuotas:
+    def test_category_quota_tiered(self) -> None:
+        """Tiered rule uses category-specific quota."""
+        payee = Payee(id="P1", name="Alice", quota=Decimal("100000"),
+                      category_quotas={"new_business": Decimal("50000")},
+                      effective_from=date(2026, 1, 1))
+        engine = CommissionEngine()
+        plan = Plan(plan_id="CAT1", name="Test", period_type="monthly", currency="USD",
+                    rules=[TieredRule(type="tiered", id="R1", quota_category="new_business",
+                                     tiers=[Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05")),
+                                            Tier(threshold_pct=Decimal("100.0"), rate=Decimal("0.10"))])])
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("60000"))]
+        result = engine.calculate(plan, txns, [payee])
+        # Bookings 60K / category quota 50K = 120% attainment
+        # Tier 1: 50K * 0.05 = 2500, Tier 2: 10K * 0.10 = 1000
+        assert sum(c.commission_amount for c in result.commissions) == Decimal("3500")
+
+    def test_category_quota_uses_default_when_none(self) -> None:
+        """Rule without quota_category uses default quota."""
+        payee = Payee(id="P1", name="Alice", quota=Decimal("100000"),
+                      category_quotas={"new_business": Decimal("50000")},
+                      effective_from=date(2026, 1, 1))
+        engine = CommissionEngine()
+        plan = Plan(plan_id="CAT2", name="Test", period_type="monthly", currency="USD",
+                    rules=[TieredRule(type="tiered", id="R1",  # no quota_category
+                                     tiers=[Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05")),
+                                            Tier(threshold_pct=Decimal("100.0"), rate=Decimal("0.10"))])])
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("60000"))]
+        result = engine.calculate(plan, txns, [payee])
+        # Bookings 60K / default quota 100K = 60% attainment → tier 1 only
+        assert sum(c.commission_amount for c in result.commissions) == Decimal("3000")
+
+    def test_two_rules_different_categories(self) -> None:
+        """Two rules with different categories use their respective quotas."""
+        payee = Payee(id="P1", name="Alice", quota=Decimal("100000"),
+                      category_quotas={"new_biz": Decimal("50000"), "expansion": Decimal("30000")},
+                      effective_from=date(2026, 1, 1))
+        engine = CommissionEngine()
+        plan = Plan(plan_id="CAT3", name="Test", period_type="monthly", currency="USD",
+                    rules=[
+                        FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"),
+                                     filter='product == "New"', quota_category="new_biz"),
+                        FlatRateRule(type="flat_rate", id="R2", rate=Decimal("0.05"),
+                                     filter='product == "Expansion"', quota_category="expansion"),
+                    ])
+        txns = [
+            _txn(id="T1", payee_id="P1", amount=Decimal("40000"), product="New"),
+            _txn(id="T2", payee_id="P1", amount=Decimal("20000"), product="Expansion"),
+        ]
+        result = engine.calculate(plan, txns, [payee])
+        # R1: 40000 * 0.10 = 4000. R2: 20000 * 0.05 = 1000
+        assert sum(c.commission_amount for c in result.commissions) == Decimal("5000")
+
+    def test_category_quota_ramp(self) -> None:
+        """Ramp applies to category quota."""
+        ramp = RampSchedule(months=1, schedule=[Decimal("0.5")])
+        payee = Payee(id="P1", name="Alice", quota=Decimal("100000"),
+                      category_quotas={"new_business": Decimal("50000")},
+                      effective_from=date(2026, 1, 1), ramp=ramp)
+        engine = CommissionEngine()
+        plan = Plan(plan_id="CAT4", name="Test", period_type="monthly", currency="USD",
+                    rules=[TieredRule(type="tiered", id="R1", quota_category="new_business",
+                                     tiers=[Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05")),
+                                            Tier(threshold_pct=Decimal("100.0"), rate=Decimal("0.10"))])])
+        txns = [_txn(id="T1", payee_id="P1", period="2026-01", amount=Decimal("30000"))]
+        result = engine.calculate(plan, txns, [payee])
+        # Category quota = 50000 * 0.5 = 25000. Bookings 30K = 120%
+        # Tier 1: 25K * 0.05 = 1250, Tier 2: 5K * 0.10 = 500
+        assert sum(c.commission_amount for c in result.commissions) == Decimal("1750")
+
+    def test_category_quota_backward_compat(self) -> None:
+        """Plan without categories produces same output as before."""
+        engine = CommissionEngine()
+        plan = Plan(plan_id="CAT5", name="Test", period_type="monthly", currency="USD",
+                    rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.05"))])
+        payees = [_payee(id="P1")]
+        txns = [_txn(id="T1", payee_id="P1", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, payees)
+        assert result.commissions[0].commission_amount == Decimal("500")
 
 
 class TestIntegration:

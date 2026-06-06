@@ -322,3 +322,38 @@ def load_adjustments(path: str | Path) -> list[Any]:
         except Exception as e:
             raise ValueError(f"Row {i} in '{path}': {e}") from e
     return adjustments
+
+
+# ------------------------------------------------------------------
+# MBOs / bonuses
+# ------------------------------------------------------------------
+
+
+def load_mbos(path: str | Path) -> list[Any]:
+    """Load MBOs from a CSV file.
+
+    CSV columns: payee_id, period, amount, label (optional), id (optional).
+    """
+    from icm_engine.models import MBO
+
+    p = Path(path)
+    with p.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError(f"MBOs CSV '{path}' has no header row")
+        rows = list(reader)
+
+    mbos: list[Any] = []
+    for i, row in enumerate(rows, start=2):
+        try:
+            mbo = MBO(
+                id=(row.get("id") or "").strip(),
+                payee_id=(row["payee_id"]).strip(),
+                period=(row["period"]).strip(),
+                amount=Decimal((row["amount"]).strip()),
+                label=(row.get("label") or "").strip(),
+            )
+            mbos.append(mbo)
+        except Exception as e:
+            raise ValueError(f"Row {i} in '{path}': {e}") from e
+    return mbos

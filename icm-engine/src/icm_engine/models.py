@@ -137,14 +137,21 @@ class Payee(BaseModel):
     email: str | None = None
     ramp: RampSchedule | None = None
     draw: Draw | None = None
+    category_quotas: dict[str, Decimal] = Field(default_factory=dict)
 
-    def quota_for(self, window_key: str) -> Decimal:
+    def quota_for(self, window_key: str, category: str | None = None) -> Decimal:
         """Return the quota for a given window key, falling back to default.
+
+        If a category is provided and category_quotas is set, uses the
+        category-specific quota (which may be a flat Decimal or a per-period dict).
 
         If a ramp schedule is active for this window, the quota is multiplied
         by the corresponding ramp multiplier.
         """
-        base = self.quotas.get(window_key, self.quota)
+        if category and category in self.category_quotas:
+            base = self.category_quotas[category]
+        else:
+            base = self.quotas.get(window_key, self.quota)
         if self.ramp and self.effective_from:
             mult = self._ramp_multiplier_for(window_key)
             if mult is not None:
@@ -264,6 +271,7 @@ class FlatRateRule(BaseModel):
     rate: Decimal = Field(ge=Decimal("0"))
     cap: Decimal | None = Field(default=None, ge=Decimal("0"))
     min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
+    quota_category: str | None = None
 
 
 class TieredRule(BaseModel):
@@ -273,6 +281,7 @@ class TieredRule(BaseModel):
     tiers: list[Tier]
     cap: Decimal | None = Field(default=None, ge=Decimal("0"))
     min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
+    quota_category: str | None = None
 
     @model_validator(mode="after")
     def _check_tiers_ascending(self) -> TieredRule:
@@ -295,6 +304,7 @@ class AcceleratorRule(BaseModel):
     multiplier: Decimal = Field(gt=Decimal("0"))
     cap: Decimal | None = Field(default=None, ge=Decimal("0"))
     min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
+    quota_category: str | None = None
 
 
 Rule = Annotated[
@@ -342,3 +352,19 @@ class Draw(BaseModel):
 
     amount: Decimal = Field(ge=Decimal("0"))
     recoverable: bool = False
+
+
+# --- MBOs / bonuses ---
+
+
+class MBO(BaseModel):
+    """Non-commission payout — bonus, KPI incentive, or other period-level amount.
+
+    Added to commission total before caps and draws. Does NOT affect attainment.
+    """
+
+    id: str = ""
+    payee_id: str = Field(min_length=1)
+    period: str = Field(pattern=r"^\d{4}-\d{2}$")
+    amount: Decimal = Field(ge=Decimal("0"))
+    label: str = ""

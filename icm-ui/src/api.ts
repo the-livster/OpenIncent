@@ -191,6 +191,67 @@ export async function exportStatements(args: {
 }
 
 // ------------------------------------------------------------------
+// Order trace
+// ------------------------------------------------------------------
+
+import type { OrderTrace } from "./types";
+
+export async function fetchTrace(transaction_id: string, payee_id: string): Promise<OrderTrace> {
+  const params = new URLSearchParams({ transaction_id, payee_id });
+  const res = await fetch(v1(`/trace?${params}`));
+  if (!res.ok) {
+    const text = await res.text();
+    try {
+      const err = JSON.parse(text);
+      throw new Error(String(err.detail ?? "Trace not found"));
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("Server error")) throw e;
+      throw new Error(`Server error (${res.status}): ${text.slice(0, 500)}`);
+    }
+  }
+  return res.json();
+}
+
+// ------------------------------------------------------------------
+// Payee CRUD
+// ------------------------------------------------------------------
+
+export interface PayeeSaveArgs {
+  payee_id: string;
+  name: string;
+  quota: string;
+  plan_id: string;
+  effective_from: string;
+  email?: string;
+  ramp_months?: number;
+  ramp_schedule?: string;
+  category_quotas?: string;
+}
+
+export async function listPayees(): Promise<Record<string, unknown>[]> {
+  const res = await fetch(v1("/payees"));
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function savePayee(args: PayeeSaveArgs): Promise<void> {
+  const res = await fetch(v1(`/payees/${encodeURIComponent(args.payee_id)}`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text.slice(0, 200));
+  }
+}
+
+export async function deletePayee(payee_id: string): Promise<void> {
+  const res = await fetch(v1(`/payees/${encodeURIComponent(payee_id)}`), { method: "DELETE" });
+  if (!res.ok) throw new Error("Delete failed");
+}
+
+// ------------------------------------------------------------------
 // File preview
 // ------------------------------------------------------------------
 

@@ -293,3 +293,37 @@ class TestEdgeCases:
         db = Database(tmp_path / "test.db")
         with pytest.raises(sqlite3.OperationalError):
             db.save_plan("Plan", "rules: []")
+
+
+class TestTransactions:
+    def test_save_and_link(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "test.db")
+        db.init()
+
+        txns = [
+            {"id": "T1", "payee_id": "P1", "period": "2026-01", "amount": "10000",
+             "deal_id": "D1", "product": "Pro", "close_date": "2026-01-15", "metadata": "{}"},
+            {"id": "T2", "payee_id": "P1", "period": "2026-01", "amount": "5000",
+             "deal_id": "D2", "product": "Enterprise", "close_date": "2026-01-20", "metadata": "{}"},
+        ]
+        db.save_transactions(txns)
+        calc_id = db.record_calculation("plan1", period="2026-01")
+        db.link_transactions(calc_id, ["T1", "T2"])
+
+        loaded = db.get_transactions_for_calculation(calc_id)
+        assert len(loaded) == 2
+        assert loaded[0]["id"] == "T1"
+
+    def test_list_by_period(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "test.db")
+        db.init()
+
+        db.save_transactions([
+            {"id": "T1", "payee_id": "P1", "period": "2026-01", "amount": "10000",
+             "deal_id": "", "product": None, "close_date": None, "metadata": "{}"},
+            {"id": "T2", "payee_id": "P1", "period": "2026-02", "amount": "5000",
+             "deal_id": "", "product": None, "close_date": None, "metadata": "{}"},
+        ])
+        jan = db.list_transactions(period="2026-01")
+        assert len(jan) == 1
+        assert jan[0]["id"] == "T1"

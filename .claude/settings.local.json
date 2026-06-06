@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(uv run *)"
+      "Bash(uv run *)",
+      "Bash(git diff *)",
+      "Bash(git --no-pager diff -- icm-engine/src/icm_engine/models.py icm-engine/src/icm_engine/loader.py)",
+      "Bash(cp /tmp/repro_doublepay.py /d/OpenIncent/icm-engine/repro_doublepay.py && uv run python repro_doublepay.py; rm -f /d/OpenIncent/icm-engine/repro_doublepay.py)",
+      "WebSearch",
+      "WebFetch(domain:www.ibisworld.com)"
     ]
   }
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { calculate, listPlans, exportStatements, previewFile } from "../api";
 import PlanBuilder from "./PlanBuilder";
+import PayeeTrace from "./PayeeTrace";
 import type { CalculateResponse, SavedPlan } from "../types";
 
 // ------------------------------------------------------------------
@@ -111,6 +112,11 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
   const [exportStatus, setExportStatus] = useState<"idle" | "loading" | "error" | "done">("idle");
   const [exportError, setExportError] = useState("");
   const [savedPath, setSavedPath] = useState("");
+
+  // Payee trace state
+  const [showTrace, setShowTrace] = useState(false);
+  const [tracePayee, setTracePayee] = useState("");
+  const [tracePeriod, setTracePeriod] = useState("");
 
   const [step, setStep] = useState<Step>("data");
 
@@ -596,6 +602,11 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
             <StatCard label="Commission Lines" value={String(data.commissions.length)} />
           </div>
 
+          {/* Period lock + next period */}
+          {data.calculation_ids && Object.keys(data.calculation_ids).length > 0 && (
+            <PeriodLockPanel calcIds={data.calculation_ids} planId={data.commissions[0]?.payee_id ? "" : ""} />
+          )}
+
           {/* Export section */}
           <div className="space-y-3">
             {/* Format checkboxes */}
@@ -679,7 +690,14 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
               {Object.entries(data.summary).map(([payee, total]) => (
                 <div key={payee} className="px-5 py-2.5 flex justify-between items-center text-sm">
                   <span className="text-ink font-medium">{payee}</span>
-                  <span className="text-ink font-mono">${parseFloat(total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-ink font-mono">${parseFloat(total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <button
+                      onClick={() => { setShowTrace(true); setTracePayee(payee); setTracePeriod(data!.commissions.find(c => c.payee_id === payee)?.period || "all"); }}
+                      className="text-xs text-ink2 hover:text-accent cursor-pointer"
+                      title="View payout trace"
+                    >🔍</button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -719,10 +737,37 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
               ← Start New Calculation
             </TextButton>
           </div>
+
+          {/* Payee trace panel */}
+          {showTrace ? (tracePayee ? (
+            <>
+              <div className="fixed inset-0 bg-black/20 z-40" onClick={() => { setShowTrace(false); setTracePayee(""); }} />
+              <PayeeTrace payeeId={tracePayee} period={tracePeriod || "all"}
+                commissions={data.commissions} ledger={data.ledger}
+                onClose={() => { setShowTrace(false); setTracePayee(""); }} />
+            </>
+          ) : (
+            <>
+              <div className="fixed inset-0 bg-black/20 z-40" onClick={() => setShowTrace(false)} />
+              <div className="fixed inset-y-0 right-0 w-[460px] max-w-[92vw] bg-white border-l border-line shadow-xl z-50 flex flex-col">
+                <div className="p-5">
+                  <h3 className="text-sm font-semibold mb-2">Select a payee</h3>
+                  {Object.entries(data.summary).map(([pid]) => (
+                    <button key={pid}
+                      onClick={() => { setTracePayee(pid); setTracePeriod(data.commissions.find(c => c.payee_id === pid)?.period || "all"); }}
+                      className="block w-full text-left px-3 py-2 rounded hover:bg-soft text-sm cursor-pointer">{pid}</button>
+                  ))}
+                  <button onClick={() => setShowTrace(false)} className="mt-4 text-xs text-ink2 hover:text-ink cursor-pointer">Close</button>
+                </div>
+              </div>
+            </>
+          )) : null}
         </div>
       )}
+
     </div>
   );
+
 }
 
 // ------------------------------------------------------------------
@@ -842,6 +887,97 @@ function StatCard({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+
+// ------------------------------------------------------------------
+// Period lock panel
+// ------------------------------------------------------------------
+
+function PeriodLockPanel({ calcIds, planId }: { calcIds: Record<string, string>; planId: string }) {
+  const [locked, setLocked] = useState<Record<string, boolean>>({});
+  const base = localStorage.getItem("icm_api_base") || "";
+
+  // Derive plan_id from the first payee's data if not provided
+  const [resolvedPlanId, setResolvedPlanId] = useState(planId);
+
+  useEffect(() => {
+    // Check lock status for each period
+    const periods = Object.keys(calcIds);
+    if (periods.length === 0) return;
+    // Try to determine plan_id from the first calculation
+    const calcId = calcIds[periods[0]];
+    fetch(`${base}/v1/calculations/${encodeURIComponent(calcId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.plan_id) setResolvedPlanId(d.plan_id);
+        // Then check lock statuses
+        periods.forEach(period => {
+          fetch(`${base}/v1/periods/${encodeURIComponent(d?.plan_id || resolvedPlanId)}/${period}/status`)
+            .then(r => r.json())
+            .then(s => setLocked(prev => ({ ...prev, [period]: s.locked === true })))
+            .catch(() => {});
+        });
+      })
+      .catch(() => {});
+  }, [calcIds]);
+
+  const toggleLock = async (period: string) => {
+    const calcId = calcIds[period];
+    const pid = resolvedPlanId;
+    if (!pid) return;
+    const currentlyLocked = locked[period];
+    if (currentlyLocked) {
+      await fetch(`${base}/v1/periods/${encodeURIComponent(pid)}/${period}/lock`, { method: "DELETE" });
+    } else {
+      await fetch(`${base}/v1/periods/${encodeURIComponent(pid)}/${period}/lock?calculation_id=${encodeURIComponent(calcId)}`, { method: "POST" });
+    }
+    setLocked(prev => ({ ...prev, [period]: !currentlyLocked }));
+  };
+
+  const periods = Object.keys(calcIds);
+  if (periods.length === 0) return null;
+
+  const nextPeriod = () => {
+    const lastPeriod = periods[periods.length - 1];
+    const [year, month] = lastPeriod.split("-").map(Number);
+    const d = new Date(year, month, 1); // month is 0-indexed, so this gives us the next month
+    const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    // Pre-fill could go here via a callback prop, but for now just show it
+    alert(`Next period: ${next}\n\nStart a new calculation with this period.`);
+  };
+
+  return (
+    <div className="card p-4 space-y-3">
+      <h3 className="text-sm font-semibold text-ink">Periods</h3>
+      {periods.map(period => (
+        <div key={period} className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${locked[period] ? "bg-green-500" : "bg-ink2/30"}`} />
+            <span className="text-xs text-ink2">{period}</span>
+            <span className={`text-xs font-medium ${locked[period] ? "text-green-700" : "text-ink2"}`}>
+              {locked[period] ? "Locked" : "Open"}
+            </span>
+          </div>
+          <button onClick={() => toggleLock(period)}
+            className={`px-2 py-0.5 rounded text-xs cursor-pointer transition-colors ${
+              locked[period]
+                ? "bg-ink2/10 text-ink2 hover:bg-ink2/20"
+                : "bg-accent/10 text-accent hover:bg-accent/20"
+            }`}>
+            {locked[period] ? "Unlock" : "Lock"}
+          </button>
+        </div>
+      ))}
+      <div className="pt-2 border-t border-line">
+        <button onClick={nextPeriod}
+          className="w-full px-3 py-1.5 rounded text-xs font-medium bg-accent/10 text-accent hover:bg-accent/20 cursor-pointer transition-colors">
+          Start Next Period →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 
 // ------------------------------------------------------------------
 // Inline plan builder for wizard

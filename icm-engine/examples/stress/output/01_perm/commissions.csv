@@ -1,0 +1,3 @@
+transaction_id,payee_id,period,rule_id,base_amount,rate,commission_amount,notes
+T1,P1,2026-06,perm_fee,50000.00,0.1,5000.000,Flat rate 0.1 on 50000.00
+T2,P1,2026-06,perm_fee,80000.00,0.1,8000.000,Flat rate 0.1 on 80000.00

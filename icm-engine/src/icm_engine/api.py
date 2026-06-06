@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from icm_engine.database import Database, default_db_path
 from icm_engine.engine import CommissionEngine
+from icm_engine.ledger import LedgerEntry
 from icm_engine.loader import load_payees, load_plan, load_transactions
 from icm_engine.models import Commission
 
@@ -102,6 +103,7 @@ async def calculate(
     transactions: UploadFile = File(...),  # noqa: B008
     payees: UploadFile = File(...),  # noqa: B008
     adjustments: UploadFile | None = File(None),  # noqa: B008
+    mbos: UploadFile | None = File(None),  # noqa: B008
     effective_period: str | None = None,
     allow_recalculate_locked: bool = True,
     org: str = Depends(get_org),
@@ -188,12 +190,21 @@ async def calculate(
                     adj_path.write_bytes(adj_bytes)
                     from icm_engine.loader import load_adjustments
                     adjustments_list = load_adjustments(adj_path)
+            mbos_list = None
+            if mbos is not None:
+                mbo_bytes = await mbos.read()
+                if mbo_bytes:
+                    mbo_path = root / "mbos.csv"
+                    mbo_path.write_bytes(mbo_bytes)
+                    from icm_engine.loader import load_mbos
+                    mbos_list = load_mbos(mbo_path)
             result = engine.calculate(
                 plan_obj, txn_list, payee_list,
                 locked_periods=locked_relevant if locked_relevant else None,
                 effective_period=effective_period if locked_relevant else None,
                 prior_commissions=prior_commissions if prior_commissions else None,
                 adjustments=adjustments_list,
+                mbos=mbos_list,
             )
         except Exception as e:
             import traceback as _tb
@@ -223,6 +234,13 @@ async def calculate(
             # Save ledger under every period calculation for full audit coverage
             db.save_ledger_entries(calc_id, ledger_dicts)
             calc_ids[period_key] = calc_id
+
+        # Persist transactions and link to all calculations in this run
+        txn_dicts = [t.model_dump() for t in txn_list]
+        db.save_transactions(txn_dicts)
+        all_txn_ids = [t.id for t in txn_list]
+        for cid in calc_ids.values():
+            db.link_transactions(cid, all_txn_ids)
 
         summary: dict[str, Decimal] = {}
         for c in result.commissions:
@@ -330,12 +348,89 @@ def delete_plan(plan_id: str, org: str = Depends(get_org)) -> dict[str, str]:
 
 
 # ------------------------------------------------------------------
+# v1: Payees CRUD
+# ------------------------------------------------------------------
+
+
+class PayeeSaveRequest(BaseModel):
+    name: str
+    quota: str = "0"
+    plan_id: str = ""
+    effective_from: str = ""
+    effective_to: str | None = None
+    email: str | None = None
+    ramp_months: int | None = None
+    ramp_schedule: str | None = None  # space-separated decimals
+    category_quotas: dict[str, str] | None = None
+
+
+@v1.get("/payees")
+def list_payees_all(org: str = Depends(get_org)) -> list[dict[str, Any]]:
+    return _get_db(org).list_payees()
+
+
+@v1.get("/payees/{payee_id}")
+def get_payee(payee_id: str, org: str = Depends(get_org)) -> dict[str, Any]:
+    db = _get_db(org)
+    payees = db.list_payees()
+    for p in payees:
+        if p["id"] == payee_id:
+            return p
+    raise HTTPException(status_code=404, detail="Payee not found")
+
+
+@v1.put("/payees/{payee_id}")
+def upsert_payee(payee_id: str, req: PayeeSaveRequest, org: str = Depends(get_org)) -> dict[str, Any]:
+    db = _get_db(org)
+    ramp_json = None
+    if req.ramp_months and req.ramp_schedule:
+        import json as _json
+        schedule = [str(Decimal(v.strip())) for v in req.ramp_schedule.split() if v.strip()]
+        ramp_json = _json.dumps({"months": req.ramp_months, "schedule": schedule})
+    cat_json = None
+    if req.category_quotas:
+        import json as _json
+        cat_json = _json.dumps(req.category_quotas)
+    db.save_payee(
+        payee_id, req.name, req.quota, req.plan_id,
+        req.effective_from, req.effective_to, ramp_json, cat_json,
+    )
+    return {"status": "saved", "id": payee_id}
+
+
+@v1.delete("/payees/{payee_id}")
+def delete_payee(payee_id: str, org: str = Depends(get_org)) -> dict[str, str]:
+    if not _get_db(org).delete_payee(payee_id):
+        raise HTTPException(status_code=404, detail="Payee not found")
+    return {"status": "deleted"}
+
+
+# ------------------------------------------------------------------
+# v1: Transactions
+# ------------------------------------------------------------------
+
+
+@v1.get("/transactions")
+def list_transactions(
+    period: str | None = None,
+    limit: int = 1000,
+    org: str = Depends(get_org),
+) -> list[dict[str, Any]]:
+    return _get_db(org).list_transactions(period=period, limit=limit)
+
+
+@v1.get("/calculations/{calculation_id}/inputs")
+def get_calculation_inputs(calculation_id: str, org: str = Depends(get_org)) -> list[dict[str, Any]]:
+    return _get_db(org).get_transactions_for_calculation(calculation_id)
+
+
+# ------------------------------------------------------------------
 # v1: Settings
 # ------------------------------------------------------------------
 
+
 class SettingPutRequest(BaseModel):
     value: str
-
 
 @v1.get("/settings/{key}")
 def get_setting(key: str, org: str = Depends(get_org)) -> dict[str, str | None]:
@@ -589,8 +684,79 @@ def order_trace(
 
 
 # ------------------------------------------------------------------
-# v1: Per-payee statement export (zip of per-rep files)
+# v1: Payee trace — full pipeline breakdown
 # ------------------------------------------------------------------
+
+
+@v1.get("/payee-trace")
+def payee_trace(
+    payee_id: str,
+    period: str,
+    calculation_id: str | None = None,
+    org: str = Depends(get_org),
+) -> dict[str, Any]:
+    """Return the full pipeline breakdown for one payee in one period."""
+    from icm_engine.engine import build_payee_trace
+
+    db = _get_db(org)
+
+    # Find the calculation
+    if calculation_id:
+        calc_id = calculation_id
+    else:
+        calcs = db.list_calculations(plan_id=None, limit=100)
+        matching = [c for c in calcs if c.get("period") == period]
+        calc_id = matching[0]["id"] if matching else ""
+
+    if not calc_id:
+        raise HTTPException(status_code=404, detail="No calculation found for this period")
+
+    # Load commission lines for this payee from this calculation
+    all_lines = db.get_commission_lines(calc_id)
+    payee_lines = [li for li in all_lines if li.get("payee_id") == payee_id]
+    commissions = [
+        Commission(
+            transaction_id=li.get("transaction_id", ""),
+            payee_id=li.get("payee_id", ""),
+            period=li.get("period", ""),
+            origin_period=li.get("origin_period", ""),
+            rule_id=li.get("rule_id", ""),
+            base_amount=Decimal(str(li.get("base_amount", "0"))),
+            rate=Decimal(str(li.get("rate", "0"))),
+            commission_amount=Decimal(str(li.get("commission_amount", "0"))),
+            notes=str(li.get("notes", "")),
+        )
+        for li in payee_lines
+    ]
+
+    # Load ledger entries
+    all_ledger = db.query_ledger(calculation_id=calc_id, limit=5000)
+    payee_ledger = [
+        LedgerEntry(
+            transaction_id=e.get("transaction_id", ""),
+            payee_id=e.get("payee_id", ""),
+            rule_id=e.get("rule_id", ""),
+            event_type=e.get("event_type", ""),
+            inputs=e.get("inputs", {}),
+            outputs=e.get("outputs", {}),
+            human_readable=e.get("human_readable", ""),
+        )
+        for e in all_ledger
+        if e.get("payee_id") == payee_id
+    ]
+
+    # Attainment not available from DB retrospective — trace shows what it can
+    attainment_entries: list[Any] = []
+
+    return cast(dict[str, Any], _serialize(
+        build_payee_trace(
+            payee_id, period,
+            commissions=commissions,
+            ledger=payee_ledger,
+            attainment=attainment_entries,
+            plan_name="",
+        )
+    ))
 
 
 def _write_internal_summary(
@@ -633,6 +799,7 @@ async def export_statements(
     period: str = Form(""),
     org: str = Depends(get_org),
     adjustments: UploadFile | None = File(None),  # noqa: B008
+    mbos: UploadFile | None = File(None),  # noqa: B008
 ) -> Response:
     """Calculate commissions and return a ZIP of per-payee statements.
 
@@ -730,7 +897,18 @@ async def export_statements(
                     adj_path.write_bytes(adj_bytes)
                     from icm_engine.loader import load_adjustments
                     adjustments_list = load_adjustments(adj_path)
-            result = engine.calculate(plan_obj, txn_list, payee_list, adjustments=adjustments_list)
+            mbos_list = None
+            if mbos is not None:
+                mbo_bytes = await mbos.read()
+                if mbo_bytes:
+                    mbo_path = root / "mbos.csv"
+                    mbo_path.write_bytes(mbo_bytes)
+                    from icm_engine.loader import load_mbos
+                    mbos_list = load_mbos(mbo_path)
+            result = engine.calculate(
+                plan_obj, txn_list, payee_list,
+                adjustments=adjustments_list, mbos=mbos_list,
+            )
         except Exception as e:
             import traceback as _tb2
             raise HTTPException(status_code=500, detail={
@@ -738,6 +916,28 @@ async def export_statements(
                 "detail": str(e),
                 "traceback": _tb2.format_exc(),
             }) from e
+
+        # Persist to database
+        db = _get_db(org)
+        commissions = [c.model_dump() for c in result.commissions]
+        ledger_dicts = [e.to_dict() for e in result.ledger]
+        by_period: dict[str, list[dict[str, Any]]] = {}
+        for c_dict in commissions:
+            p = c_dict["period"]
+            by_period.setdefault(p, []).append(c_dict)
+        calc_ids: dict[str, str] = {}
+        for period_key in sorted(by_period.keys()):
+            calc_id = db.record_calculation(
+                plan_obj.plan_id, period=period_key,
+                input_summary={"txn_count": len(txn_list), "payee_count": len(payee_list)},
+            )
+            db.save_commission_lines(calc_id, by_period[period_key])
+            db.save_ledger_entries(calc_id, ledger_dicts)
+            calc_ids[period_key] = calc_id
+        txn_dicts = [t.model_dump() for t in txn_list]
+        db.save_transactions(txn_dicts)
+        for cid in calc_ids.values():
+            db.link_transactions(cid, [t.id for t in txn_list])
 
         period_filter = period.strip() or None
 

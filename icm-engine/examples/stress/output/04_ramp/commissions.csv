@@ -1,0 +1,3 @@
+transaction_id,payee_id,period,rule_id,base_amount,rate,commission_amount,notes
+T1,P1,2026-01,ramp_tiered,25000.00000,0.05,1250.0000000,Tier 1.0: 25000.00000 @ 0.05
+T1,P1,2026-01,ramp_tiered,5000.00000,0.1,500.000000,Tier 100.0: 5000.00000 @ 0.1
