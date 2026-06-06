@@ -269,3 +269,62 @@ export async function previewFile(file: File, type: string = "transactions"): Pr
   if (!res.ok) throw new Error("Preview failed");
   return res.json();
 }
+
+// ------------------------------------------------------------------
+// Data model queries
+// ------------------------------------------------------------------
+
+export interface CalculationRow {
+  id: string;
+  plan_id: string;
+  period: string;
+  version: number;
+  status: string;
+  created_at: string;
+  input_summary: string;
+}
+
+export interface TransactionRow {
+  id: string;
+  payee_id: string;
+  deal_id: string;
+  period: string;
+  amount: string;
+  product: string | null;
+  close_date: string | null;
+  metadata: string;
+  created_at: string;
+}
+
+export interface PeriodStatusRow {
+  period: string;
+  versions: number;
+  latest_version: number;
+  status: string;
+  locked_calc_id: string | null;
+}
+
+export async function listCalculations(plan_id?: string, period?: string): Promise<CalculationRow[]> {
+  const params = new URLSearchParams();
+  if (plan_id) params.set("plan_id", plan_id);
+  if (period) params.set("period", period);
+  const qs = params.toString();
+  const res = await fetch(v1(`/calculations${qs ? "?" + qs : ""}`));
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function listTransactions(period?: string): Promise<TransactionRow[]> {
+  const params = new URLSearchParams();
+  if (period) params.set("period", period);
+  params.set("limit", "500");
+  const res = await fetch(v1(`/transactions?${params}`));
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function listPeriods(plan_id: string): Promise<PeriodStatusRow[]> {
+  const res = await fetch(v1(`/periods/${encodeURIComponent(plan_id)}`));
+  if (!res.ok) return [];
+  return res.json();
+}
