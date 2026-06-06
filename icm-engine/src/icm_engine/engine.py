@@ -669,29 +669,103 @@ def _compute_attainment(
 ) -> list[AttainmentSummary]:
     """Compute bookings vs quota per (payee, window).
 
-    v1: ALL credited bookings count toward attainment. Quota-category filtering
-    (e.g. only new-business deals) is a future extension.
+    When payees share a team_id, their bookings and quotas are pooled:
+    every team member sees the TEAM's combined bookings and quota, and
+    all share the same attainment %. Solo payees (no team_id) use their
+    own individual numbers.
     """
     frac = fractions or {}
+
+    # Per-payee bookings and quotas
     bookings: dict[tuple[str, str], Decimal] = {}
+    quotas: dict[tuple[str, str], Decimal] = {}
     for cu in credits:
         window = _window_key(cu.period, period_type)
         key = (cu.payee_id, window)
         bookings[key] = bookings.get(key, Decimal("0")) + cu.credited_amount
+        if key not in quotas:
+            p = payee_map.get(cu.payee_id)
+            af = frac.get(key, Decimal("1"))
+            quotas[key] = p.quota_for(window, activity_fraction=af) if p else Decimal("0")
+
+    # Identify teams and collect all (payee, window) pairs
+    team_by_payee: dict[str, str] = {}  # payee_id → team_id
+    all_windows: set[str] = set()
+    for pid in set(b[0] for b in bookings) | set(payee_map.keys()):
+        p = payee_map.get(pid)
+        if p and (p.team_id or "").strip():
+            team_by_payee[pid] = p.team_id.strip()
+
+    # Collect all windows that appear (from bookings, plus compute for zero-booking payees)
+    for _, w in bookings:
+        all_windows.add(w)
+
+    # Compute quotas for ALL payees across all windows (even those with no bookings)
+    for pid, p in payee_map.items():
+        for w in all_windows:
+            k = (pid, w)
+            if k not in quotas:
+                af = frac.get(k, Decimal("1"))
+                quotas[k] = p.quota_for(w, activity_fraction=af)
+
+    # Compute team-level aggregates
+    # Build team membership: (team_id, window) → list of payee_ids
+    teams: dict[tuple[str, str], list[str]] = {}
+    for pid, tid in team_by_payee.items():
+        for w in all_windows:
+            teams.setdefault((tid, w), []).append(pid)
+
+    team_bookings: dict[tuple[str, str], Decimal] = {}
+    team_quotas: dict[tuple[str, str], Decimal] = {}
+    for (tid, window), members in teams.items():
+        tb = sum(bookings.get((m, window), Decimal("0")) for m in members)
+        tq = sum(quotas.get((m, window), Decimal("0")) for m in members)
+        team_bookings[(tid, window)] = tb
+        team_quotas[(tid, window)] = tq
 
     summaries: list[AttainmentSummary] = []
-    for (pid, window), booked in sorted(bookings.items()):
-        p = payee_map.get(pid)
-        af = frac.get((pid, window), Decimal("1"))
-        quota = p.quota_for(window, activity_fraction=af) if p else Decimal("0")
-        pct = booked / quota if quota != 0 else None
+    seen: set[tuple[str, str]] = set()
+    for (pid, window) in sorted(bookings.keys()):
+        tid = team_by_payee.get(pid)
+        if tid:
+            # Team payee: use team aggregate
+            b = team_bookings.get((tid, window), Decimal("0"))
+            q = team_quotas.get((tid, window), Decimal("0"))
+            # Only emit one summary per (pid, window)
+            if (pid, window) in seen:
+                continue
+            seen.add((pid, window))
+        else:
+            b = bookings.get((pid, window), Decimal("0"))
+            q = quotas.get((pid, window), Decimal("0"))
+
+        pct = b / q if q != 0 else None
         summaries.append(AttainmentSummary(
             payee_id=pid,
             period=window,
-            bookings=booked,
-            quota=quota,
+            bookings=b,
+            quota=q,
             attainment_pct=pct,
         ))
+
+    # Also emit attainment for payees who had no bookings but have a quota
+    for pid, p in payee_map.items():
+        tid = team_by_payee.get(pid)
+        if tid:
+            for window in {w for (_, w) in bookings}:
+                if (pid, window) not in seen:
+                    seen.add((pid, window))
+                    tb = team_bookings.get((tid, window), Decimal("0"))
+                    tq = team_quotas.get((tid, window), Decimal("0"))
+                    pct = tb / tq if tq != 0 else None
+                    summaries.append(AttainmentSummary(
+                        payee_id=pid,
+                        period=window,
+                        bookings=tb,
+                        quota=tq,
+                        attainment_pct=pct,
+                    ))
+
     return summaries
 
 
@@ -1120,6 +1194,17 @@ class CommissionEngine:
                 ),
             ))
 
+        # Build team quota override map: if a payee's attainment quota differs
+        # from their individual quota_for(), use the attainment (team) quota
+        quota_overrides: dict[tuple[str, str], Decimal] = {}
+        for a in attainment:
+            p = payee_map.get(a.payee_id)
+            if p:
+                af_val = fractions.get((a.payee_id, a.period), Decimal("1"))
+                individual = p.quota_for(a.period, activity_fraction=af_val)
+                if individual != a.quota:
+                    quota_overrides[(a.payee_id, a.period)] = a.quota
+
         # Build attainment lookup for threshold gates
         att_by_payee_window: dict[tuple[str, str], Decimal | None] = {}
         for a in attainment:
@@ -1165,12 +1250,14 @@ class CommissionEngine:
                     rule, synth_txns, payee_map, pt,
                     quota_category=getattr(rule, "quota_category", None),
                     fractions=fractions,
+                    quota_overrides=quota_overrides,
                 )
             elif isinstance(rule, AcceleratorRule):
                 commissions, ledger = self._calc_accelerator(
                     rule, synth_txns, payee_map, pt,
                     quota_category=getattr(rule, "quota_category", None),
                     fractions=fractions,
+                    quota_overrides=quota_overrides,
                 )
             else:
                 continue
@@ -1583,6 +1670,7 @@ class CommissionEngine:
         period_type: str = "monthly",
         quota_category: str | None = None,
         fractions: dict[tuple[str, str], Decimal] | None = None,
+        quota_overrides: dict[tuple[str, str], Decimal] | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1638,7 +1726,11 @@ class CommissionEngine:
             )
 
             af_tiered = (fractions or {}).get((payee_id, window), Decimal("1"))
-            quota = payee.quota_for(window, category=quota_category, activity_fraction=af_tiered)
+            qo = (quota_overrides or {}).get((payee_id, window))
+            if qo is not None:
+                quota = qo
+            else:
+                quota = payee.quota_for(window, category=quota_category, activity_fraction=af_tiered)
 
             if quota == Decimal("0"):
                 top_tier = rule.tiers[-1]
@@ -1817,6 +1909,7 @@ class CommissionEngine:
         period_type: str = "monthly",
         quota_category: str | None = None,
         fractions: dict[tuple[str, str], Decimal] | None = None,
+        quota_overrides: dict[tuple[str, str], Decimal] | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1855,7 +1948,11 @@ class CommissionEngine:
                     ))
                 continue
             af_accel = (fractions or {}).get((payee_id, window), Decimal("1"))
-            quota = payee.quota_for(window, category=quota_category, activity_fraction=af_accel)
+            qo_accel = (quota_overrides or {}).get((payee_id, window))
+            if qo_accel is not None:
+                quota = qo_accel
+            else:
+                quota = payee.quota_for(window, category=quota_category, activity_fraction=af_accel)
             if quota == Decimal("0"):
                 for t in txn_group:
                     ledger.append(LedgerEntry(

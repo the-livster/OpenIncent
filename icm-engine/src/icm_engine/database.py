@@ -23,7 +23,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS _schema_version (
@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS payees (
     category_quotas TEXT,
     manager_id TEXT NOT NULL DEFAULT '',
     manager_override TEXT,
+    team_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (id, org_id)
 );
@@ -205,6 +206,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # v7 → v8: manager hierarchy on payees
         "ALTER TABLE payees ADD COLUMN manager_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE payees ADD COLUMN manager_override TEXT",
+        # v8 → v9: team quotas
+        "ALTER TABLE payees ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
     ]
     for m in migrations:
         try:
@@ -340,20 +343,22 @@ class Database:
         category_quotas: str | None = None,
         manager_id: str = "",
         manager_override: str | None = None,
+        team_id: str = "",
     ) -> str:
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO payees (id, org_id, name, quota, quotas, plan_id,
-                   effective_from, effective_to, ramp, category_quotas, manager_id, manager_override)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   effective_from, effective_to, ramp, category_quotas, manager_id, manager_override, team_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id, org_id) DO UPDATE SET
                        name=excluded.name, quota=excluded.quota, quotas=excluded.quotas,
                        plan_id=excluded.plan_id,
                        effective_from=excluded.effective_from, effective_to=excluded.effective_to,
                        ramp=excluded.ramp, category_quotas=excluded.category_quotas,
-                       manager_id=excluded.manager_id, manager_override=excluded.manager_override""",
+                       manager_id=excluded.manager_id, manager_override=excluded.manager_override,
+                       team_id=excluded.team_id""",
                  (payee_id, self.org_id, name, quota, "{}", plan_id,
-                  effective_from, effective_to, ramp, category_quotas, manager_id, manager_override),
+                  effective_from, effective_to, ramp, category_quotas, manager_id, manager_override, team_id),
             )
         return payee_id
 

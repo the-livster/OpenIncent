@@ -140,6 +140,7 @@ class Payee(BaseModel):
     category_quotas: dict[str, Decimal] = Field(default_factory=dict)
     manager_id: str = ""
     manager_override: Decimal | None = Field(default=None, ge=Decimal("0"), le=Decimal("1"))
+    team_id: str = ""
 
     def quota_for(self, window_key: str, category: str | None = None,
                   activity_fraction: Decimal = Decimal("1")) -> Decimal:
