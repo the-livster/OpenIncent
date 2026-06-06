@@ -1,0 +1,17 @@
+plan_id: saas_mgmt
+name: "SaaS Management Plan"
+period_type: quarterly
+currency: USD
+pro_rating: full
+payout_cap: "75000"
+
+rules:
+  - id: team_override
+    type: flat_rate
+    rate: "0.03"
+
+  - id: team_accelerator
+    type: accelerator
+    rate: "0.03"
+    threshold_pct: "1.0"
+    multiplier: "2.0"

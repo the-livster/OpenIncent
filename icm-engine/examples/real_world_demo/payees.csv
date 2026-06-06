@@ -1,0 +1,14 @@
+id,name,quota,plan_id,effective_from,effective_to,team_id,manager_id,manager_override,email
+sarah,Sarah Chen (VP),200000,saas_mgmt,2025-07-01,,,,sarah@company.com
+mike,Mike Torres (Dir East),100000,saas_mgmt,2025-09-01,,east,sarah,0.05,mike@company.com
+jen,Jen Park (Dir West),80000,saas_mgmt,2025-10-15,,west,sarah,0.04,jen@company.com
+alice,Alice Ng (AE),15000,saas_ae,2025-11-01,,east,mike,,alice@company.com
+bob,Bob Kowalski (AE),15000,saas_ae,2026-01-15,,east,mike,,bob@company.com
+charlie,Charlie Diaz (SDR),5000,saas_ae,2026-02-01,,,,alice,,
+dave,Dave Robinson (AE),18000,saas_ae,2025-08-01,,west,jen,,dave@company.com
+eve,Eve Martel (AE),14000,saas_ae,2026-03-10,,west,jen,,eve@company.com
+frank,Frank Nguyen (AE),16000,saas_ae,2025-10-01,2026-03-20,west,jen,,frank@company.com
+grace,Grace Kim (Solutions),0,saas_ae,2025-06-01,,,,,grace@company.com
+hector,Hector Ruiz (AE),12000,saas_ae,2026-01-01,,,,,,hector@company.com
+isabel,Isabel Tremblay (AE),140000,saas_ae,2026-01-01,,canada,,,,isabel@company.com
+jordan,Jordan Singh (AE),130000,saas_ae,2026-01-01,,canada,,,,jordan@company.com
