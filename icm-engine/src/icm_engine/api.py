@@ -9,7 +9,7 @@ from typing import Any, cast
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.routing import APIRouter
 from pydantic import BaseModel
 
@@ -17,7 +17,7 @@ from icm_engine.database import Database, default_db_path
 from icm_engine.engine import CommissionEngine
 from icm_engine.ledger import LedgerEntry
 from icm_engine.loader import load_payees, load_plan, load_transactions
-from icm_engine.models import Commission, Plan
+from icm_engine.models import Commission, Payee, Plan
 
 app = FastAPI(title="icm-engine")
 
@@ -680,7 +680,12 @@ def lock_period(
     reason: str = "",
     org: str = Depends(get_org),
 ) -> dict[str, Any]:
-    """Lock a period to a calculation. Defaults to the latest calculation for this plan/period."""
+    """Lock a period to a calculation and generate the payout register.
+
+    Defaults to the latest calculation for this plan/period. The payout
+    register is automatically generated and saved alongside the database
+    after a successful lock.
+    """
     db = _get_db(org)
     if calculation_id is None:
         calcs = db.list_calculations(plan_id=plan_id, period=period, limit=1)
@@ -689,7 +694,118 @@ def lock_period(
         calculation_id = calcs[0]["id"]
     if not db.lock_period(plan_id, period, calculation_id, locked_by=locked_by, reason=reason):
         raise HTTPException(status_code=409, detail="Period already locked")
-    return {"plan_id": plan_id, "period": period, "calculation_id": calculation_id, "status": "locked"}
+
+    # --- Generate payout register ---
+    register_path_str: str | None = None
+    try:
+        from icm_engine.loader import load_plan
+        from icm_engine.payout_register import (
+            generate_payout_register,
+            register_path,
+            write_register,
+        )
+
+        # Load plan
+        plan_row = db.get_plan(plan_id)
+        if plan_row and plan_row.get("yaml_content"):
+            import tempfile as _tf
+            with _tf.NamedTemporaryFile(
+                mode="w", suffix=".yaml", delete=False, encoding="utf-8",
+            ) as tf:
+                tf.write(plan_row["yaml_content"])
+                tf.flush()
+                plan_obj = load_plan(Path(tf.name))
+        else:
+            plan_obj = None
+
+        # Load commission lines and payees
+        raw_lines = db.get_commission_lines(calculation_id)
+        commissions = [
+            Commission(
+                transaction_id=li.get("transaction_id", ""),
+                payee_id=li.get("payee_id", ""),
+                period=li.get("period", ""),
+                origin_period=li.get("origin_period", ""),
+                rule_id=li.get("rule_id", ""),
+                base_amount=Decimal(str(li.get("base_amount", "0"))),
+                rate=Decimal(str(li.get("rate", "0"))),
+                commission_amount=Decimal(str(li.get("commission_amount", "0"))),
+                notes=str(li.get("notes", "")),
+            )
+            for li in raw_lines
+        ]
+        payee_rows = db.list_payees()
+        payees = [
+            Payee(
+                id=pr["id"], name=pr["name"],
+                quota=Decimal(pr.get("quota", "0")),
+                plan_id=pr.get("plan_id", ""),
+                effective_from=(_date.today() if not pr.get("effective_from")
+                                else _date.fromisoformat(str(pr["effective_from"])[:10])),
+            )
+            for pr in payee_rows
+        ]
+
+        if plan_obj is not None and commissions:
+            calcs = db.list_calculations(plan_id=plan_id, period=period, limit=1)
+            version = calcs[0].get("version", 1) if calcs else 1
+            register = generate_payout_register(
+                commissions, payees, plan_obj, period, version,
+            )
+            app_dir = Path(db.path).parent
+            rp = register_path(app_dir, plan_id, period, version)
+            rp.parent.mkdir(parents=True, exist_ok=True)
+            write_register(register, commissions, rp)
+            register_path_str = str(rp)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to generate payout register for %s/%s", plan_id, period, exc_info=True,
+        )
+        # Don't fail the lock — the register is supplementary
+
+    return {
+        "plan_id": plan_id, "period": period, "calculation_id": calculation_id,
+        "status": "locked",
+        "register_path": register_path_str,
+    }
+
+
+@v1.get("/periods/{plan_id}/{period}/register")
+def download_register(
+    plan_id: str, period: str,
+    version: int | None = None,
+    org: str = Depends(get_org),
+) -> Response:
+    """Download the payout register XLSX for a locked period.
+
+    If version is not specified, returns the latest locked version.
+    """
+    from icm_engine.payout_register import register_path
+
+    db = _get_db(org)
+    path = db.path if hasattr(db, 'path') else default_db_path()
+    app_dir = Path(str(path)).parent
+
+    # Determine version
+    if version is None:
+        calcs = db.list_calculations(plan_id=plan_id, period=period, limit=1)
+        if not calcs:
+            raise HTTPException(status_code=404, detail="No calculations found for this period")
+        version = calcs[0].get("version", 1)
+
+    rp = register_path(app_dir, plan_id, period, version)
+    if not rp.exists():
+        raise HTTPException(status_code=404, detail={
+            "error": "Payout register not found for this period/version",
+            "hint": "Lock the period first to generate the register.",
+        })
+
+    return FileResponse(
+        rp,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=rp.name,
+    )
 
 
 @v1.delete("/periods/{plan_id}/{period}/lock")

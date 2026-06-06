@@ -900,6 +900,135 @@ def distribute_command(
 
 
 # ------------------------------------------------------------------
+# Register command
+# ------------------------------------------------------------------
+
+
+@app.command("register")
+def register_command(
+    plan_id: str = typer.Option(..., "--plan", help="Plan ID"),
+    period: str = typer.Option(..., "--period", help="Period (YYYY-MM)"),
+    version: int = typer.Option(
+        None, "--version", help="Calculation version (default: latest locked)"
+    ),
+    output: str = typer.Option(
+        None, "--output", "-o", help="Output path (default: app data dir)"
+    ),
+    db_path: str = typer.Option(
+        None, "--db", help="Database path (default: platform-specific)"
+    ),
+) -> None:
+    """Generate or open the finance payout register for a locked period.
+
+    The register is an XLSX workbook with two sheets:
+      - Payout Register: one row per payee with rounded payouts + totals
+      - Line Items: every commission line with rounded amounts
+    """
+    from icm_engine.database import Database, default_db_path
+    from icm_engine.models import Commission, Payee
+    from icm_engine.payout_register import (
+        generate_payout_register,
+        register_path,
+        write_register,
+    )
+
+    db_path_obj = Path(db_path) if db_path else default_db_path()
+    db = Database(db_path_obj)
+    app_dir = db_path_obj.parent
+
+    # Find the calculation
+    calcs = db.list_calculations(plan_id=plan_id, period=period, limit=5)
+    if not calcs:
+        console.print(f"[red]No calculations found for {plan_id}/{period}[/red]")
+        raise typer.Exit(code=1)
+
+    if version is not None:
+        matching = [c for c in calcs if c.get("version") == version]
+    else:
+        # Prefer locked calculation, else latest
+        locked_calc = db.get_official_calculation(plan_id, period)
+        if locked_calc:
+            matching = [locked_calc]
+        else:
+            matching = [calcs[0]]
+
+    if not matching:
+        console.print("[red]No matching calculation found[/red]")
+        raise typer.Exit(code=1)
+
+    calc = matching[0]
+    calc_id = calc["id"]
+    calc_version = calc.get("version", 1)
+
+    # Check if register already exists
+    rp = register_path(app_dir, plan_id, period, calc_version)
+    if rp.exists() and output is None:
+        console.print(f"[green]Register already exists:[/green] {rp}")
+        console.print("[dim]Use --output to regenerate to a different path.[/dim]")
+        return
+
+    # Load data from DB
+    raw_lines = db.get_commission_lines(calc_id)
+    if not raw_lines:
+        console.print("[yellow]No commission lines found for this calculation[/yellow]")
+        raise typer.Exit(code=1)
+
+    commissions = [
+        Commission(
+            transaction_id=li.get("transaction_id", ""),
+            payee_id=li.get("payee_id", ""),
+            period=li.get("period", ""),
+            origin_period=li.get("origin_period", ""),
+            rule_id=li.get("rule_id", ""),
+            base_amount=Decimal(str(li.get("base_amount", "0"))),
+            rate=Decimal(str(li.get("rate", "0"))),
+            commission_amount=Decimal(str(li.get("commission_amount", "0"))),
+            notes=str(li.get("notes", "")),
+        )
+        for li in raw_lines
+    ]
+
+    payee_rows = db.list_payees()
+    payees = [
+        Payee(
+            id=pr["id"], name=pr["name"],
+            quota=Decimal(pr.get("quota", "0")),
+            plan_id=pr.get("plan_id", ""),
+            effective_from=_date.today(),
+        )
+        for pr in payee_rows
+    ]
+
+    # Load plan
+    plan_row = db.get_plan(plan_id)
+    if not plan_row or not plan_row.get("yaml_content"):
+        console.print(f"[red]Plan {plan_id} not found in database[/red]")
+        raise typer.Exit(code=1)
+
+    import tempfile
+    from pathlib import Path as _Path
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", delete=False, encoding="utf-8",
+    ) as tf:
+        tf.write(plan_row["yaml_content"])
+        tf.flush()
+        plan_obj = load_plan(_Path(tf.name))
+
+    # Generate
+    register = generate_payout_register(
+        commissions, payees, plan_obj, period, calc_version,
+    )
+    out_path = Path(output) if output else rp
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    write_register(register, commissions, out_path)
+
+    console.print(f"[green]Payout register written:[/green] {out_path}")
+    console.print(f"  Payees: {len(register.lines)}")
+    console.print(f"  Total payout: {register.total_payout} {plan_obj.currency}")
+    console.print(f"  Version: {calc_version}")
+
+
+# ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
 
