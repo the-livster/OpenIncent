@@ -721,10 +721,14 @@ def statements_command(
     mbos_file: str = typer.Option(
         None, "--mbos", help="Path to MBOs/bonuses CSV"
     ),
+    rounding: str = typer.Option(
+        "half-up", "--rounding", help="Rounding mode: half-up (default), floor, ceil, none"
+    ),
 ) -> None:
     """Generate per-rep commission statements in the requested formats."""
     from icm_engine.engine import CommissionEngine
     from icm_engine.loader import load_payees, load_plan, load_transactions
+    from icm_engine.rounding import parse_rounding_mode
     from icm_engine.statements import generate_statements
 
     plan_obj = load_plan(plan)
@@ -756,6 +760,7 @@ def statements_command(
         period=period,
         formats=fmt_tuple,
         emit_zero=emit_zero,
+        rounding_mode=parse_rounding_mode(rounding),
     )
 
     console.print(f"[green]Generated {len(files)} statement file(s) in {out_dir}[/green]")
@@ -1125,18 +1130,21 @@ def _print_mapping(m: Any) -> None:
         console.print(f"[dim]Mapped '{src}' → {tgt} (confidence: {conf:.0%}){extra}[/dim]")
 
 
-def _write_commissions_xlsx(commissions: list[Commission], path: Path) -> None:
+def _write_commissions_xlsx(commissions: list[Commission], path: Path,
+                            rounding_mode: str = "half-up") -> None:
     from icm_engine.excel import write_xlsx
+    from icm_engine.rounding import parse_rounding_mode, round_money
 
+    rm = parse_rounding_mode(rounding_mode)
     rows = [
         {
             "transaction_id": c.transaction_id,
             "payee_id": c.payee_id,
             "period": c.period,
             "rule_id": c.rule_id,
-            "base_amount": str(c.base_amount),
+            "base_amount": str(round_money(c.base_amount, rm)),
             "rate": str(c.rate),
-            "commission_amount": str(c.commission_amount),
+            "commission_amount": str(round_money(c.commission_amount, rm)),
             "notes": c.notes,
         }
         for c in commissions
@@ -1144,22 +1152,29 @@ def _write_commissions_xlsx(commissions: list[Commission], path: Path) -> None:
     write_xlsx(path, {"commissions": rows})
 
 
-def _write_summary_xlsx(commissions: list[Commission], path: Path) -> None:
+def _write_summary_xlsx(commissions: list[Commission], path: Path,
+                        rounding_mode: str = "half-up") -> None:
     from icm_engine.excel import write_xlsx
+    from icm_engine.rounding import parse_rounding_mode, round_money
 
+    rm = parse_rounding_mode(rounding_mode)
     by_payee_period: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
     for c in commissions:
         key = (c.payee_id, c.period)
         by_payee_period[key] += c.commission_amount
 
     rows = [
-        {"payee_id": payee_id, "period": period, "total_commission": str(total)}
+        {"payee_id": payee_id, "period": period, "total_commission": str(round_money(total, rm))}
         for (payee_id, period), total in sorted(by_payee_period.items())
     ]
     write_xlsx(path, {"summary": rows})
 
 
-def _write_commissions_csv(commissions: list[Commission], path: Path) -> None:
+def _write_commissions_csv(commissions: list[Commission], path: Path,
+                           rounding_mode: str = "half-up") -> None:
+    from icm_engine.rounding import parse_rounding_mode, round_money
+
+    rm = parse_rounding_mode(rounding_mode)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -1181,15 +1196,19 @@ def _write_commissions_csv(commissions: list[Commission], path: Path) -> None:
                     c.payee_id,
                     c.period,
                     c.rule_id,
-                    str(c.base_amount),
+                    str(round_money(c.base_amount, rm)),
                     str(c.rate),
-                    str(c.commission_amount),
+                    str(round_money(c.commission_amount, rm)),
                     c.notes,
                 ]
             )
 
 
-def _write_summary_csv(commissions: list[Commission], path: Path) -> None:
+def _write_summary_csv(commissions: list[Commission], path: Path,
+                       rounding_mode: str = "half-up") -> None:
+    from icm_engine.rounding import parse_rounding_mode, round_money
+
+    rm = parse_rounding_mode(rounding_mode)
     by_payee_period: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
     for c in commissions:
         key = (c.payee_id, c.period)
@@ -1199,7 +1218,7 @@ def _write_summary_csv(commissions: list[Commission], path: Path) -> None:
         writer = csv.writer(f)
         writer.writerow(["payee_id", "period", "total_commission"])
         for (payee_id, period), total in sorted(by_payee_period.items()):
-            writer.writerow([payee_id, period, str(total)])
+            writer.writerow([payee_id, period, str(round_money(total, rm))])
 
 
 def _print_summary(

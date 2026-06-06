@@ -1,25 +1,24 @@
 """Payout register — the finance-ready output produced after locking a period.
 
-All monetary values are rounded to cents (ROUND_HALF_UP). Internal calculations
-remain exact Decimal; rounding is applied only at this output boundary.
+All monetary values are rounded to cents using the configured rounding mode.
+Internal calculations remain exact Decimal; rounding is applied only at this output boundary.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from icm_engine.excel import write_xlsx
 from icm_engine.models import Commission, Payee, Plan
+from icm_engine.rounding import RoundingMode, round_money
 
-_CENTS = Decimal("0.01")
 
-
-def _round(amount: Decimal) -> Decimal:
-    """Round to two decimal places, half-up."""
-    return amount.quantize(_CENTS, rounding=ROUND_HALF_UP)
+def _round(amount: Decimal, mode: RoundingMode = RoundingMode.HALF_UP) -> Decimal:
+    """Round to two decimal places using the given mode."""
+    return round_money(amount, mode)
 
 
 @dataclass

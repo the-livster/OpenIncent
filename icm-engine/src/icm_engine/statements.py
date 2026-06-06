@@ -11,9 +11,13 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+from icm_engine.rounding import RoundingMode, round_money
+
+_DEFAULT_ROUNDING = RoundingMode.HALF_UP
 
 
 @dataclass
@@ -40,6 +44,7 @@ def generate_statements(
     emit_zero: bool = False,
     attainment: list[Any] | None = None,
     plan_name: str = "",
+    rounding_mode: RoundingMode = _DEFAULT_ROUNDING,
 ) -> list[StatementFile]:
     """Generate per-payee commission statements.
 
@@ -82,6 +87,12 @@ def generate_statements(
 
     files: list[StatementFile] = []
     period_label = period or "all"
+
+    # Capture rounding mode as a closure so all _d() calls use it
+    _rm = rounding_mode
+
+    def _d(amount: Decimal) -> str:  # type: ignore[no-redef]
+        return str(round_money(amount, _rm))
 
     for pid in sorted(all_pids):
         lines = by_payee.get(pid, [])
@@ -126,9 +137,9 @@ def generate_statements(
 # ------------------------------------------------------------------
 
 
-def _d(amount: Decimal) -> str:
-    """Round a Decimal to 2 decimal places (half-up) for display."""
-    return str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+def _d(amount: Decimal, mode: RoundingMode = _DEFAULT_ROUNDING) -> str:
+    """Round a Decimal to 2 decimal places for display."""
+    return str(round_money(amount, mode))
 
 
 # ------------------------------------------------------------------
