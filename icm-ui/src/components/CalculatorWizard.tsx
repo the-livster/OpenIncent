@@ -109,6 +109,8 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
   const [exportFormats, setExportFormats] = useState<{ pdf: boolean; xlsx: boolean; html: boolean }>({
     pdf: true, xlsx: false, html: false,
   });
+  const [exportPeriod, setExportPeriod] = useState("");
+  const [exportEmitZero, setExportEmitZero] = useState(false);
   const [exportStatus, setExportStatus] = useState<"idle" | "loading" | "error" | "done">("idle");
   const [exportError, setExportError] = useState("");
   const [savedPath, setSavedPath] = useState("");
@@ -283,13 +285,15 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
     try {
       const result = await exportStatements({
-        plan: planFileObj || new File([], "empty"),
+        plan: planFileObj || undefined,
         transactions: txnFileObj || new File([], "empty"),
         payees: payeeFileObj || new File([], "empty"),
         plan_text: planText,
         txn_text: txnText,
         payee_text: payeeText,
         formats: selectedFormats,
+        period: exportPeriod || undefined,
+        emit_zero: exportEmitZero || undefined,
       });
       if (result) {
         setSavedPath(result);
@@ -619,6 +623,29 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
           {/* Export section */}
           <div className="space-y-3">
+            {/* Period filter + Emit zero */}
+            <div className="flex items-center gap-4 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-ink2">Period:</span>
+                <input
+                  type="text"
+                  value={exportPeriod}
+                  onChange={e => setExportPeriod(e.target.value)}
+                  placeholder="YYYY-MM (optional)"
+                  className="w-36 px-2 py-1 rounded text-xs bg-soft border border-line text-ink focus:outline-none focus:border-accent"
+                />
+              </div>
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={exportEmitZero}
+                  onChange={() => setExportEmitZero(!exportEmitZero)}
+                  className="accent-accent"
+                />
+                <span className="text-xs text-ink2">Include $0 statements</span>
+              </label>
+            </div>
+
             {/* Format checkboxes */}
             <div className="flex items-center gap-4 flex-wrap">
               <span className="text-xs text-ink2 font-medium">Formats:</span>
@@ -968,14 +995,24 @@ function PeriodLockPanel({ calcIds, planId }: { calcIds: Record<string, string>;
               {locked[period] ? "Locked" : "Open"}
             </span>
           </div>
-          <button onClick={() => toggleLock(period)}
-            className={`px-2 py-0.5 rounded text-xs cursor-pointer transition-colors ${
-              locked[period]
-                ? "bg-ink2/10 text-ink2 hover:bg-ink2/20"
-                : "bg-accent/10 text-accent hover:bg-accent/20"
-            }`}>
-            {locked[period] ? "Unlock" : "Lock"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => toggleLock(period)}
+              className={`px-2 py-0.5 rounded text-xs cursor-pointer transition-colors ${
+                locked[period]
+                  ? "bg-ink2/10 text-ink2 hover:bg-ink2/20"
+                  : "bg-accent/10 text-accent hover:bg-accent/20"
+              }`}>
+              {locked[period] ? "Unlock" : "Lock"}
+            </button>
+            {locked[period] && resolvedPlanId && (
+              <a
+                href={`${base}/v1/periods/${encodeURIComponent(resolvedPlanId)}/${period}/register`}
+                className="px-2 py-0.5 rounded text-xs bg-green-50 text-green-700 hover:bg-green-100 cursor-pointer transition-colors no-underline"
+              >
+                Register ↓
+              </a>
+            )}
+          </div>
         </div>
       ))}
       <div className="pt-2 border-t border-line">

@@ -22,6 +22,7 @@ export default function PayeeManager() {
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<PayeeRecord | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [planFilter, setPlanFilter] = useState("");
 
   const [form, setForm] = useState({
     id: "", name: "", quota: "0", plan_id: "", effective_from: "",
@@ -137,6 +138,20 @@ export default function PayeeManager() {
         <PayeeForm form={form} setForm={setForm} onSave={handleSave} onCancel={resetForm} isEdit={!!editing} />
       )}
 
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-ink2">Plan:</span>
+        <select
+          value={planFilter}
+          onChange={e => setPlanFilter(e.target.value)}
+          className="px-2 py-1 rounded text-xs bg-soft border border-line text-ink focus:outline-none focus:border-accent"
+        >
+          <option value="">All</option>
+          {[...new Set(payees.map(p => p.plan_id))].sort().map(pid => (
+            <option key={pid} value={pid}>{pid}</option>
+          ))}
+        </select>
+      </div>
+
       {/* Table */}
       <div className="card overflow-hidden">
         <table className="w-full text-xs">
@@ -154,7 +169,7 @@ export default function PayeeManager() {
             {payees.length === 0 && (
               <tr><td colSpan={6} className="px-3 py-6 text-center text-ink2">No payees found</td></tr>
             )}
-            {payees.map(p => (
+            {payees.filter(p => !planFilter || p.plan_id === planFilter).map(p => (
               <tr key={p.id} className="border-b border-line hover:bg-soft cursor-pointer transition-colors"
                   onClick={() => openEdit(p)}>
                 <td className="px-3 py-2 font-mono text-ink">{p.id}</td>

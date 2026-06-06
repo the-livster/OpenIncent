@@ -131,11 +131,12 @@ export async function deletePlan(plan_id: string): Promise<void> {
 // ------------------------------------------------------------------
 
 export async function exportStatements(args: {
-  plan: File;
+  plan?: File;
   transactions: File;
   payees: File;
   formats?: string;
   period?: string;
+  emit_zero?: boolean;
   plan_text?: string;
   txn_text?: string;
   payee_text?: string;
@@ -158,6 +159,7 @@ export async function exportStatements(args: {
   }
   if (args.formats) form.append("formats", args.formats);
   if (args.period) form.append("period", args.period);
+  if (args.emit_zero) form.append("emit_zero", "1");
 
   const res = await fetch(v1("/export"), { method: "POST", body: form });
   if (!res.ok) {
