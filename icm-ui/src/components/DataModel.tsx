@@ -6,11 +6,11 @@ import {
   listTransactions,
   listPeriods,
   listMappings,
-  type SavedPlan,
   type CalculationRow,
   type TransactionRow,
   type PeriodStatusRow,
 } from "../api";
+import type { SavedPlan } from "../types";
 
 type Section = {
   id: string;

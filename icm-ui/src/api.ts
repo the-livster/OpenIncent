@@ -328,3 +328,9 @@ export async function listPeriods(plan_id: string): Promise<PeriodStatusRow[]> {
   if (!res.ok) return [];
   return res.json();
 }
+
+export async function listMappings(): Promise<Record<string, unknown>[]> {
+  const res = await fetch(v1("/mappings"));
+  if (!res.ok) return [];
+  return res.json();
+}
