@@ -11,6 +11,9 @@ interface PayeeRecord {
   email: string | null;
   ramp: string | null;
   category_quotas: string | null;
+  manager_id: string | null;
+  manager_override: string | null;
+  team_id: string | null;
 }
 
 export default function PayeeManager() {
@@ -22,8 +25,8 @@ export default function PayeeManager() {
 
   const [form, setForm] = useState({
     id: "", name: "", quota: "0", plan_id: "", effective_from: "",
-    email: "", ramp_months: "", ramp_schedule: "",
-    category_quotas: "{}",
+    effective_to: "", email: "", ramp_months: "", ramp_schedule: "",
+    category_quotas: "{}", manager_id: "", manager_override: "", team_id: "",
   });
 
   const load = useCallback(async () => {
@@ -41,7 +44,8 @@ export default function PayeeManager() {
 
   const resetForm = () => {
     setForm({ id: "", name: "", quota: "0", plan_id: "", effective_from: "",
-              email: "", ramp_months: "", ramp_schedule: "", category_quotas: "{}" });
+              effective_to: "", email: "", ramp_months: "", ramp_schedule: "",
+              category_quotas: "{}", manager_id: "", manager_override: "", team_id: "" });
     setEditing(null);
     setShowAdd(false);
     setError("");
@@ -60,9 +64,13 @@ export default function PayeeManager() {
     setForm({
       id: p.id, name: p.name, quota: p.quota, plan_id: p.plan_id,
       effective_from: p.effective_from,
+      effective_to: p.effective_to || "",
       email: p.email || "",
       ramp_months, ramp_schedule,
       category_quotas: p.category_quotas || "{}",
+      manager_id: p.manager_id || "",
+      manager_override: p.manager_override || "",
+      team_id: p.team_id || "",
     });
     setEditing(p);
     setShowAdd(false);
@@ -81,10 +89,14 @@ export default function PayeeManager() {
         quota: form.quota,
         plan_id: form.plan_id,
         effective_from: form.effective_from,
+        effective_to: form.effective_to || undefined,
         email: form.email || undefined,
         ramp_months: form.ramp_months ? parseInt(form.ramp_months) : undefined,
         ramp_schedule: form.ramp_schedule || undefined,
         category_quotas: form.category_quotas !== "{}" ? form.category_quotas : undefined,
+        manager_id: form.manager_id || undefined,
+        manager_override: form.manager_override || undefined,
+        team_id: form.team_id || undefined,
       });
       resetForm();
       load();
@@ -167,7 +179,8 @@ export default function PayeeManager() {
 
 function PayeeForm({ form, setForm, onSave, onCancel, isEdit }: {
   form: { id: string; name: string; quota: string; plan_id: string; effective_from: string;
-          email: string; ramp_months: string; ramp_schedule: string; category_quotas: string; };
+          effective_to: string; email: string; ramp_months: string; ramp_schedule: string;
+          category_quotas: string; manager_id: string; manager_override: string; team_id: string; };
   setForm: (f: typeof form) => void;
   onSave: () => void;
   onCancel: () => void;
@@ -184,7 +197,11 @@ function PayeeForm({ form, setForm, onSave, onCancel, isEdit }: {
         <Field label="Quota" value={form.quota} onChange={update("quota")} />
         <Field label="Plan ID" value={form.plan_id} onChange={update("plan_id")} />
         <Field label="Effective From" value={form.effective_from} onChange={update("effective_from")} placeholder="YYYY-MM-DD" />
+        <Field label="Effective To" value={form.effective_to} onChange={update("effective_to")} placeholder="YYYY-MM-DD (optional)" />
         <Field label="Email" value={form.email} onChange={update("email")} placeholder="optional" />
+        <Field label="Manager ID" value={form.manager_id} onChange={update("manager_id")} placeholder="optional" />
+        <Field label="Manager Override %" value={form.manager_override} onChange={update("manager_override")} placeholder="e.g. 0.05 for 5%" />
+        <Field label="Team ID" value={form.team_id} onChange={update("team_id")} placeholder="optional" />
         <Field label="Ramp Months" value={form.ramp_months} onChange={update("ramp_months")} placeholder="optional" />
         <Field label="Ramp Schedule" value={form.ramp_schedule} onChange={update("ramp_schedule")} placeholder='e.g. "0.25 0.50 0.75"' />
       </div>

@@ -224,10 +224,14 @@ export interface PayeeSaveArgs {
   quota: string;
   plan_id: string;
   effective_from: string;
+  effective_to?: string;
   email?: string;
   ramp_months?: number;
   ramp_schedule?: string;
   category_quotas?: string;
+  manager_id?: string;
+  manager_override?: string;
+  team_id?: string;
 }
 
 export async function listPayees(): Promise<Record<string, unknown>[]> {

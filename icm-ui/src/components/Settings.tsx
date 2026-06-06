@@ -3,6 +3,8 @@ import { deleteSetting, getSetting, healthCheck, setSetting } from "../api";
 
 const KEY_ANTHROPIC = "anthropic_api_key";
 const KEY_API_BASE = "api_base";
+const KEY_EXCHANGE_RATES = "exchange_rates";
+const KEY_ROUNDING = "rounding_mode";
 
 function getBase(): string {
   const stored = localStorage.getItem("icm_api_base");
@@ -18,6 +20,8 @@ interface UpdateStatus {
 export default function Settings() {
   const [apiKey, setApiKey] = useState("");
   const [apiBase, setApiBase] = useState("");
+  const [exchangeRates, setExchangeRates] = useState("");
+  const [roundingMode, setRoundingMode] = useState("half-up");
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
   const [health, setHealth] = useState<"checking" | "ok" | "error">("checking");
@@ -49,10 +53,14 @@ export default function Settings() {
     async function load() {
       const key = await getSetting(KEY_ANTHROPIC);
       const base = await getSetting(KEY_API_BASE);
+      const rates = await getSetting(KEY_EXCHANGE_RATES);
+      const rmode = await getSetting(KEY_ROUNDING);
       if (key !== null) setApiKey(key);
       else setApiKey(localStorage.getItem("icm_anthropic_key") ?? "");
       if (base !== null) setApiBase(base);
       else setApiBase(localStorage.getItem("icm_api_base") ?? "");
+      if (rates !== null) setExchangeRates(rates);
+      if (rmode !== null) setRoundingMode(rmode);
     }
     load();
   }, []);
@@ -104,6 +112,18 @@ export default function Settings() {
       await setSetting(KEY_API_BASE, apiBase.trim());
     } else {
       await deleteSetting(KEY_API_BASE);
+    }
+
+    if (exchangeRates.trim()) {
+      await setSetting(KEY_EXCHANGE_RATES, exchangeRates.trim());
+    } else {
+      await deleteSetting(KEY_EXCHANGE_RATES);
+    }
+
+    if (roundingMode && roundingMode !== "half-up") {
+      await setSetting(KEY_ROUNDING, roundingMode);
+    } else {
+      await deleteSetting(KEY_ROUNDING);
     }
 
     // Also keep localStorage as fallback
@@ -207,6 +227,40 @@ export default function Settings() {
           <p className="text-xs text-ink2 mt-1">
             Leave blank to use the default ({import.meta.env.VITE_API_BASE || "http://localhost:8000"}).
           </p>
+        </div>
+
+        {/* Exchange Rates */}
+        <div>
+          <label className="block text-xs font-medium text-ink2 mb-1.5">
+            Exchange Rates (JSON)
+          </label>
+          <input
+            type="text"
+            value={exchangeRates}
+            onChange={(e) => setExchangeRates(e.target.value)}
+            placeholder='{"CAD": "1.35", "EUR": "0.92"}'
+            className="w-full px-3 py-2 rounded-lg text-sm font-mono bg-soft border border-line text-ink placeholder:text-ink2 focus:outline-none focus:border-accent transition-all"
+          />
+          <p className="text-xs text-ink2 mt-1">
+            Rates vs USD. 1 USD = X units of each currency. Used for multi-currency display conversion.
+          </p>
+        </div>
+
+        {/* Rounding Mode */}
+        <div>
+          <label className="block text-xs font-medium text-ink2 mb-1.5">
+            Rounding Mode
+          </label>
+          <select
+            value={roundingMode}
+            onChange={(e) => setRoundingMode(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
+          >
+            <option value="half-up">Half-Up (standard)</option>
+            <option value="floor">Floor (always down)</option>
+            <option value="ceil">Ceil (always up)</option>
+            <option value="none">None (exact precision)</option>
+          </select>
         </div>
 
         {/* Save */}
