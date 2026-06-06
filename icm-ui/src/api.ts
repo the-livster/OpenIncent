@@ -17,12 +17,14 @@ function v1(path: string): string {
 }
 
 export async function calculate(args: {
-  plan: File;
+  plan?: File;
   transactions: File;
   payees: File;
 }): Promise<CalculateResponse> {
   const form = new FormData();
-  form.append("plan", args.plan);
+  if (args.plan) {
+    form.append("plan", args.plan);
+  }
   form.append("transactions", args.transactions);
   form.append("payees", args.payees);
 

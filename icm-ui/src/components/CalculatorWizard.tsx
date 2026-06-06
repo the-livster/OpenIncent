@@ -98,7 +98,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
   const [plans, setPlans] = useState<SavedPlan[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [planFile, setPlanFile] = useState<File | null>(null);
-  const [planSource, setPlanSource] = useState<"library" | "file" | "build">("library");
+  const [planSource, setPlanSource] = useState<"library" | "file" | "build" | "auto">("auto");
 
   // Step 5: Results
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
@@ -205,13 +205,20 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
   // Run calculation
   const run = useCallback(async () => {
-    const plan = planSource === "library" && selectedPlanId
-      ? new File([plans.find(p => p.id === selectedPlanId)!.yaml_content], "plan.yaml", { type: "text/yaml" })
-      : planFile;
+    // Resolve plan: from library, file, or auto-detect from DB
+    let plan: File | undefined;
+    if (planSource === "library" && selectedPlanId) {
+      const p = plans.find(p => p.id === selectedPlanId);
+      if (p) plan = new File([p.yaml_content], "plan.yaml", { type: "text/yaml" });
+    } else if (planSource === "file" && planFile) {
+      plan = planFile;
+    }
+    // planSource === "auto" → undefined (API resolves from DB)
+
     const txns = buildMappedFile();
     const pees = payeeFile || buildAutoPayees();
 
-    if (!plan || !txns) return;
+    if (!txns) return;
 
     setStatus("loading");
     setError("");
@@ -237,15 +244,10 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
     if (planSource === "library" && selectedPlanId) {
       const p = plans.find(pl => pl.id === selectedPlanId);
       planText = p?.yaml_content;
-    } else if (planFile) {
+    } else if (planSource === "file" && planFile) {
       planText = await planFile.text();
     }
-
-    if (!planText && !planFile) {
-      setExportError("No plan available for export.");
-      setExportStatus("error");
-      return;
-    }
+    // planSource === "auto" → no plan, API resolves from DB
 
     // Resolve transaction data — send as text for CSV, as file for XLSX
     let txnText: string | undefined;
@@ -514,10 +516,18 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
           {/* Toggle source */}
           <div className="flex gap-1 bg-soft rounded-lg p-1 w-fit">
+            <SourceToggle active={planSource === "auto"} onClick={() => setPlanSource("auto")} label="Auto" />
             <SourceToggle active={planSource === "library"} onClick={() => setPlanSource("library")} label="Library" />
             <SourceToggle active={planSource === "file"} onClick={() => setPlanSource("file")} label="Upload File" />
             <SourceToggle active={planSource === "build"} onClick={() => setPlanSource("build")} label="Build New" />
           </div>
+
+          {planSource === "auto" && (
+            <p className="text-sm text-ink2">
+              Plans will be resolved from the database using each payee's <code>plan_id</code>.
+              Save plans via the <strong>Plans</strong> tab and assign payees to plans via the <strong>Payees</strong> tab first.
+            </p>
+          )}
 
           {planSource === "library" && (
             <div className="space-y-2 max-h-64 overflow-y-auto">
@@ -568,7 +578,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
             <TextButton onClick={() => setStep("payees")}>← Back</TextButton>
             <StepButton
               onClick={run}
-              disabled={!(selectedPlanId || planFile)}
+              disabled={planSource !== "auto" && !(selectedPlanId || planFile)}
               highlight
             >
               Calculate Commissions ✨
