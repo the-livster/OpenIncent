@@ -49,6 +49,14 @@ _FIELD_ALIASES: dict[str, list[str]] = {
     "effective_to": [
         "effective to", "end date", "to date", "effective_to", "until", "through",
     ],
+    "manager_id": [
+        "manager", "manager id", "reports to", "supervisor", "supervisor id",
+        "team lead", "team lead id", "manager_id",
+    ],
+    "manager_override": [
+        "manager override", "manager rate", "manager %", "override",
+        "manager override %", "manager_override",
+    ],
 }
 
 

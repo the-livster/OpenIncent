@@ -142,6 +142,8 @@ def _load_payees_csv(path: Path) -> list[Payee]:
                             "effective_from": _parse_date(row["effective_from"].strip()),
                             "effective_to": _parse_date(effective_to_raw) if effective_to_raw else None,
                             "ramp": _parse_ramp(row),
+                            "manager_id": (row.get("manager_id") or "").strip(),
+                            "manager_override": _parse_optional_decimal(row.get("manager_override")),
                         }
                     if period:
                         by_id[pid]["quotas"][period] = quota_val
@@ -163,6 +165,8 @@ def _load_payees_csv(path: Path) -> list[Payee]:
                             effective_from=_parse_date(row["effective_from"].strip()),
                             effective_to=_parse_date(effective_to_raw) if effective_to_raw else None,
                             ramp=_parse_ramp(row),
+                            manager_id=(row.get("manager_id") or "").strip(),
+                            manager_override=_parse_optional_decimal(row.get("manager_override")),
                         )
                     )
                 except Exception as e:
@@ -262,6 +266,19 @@ def _load_payees_parquet(path: Path) -> list[Payee]:
         except Exception as e:
             raise ValueError(f"Row {i} in '{path}': {e}") from e
     return payees
+
+
+def _parse_optional_decimal(raw: object) -> Decimal | None:
+    """Parse an optional decimal value. Returns None for empty/missing."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        return Decimal(s)
+    except Exception:
+        return None
 
 
 def _parse_date(s: str) -> date:

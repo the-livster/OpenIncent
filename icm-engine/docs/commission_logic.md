@@ -139,6 +139,25 @@ for their commission.
 
 Ledger event: `credit_allocated` (one per credit unit).
 
+### 4.1 Manager hierarchy (auto-overrides)
+
+Each payee may declare a `manager_id` and a `manager_override` rate (e.g. `0.05` for 5%).
+After explicit credits are resolved, the engine walks each payee's reporting chain and
+auto-generates manager overlay credits:
+
+- For every credit unit, if the payee has a `manager_override` > 0, an overlay credit is
+  generated for their manager. The overlay amount = `credited_amount × manager_override`.
+- The walk continues up the chain (manager's manager, etc.), using each payee's override
+  rate against the **original credited amount** (not the subordinate's overlay amount).
+  This is the "parallel model" — every manager gets their rate on the original deal.
+- Maximum depth: 10 levels. Cycles are detected and stop the walk.
+- Manager overlays are tagged `kind = "manager_override"` and are **additive** (they do not
+  count toward split-total validation).
+- A manager may be on a different plan than their subordinate. The overlay credit is routed
+  to the manager's plan and evaluated under that plan's rules and attainment windows.
+- If a manager is not in the payee list, the overlay credit is still generated but yields
+  no commission (it won't match any payee's rules).
+
 ---
 
 ## 5. Quotas & ramps

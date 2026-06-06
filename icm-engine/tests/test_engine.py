@@ -2108,3 +2108,180 @@ class TestCalculateRun:
             assert mc.payee_id == sc.payee_id
 
         assert len(r_multi.ledger) == len(r_single.ledger)
+
+
+# ------------------------------------------------------------------
+# Hierarchy tests
+# ------------------------------------------------------------------
+
+
+class TestHierarchy:
+    """Tests for manager hierarchy — manager overrides via overlays."""
+
+    def test_simple_manager_override(self) -> None:
+        """Alice reports to Bob with 5% manager override. Bob gets 5% overlay."""
+        engine = CommissionEngine()
+        plan = Plan(
+            plan_id="P1", name="Test", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        alice = _payee(id="alice", plan_id="P1", quota=Decimal("10000"))
+        alice.manager_id = "bob"
+        alice.manager_override = Decimal("0.05")
+
+        bob = _payee(id="bob", plan_id="P1", quota=Decimal("50000"))
+
+        txns = [_txn(id="T1", payee_id="alice", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, [alice, bob])
+
+        # Alice: 10% of 10000 = 1000
+        alice_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "alice")
+        assert alice_total == Decimal("1000")
+
+        # Bob: 10% of his overlay (5% of 10000 = 500) = 50
+        bob_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "bob")
+        assert bob_total == Decimal("50")
+
+        # Verify overlay credit exists
+        overlay = [c for c in result.commissions if c.payee_id == "bob" and c.kind == "manager_override"]
+        assert len(overlay) == 1
+        assert overlay[0].split_pct == Decimal("0.05")
+
+    def test_multi_level_chain(self) -> None:
+        """Alice → Bob (5%) → Carol (2%). Three-level chain."""
+        engine = CommissionEngine()
+        plan = Plan(
+            plan_id="P1", name="Test", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        alice = _payee(id="alice", plan_id="P1", quota=Decimal("10000"))
+        alice.manager_id = "bob"
+        alice.manager_override = Decimal("0.05")
+
+        bob = _payee(id="bob", plan_id="P1", quota=Decimal("50000"))
+        bob.manager_id = "carol"
+        bob.manager_override = Decimal("0.02")
+
+        carol = _payee(id="carol", plan_id="P1", quota=Decimal("200000"))
+
+        txns = [_txn(id="T1", payee_id="alice", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, [alice, bob, carol])
+
+        # Alice: 10% of 10000 = 1000
+        alice_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "alice")
+        assert alice_total == Decimal("1000")
+
+        # Bob: 10% of (5% of 10000 = 500) = 50
+        bob_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "bob")
+        assert bob_total == Decimal("50")
+
+        # Carol: 10% of (2% of original 10000 = 200) = 20
+        # Each manager gets their override on the original deal amount
+        carol_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "carol")
+        assert carol_total == Decimal("20")
+
+    def test_cross_plan_manager(self) -> None:
+        """Alice on Plan A reports to Bob on Plan B. Bob's overlay is under Plan B."""
+        engine = CommissionEngine()
+        plan_a = Plan(
+            plan_id="A", name="Plan A", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        plan_b = Plan(
+            plan_id="B", name="Plan B", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.20"))],
+        )
+        alice = _payee(id="alice", plan_id="A", quota=Decimal("10000"))
+        alice.manager_id = "bob"
+        alice.manager_override = Decimal("0.05")
+
+        bob = _payee(id="bob", plan_id="B", quota=Decimal("50000"))
+
+        txns = [_txn(id="T1", payee_id="alice", amount=Decimal("10000"))]
+        result = engine.calculate_run({"A": plan_a, "B": plan_b}, txns, [alice, bob])
+
+        # Alice: 10% of 10000 = 1000
+        alice_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "alice")
+        assert alice_total == Decimal("1000")
+
+        # Bob: 20% (Plan B rate) of (5% of 10000 = 500) = 100
+        bob_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "bob")
+        assert bob_total == Decimal("100")
+
+    def test_no_override_when_zero(self) -> None:
+        """Manager with override=0 generates no overlay."""
+        engine = CommissionEngine()
+        plan = Plan(
+            plan_id="P1", name="Test", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        alice = _payee(id="alice", plan_id="P1", quota=Decimal("10000"))
+        alice.manager_id = "bob"
+        alice.manager_override = Decimal("0")
+
+        bob = _payee(id="bob", plan_id="P1", quota=Decimal("50000"))
+
+        txns = [_txn(id="T1", payee_id="alice", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, [alice, bob])
+
+        bob_total = sum(c.commission_amount for c in result.commissions if c.payee_id == "bob")
+        assert bob_total == Decimal("0")
+
+    def test_cycle_detection(self) -> None:
+        """Alice → Bob → Alice cycle should not infinite-loop."""
+        engine = CommissionEngine()
+        plan = Plan(
+            plan_id="P1", name="Test", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        alice = _payee(id="alice", plan_id="P1", quota=Decimal("10000"))
+        alice.manager_id = "bob"
+        alice.manager_override = Decimal("0.05")
+
+        bob = _payee(id="bob", plan_id="P1", quota=Decimal("50000"))
+        bob.manager_id = "alice"  # cycle!
+        bob.manager_override = Decimal("0.05")
+
+        txns = [_txn(id="T1", payee_id="alice", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, [alice, bob])
+
+        # Should complete without error (cycle breaks after one iteration)
+        assert len(result.commissions) > 0
+
+    def test_manager_not_in_payee_list_is_ok(self) -> None:
+        """Manager referenced but not in payee list — overlay is still generated.
+        It just won't match any rules (no payee_map entry)."""
+        engine = CommissionEngine()
+        plan = Plan(
+            plan_id="P1", name="Test", period_type="monthly", currency="USD",
+            rules=[FlatRateRule(type="flat_rate", id="R1", rate=Decimal("0.10"))],
+        )
+        alice = _payee(id="alice", plan_id="P1", quota=Decimal("10000"))
+        alice.manager_id = "bob"  # bob not in payees list
+        alice.manager_override = Decimal("0.05")
+
+        txns = [_txn(id="T1", payee_id="alice", amount=Decimal("10000"))]
+        # Should not raise — bob's overlay is generated but just yields no commissions
+        result = engine.calculate(plan, txns, [alice])
+        assert len(result.commissions) > 0  # alice still gets paid
+
+    def test_attainment_includes_manager_overlay(self) -> None:
+        """Manager's overlay bookings count toward their attainment."""
+        engine = CommissionEngine()
+        plan = Plan(
+            plan_id="P1", name="Test", period_type="monthly", currency="USD",
+            rules=[],
+        )
+        alice = _payee(id="alice", plan_id="P1", quota=Decimal("10000"))
+        alice.manager_id = "bob"
+        alice.manager_override = Decimal("0.10")
+
+        bob = _payee(id="bob", plan_id="P1", quota=Decimal("50000"))
+
+        txns = [_txn(id="T1", payee_id="alice", amount=Decimal("10000"))]
+        result = engine.calculate(plan, txns, [alice, bob])
+
+        # Bob's attainment includes his overlay booking (10% of 10000 = 1000)
+        bob_att = [a for a in result.attainment if a.payee_id == "bob"]
+        assert len(bob_att) == 1
+        assert bob_att[0].bookings == Decimal("1000")

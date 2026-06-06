@@ -534,6 +534,66 @@ def _resolve_credits(transactions: list[Transaction]) -> list[_CreditUnit]:
     return units
 
 
+_HIERARCHY_MAX_DEPTH = 10
+
+
+def _resolve_hierarchy_credits(
+    credits: list[_CreditUnit],
+    payee_map: dict[str, Payee],
+) -> list[_CreditUnit]:
+    """Generate manager overlay credits by walking each payee's reporting chain.
+
+    For each credit unit, if the payee has a manager with a manager_override
+    rate > 0, an overlay credit is generated for the manager. The walk
+    continues up the chain (manager's manager, etc.) up to _HIERARCHY_MAX_DEPTH.
+
+    The manager's overlay amount = credited_amount × manager_override.
+    The overlay is tagged kind="manager_override" with split_pct equal to
+    the override rate, so it is additive and does not affect split-total
+    validation.
+
+    Cycle detection: if a payee appears twice in a chain, the walk stops.
+    """
+    result: list[_CreditUnit] = list(credits)
+
+    for cu in credits:
+        seen: set[str] = {cu.payee_id}
+        current_payee_id = cu.payee_id
+        depth = 0
+
+        while depth < _HIERARCHY_MAX_DEPTH:
+            payee = payee_map.get(current_payee_id)
+            if payee is None:
+                break
+            manager_id = (payee.manager_id or "").strip()
+            if not manager_id:
+                break
+            override = payee.manager_override
+            if override is None or override <= 0:
+                break
+            if manager_id in seen:
+                break  # cycle detected
+
+            manager_amount = cu.credited_amount * override
+            result.append(_CreditUnit(
+                transaction_id=cu.transaction_id,
+                payee_id=manager_id,
+                credited_amount=manager_amount,
+                split_pct=override,
+                kind="manager_override",
+                period=cu.period,
+                product=cu.product,
+                close_date=cu.close_date,
+                metadata={**cu.metadata, "_hierarchy_depth": str(depth + 1)},
+            ))
+
+            seen.add(manager_id)
+            current_payee_id = manager_id
+            depth += 1
+
+    return result
+
+
 def _compute_attainment(
     credits: list[_CreditUnit],
     payee_map: dict[str, Payee],
@@ -806,6 +866,7 @@ class CommissionEngine:
     ) -> CalculationResult:
         payee_map = {p.id: p for p in payees}
         credits = _resolve_credits(transactions)
+        credits = _resolve_hierarchy_credits(credits, payee_map)
         return self._run_plan_pipeline(
             plan, credits, payee_map,
             locked_periods=locked_periods,
@@ -847,6 +908,9 @@ class CommissionEngine:
 
         # Resolve credits once, globally
         credits = _resolve_credits(transactions)
+
+        # Resolve hierarchy: generate manager overlay credits
+        credits = _resolve_hierarchy_credits(credits, payee_map)
 
         # Group credit units by each payee's plan
         plan_credits: dict[str, list[_CreditUnit]] = {pid: [] for pid in plans}

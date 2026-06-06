@@ -150,9 +150,11 @@ Shipped:
 - ~~Draws & guarantees~~ ✅ · ~~Caps, thresholds & MBOs~~ ✅ · ~~Manual adjustments~~ ✅
 - ~~Quota categories~~ ✅ · ~~Metadata-aware filters~~ ✅ · ~~Desktop auto-update~~ ✅
 - ~~Multi-plan runs~~ ✅ — route each payee through their assigned plan in a single run
+- ~~Manager hierarchy~~ ✅ — auto-generate upline overrides from `manager_id` + `manager_override`
+- ~~Finance payout register~~ ✅ — rounded-to-cents XLSX auto-generated on period lock
 
 Next:
-- **Payroll-ready payout register** and an approval / sign-off record
+- **Plan effective-dating**, what-if modeling, and org-level reporting
 - **Plan effective-dating**, what-if modeling, and org-level reporting
 
 ## Develop

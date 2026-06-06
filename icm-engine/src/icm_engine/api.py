@@ -431,6 +431,8 @@ class PayeeSaveRequest(BaseModel):
     ramp_months: int | None = None
     ramp_schedule: str | None = None  # space-separated decimals
     category_quotas: dict[str, str] | None = None
+    manager_id: str = ""
+    manager_override: str | None = None
 
 
 @v1.get("/payees")
@@ -463,6 +465,7 @@ def upsert_payee(payee_id: str, req: PayeeSaveRequest, org: str = Depends(get_or
     db.save_payee(
         payee_id, req.name, req.quota, req.plan_id,
         req.effective_from, req.effective_to, ramp_json, cat_json,
+        manager_id=req.manager_id, manager_override=req.manager_override,
     )
     return {"status": "saved", "id": payee_id}
 

@@ -138,6 +138,8 @@ class Payee(BaseModel):
     ramp: RampSchedule | None = None
     draw: Draw | None = None
     category_quotas: dict[str, Decimal] = Field(default_factory=dict)
+    manager_id: str = ""
+    manager_override: Decimal | None = Field(default=None, ge=Decimal("0"), le=Decimal("1"))
 
     def quota_for(self, window_key: str, category: str | None = None) -> Decimal:
         """Return the quota for a given window key, falling back to default.
