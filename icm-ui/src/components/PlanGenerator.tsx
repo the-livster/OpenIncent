@@ -122,7 +122,7 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
       </div>
 
       {status === "error" && (
-        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/30 text-danger text-sm animate-in select-text">
+        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/30 text-danger text-sm animate-in">
           {error}
         </div>
       )}
@@ -172,7 +172,7 @@ interface PlanBuilderRule {
   multiplier?: string;
 }
 
-interface PlanBuilderPlan {
+interface PlanBuilderPlan { [key: string]: unknown;
   plan_id: string;
   name: string;
   period_type: string;

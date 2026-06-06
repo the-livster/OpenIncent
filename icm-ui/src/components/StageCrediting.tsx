@@ -12,10 +12,10 @@ interface Props {
   onBack: () => void;
 }
 
-export default function StageCrediting({ payees, transactions, setTransactions, plans, onCalculated, onBack }: Props) {
+export default function StageCrediting({ payees, transactions: _transactions, setTransactions, plans: _plans, onCalculated, onBack }: Props) {
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [error, setError] = useState("");
-  const [preview, setPreview] = useState<TransactionRow[]>(transactions);
+  const [preview, setPreview] = useState<TransactionRow[]>(_transactions);
 
   async function handleFile(f: File) {
     try {

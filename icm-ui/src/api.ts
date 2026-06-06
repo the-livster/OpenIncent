@@ -25,7 +25,6 @@ export async function calculate(args: {
   if (args.plan) {
     form.append("plan", args.plan);
   }
-  form.append("transactions", args.transactions);
   form.append("payees", args.payees);
 
   const res = await fetch(v1("/calculate"), { method: "POST", body: form });
@@ -144,7 +143,7 @@ export async function exportStatements(args: {
   const form = new FormData();
   if (args.plan_text) {
     form.append("plan_text", args.plan_text);
-  } else {
+  } else if (args.plan) {
     form.append("plan", args.plan);
   }
   if (args.txn_text) {

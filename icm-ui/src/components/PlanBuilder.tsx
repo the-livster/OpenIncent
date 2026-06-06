@@ -9,8 +9,6 @@ interface Rule {
   tiers?: { threshold: string; rate: string }[];
   threshold_pct?: string;
   multiplier?: string;
-  cap?: string;
-  min_attainment_pct?: string;
 }
 
 interface PlanData {
@@ -19,6 +17,7 @@ interface PlanData {
   period_type: string;
   currency: string;
   rules: Rule[];
+  [key: string]: unknown;
 }
 
 interface Props {
@@ -221,75 +220,8 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
                         })}
                         className="w-full px-2 py-1 rounded text-xs bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
                       />
-        </div>
-
-        {/* Advanced plan settings */}
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-ink2 mb-1">Currency</label>
-            <input
-              type="text"
-              value={plan.currency}
-              onChange={e => updatePlan(p => ({ ...p, currency: e.target.value }))}
-              placeholder="USD"
-              className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-ink2 mb-1">Reporting Currency</label>
-            <input
-              type="text"
-              value={(plan as Record<string, unknown>).reporting_currency as string ?? ""}
-              onChange={e => updatePlan(p => ({ ...p, reporting_currency: e.target.value } as unknown as PlanData))}
-              placeholder="blank = no conversion"
-              className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-ink2 mb-1">Pro-Rating</label>
-            <select
-              value={(plan as Record<string, unknown>).pro_rating as string ?? "full"}
-              onChange={e => updatePlan(p => ({ ...p, pro_rating: e.target.value } as unknown as PlanData))}
-              className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-            >
-              <option value="full">Full (no pro-rating)</option>
-              <option value="daily">Daily (by active days)</option>
-              <option value="zero">Zero (partial = none)</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-ink2 mb-1">Payout Cap</label>
-            <input
-              type="text"
-              value={(plan as Record<string, unknown>).payout_cap as string ?? ""}
-              onChange={e => updatePlan(p => ({ ...p, payout_cap: e.target.value } as unknown as PlanData))}
-              placeholder="e.g. 25000"
-              className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-ink2 mb-1">Draw Amount</label>
-            <input
-              type="text"
-              value={(plan as Record<string, unknown>).draw_amount as string ?? ""}
-              onChange={e => updatePlan(p => ({ ...p, draw_amount: e.target.value } as unknown as PlanData))}
-              placeholder="e.g. 3000"
-              className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-            />
-          </div>
-          <div className="flex items-end pb-2">
-            <label className="flex items-center gap-2 text-xs text-ink2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={Boolean((plan as Record<string, unknown>).draw_recoverable)}
-                onChange={e => updatePlan(p => ({ ...p, draw_recoverable: e.target.checked } as unknown as PlanData))}
-                className="rounded"
-              />
-              Draw Recoverable
-            </label>
-          </div>
-        </div>
-      </div>
+                    </div>
+                  </div>
                   {rule.tiers!.length > 1 && (
                     <button onClick={() => removeTier(ri, ti)} className="text-xs text-ink2 hover:text-danger cursor-pointer transition-colors">
                       ✕
@@ -383,32 +315,8 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
         >
           {saving ? "Saving..." : saved ? "✓ Saved!" : "Save to Library"}
         </button>
-          </div>
-
-          {/* Cap + Attainment Gate */}
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="block text-xs font-medium text-ink2 mb-1">Cap (optional)</label>
-              <input
-                type="text"
-                value={rule.cap || ""}
-                onChange={e => updateRule(ri, r => { r.cap = e.target.value || undefined; return r; })}
-                placeholder="e.g. 5000"
-                className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-ink2 mb-1">Min Attainment %</label>
-              <input
-                type="text"
-                value={rule.min_attainment_pct || ""}
-                onChange={e => updateRule(ri, r => { r.min_attainment_pct = e.target.value || undefined; return r; })}
-                placeholder="e.g. 0.25 for 25%"
-                className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-              />
-            </div>
-          </div>
-        </div>
+      </div>
+    </div>
   );
 }
 
@@ -454,8 +362,6 @@ function generateYaml(plan: PlanData): string {
   const rules = plan.rules.map(r => {
     const base: Record<string, unknown> = { type: r.type, id: r.id };
     if (r.filter) base.filter = r.filter;
-    if (r.cap && r.cap.trim()) base.cap = r.cap.trim();
-    if (r.min_attainment_pct && r.min_attainment_pct.trim()) base.min_attainment_pct = r.min_attainment_pct.trim();
     if (r.type === "flat_rate") {
       base.rate = r.rate;
     } else if (r.type === "tiered") {
@@ -469,25 +375,13 @@ function generateYaml(plan: PlanData): string {
     return base;
   });
 
-  const obj: Record<string, unknown> = {
+  const obj = {
     plan_id: plan.plan_id,
     name: plan.name,
     period_type: plan.period_type,
     currency: plan.currency || "USD",
     rules,
   };
-  // Optional plan-level settings
-  const p = plan as Record<string, unknown>;
-  if (p.reporting_currency) obj.reporting_currency = p.reporting_currency;
-  if (p.pro_rating && p.pro_rating !== "full") obj.pro_rating = p.pro_rating;
-  if (p.payout_cap && String(p.payout_cap).trim()) obj.payout_cap = String(p.payout_cap).trim();
-  if (p.draw_amount && String(p.draw_amount).trim()) {
-    const drawObj: Record<string, unknown> = {
-      amount: String(p.draw_amount).trim(),
-    };
-    if (p.draw_recoverable) drawObj.recoverable = true;
-    obj.draw = drawObj;
-  }
 
   return toYaml(obj);
 }

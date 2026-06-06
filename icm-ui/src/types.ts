@@ -30,6 +30,7 @@ export interface CalculateResponse {
   draw_balances?: Record<string, string>;
   effective_period?: string;
   locked_periods?: string[];
+  [key: string]: unknown;
 }
 
 export interface PlanFromTextRequest {

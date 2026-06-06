@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { calculate, listPlans, exportStatements, previewFile } from "../api";
 import PlanBuilder from "./PlanBuilder";
-import PayeeTrace from "./PayeeTrace";
 import type { CalculateResponse, SavedPlan } from "../types";
 
 // ------------------------------------------------------------------
@@ -98,27 +97,12 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
   const [plans, setPlans] = useState<SavedPlan[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [planFile, setPlanFile] = useState<File | null>(null);
-  const [planSource, setPlanSource] = useState<"library" | "file" | "build" | "auto">("auto");
+  const [planSource, setPlanSource] = useState<"library" | "file" | "build">("library");
 
   // Step 5: Results
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [error, setError] = useState("");
   const [data, setData] = useState<CalculateResponse | null>(null);
-
-  // Export format selection
-  const [exportFormats, setExportFormats] = useState<{ pdf: boolean; xlsx: boolean; html: boolean }>({
-    pdf: true, xlsx: false, html: false,
-  });
-  const [exportPeriod, setExportPeriod] = useState("");
-  const [exportEmitZero, setExportEmitZero] = useState(false);
-  const [exportStatus, setExportStatus] = useState<"idle" | "loading" | "error" | "done">("idle");
-  const [exportError, setExportError] = useState("");
-  const [savedPath, setSavedPath] = useState("");
-
-  // Payee trace state
-  const [showTrace, setShowTrace] = useState(false);
-  const [tracePayee, setTracePayee] = useState("");
-  const [tracePeriod, setTracePeriod] = useState("");
 
   const [step, setStep] = useState<Step>("data");
 
@@ -207,20 +191,13 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
   // Run calculation
   const run = useCallback(async () => {
-    // Resolve plan: from library, file, or auto-detect from DB
-    let plan: File | undefined;
-    if (planSource === "library" && selectedPlanId) {
-      const p = plans.find(p => p.id === selectedPlanId);
-      if (p) plan = new File([p.yaml_content], "plan.yaml", { type: "text/yaml" });
-    } else if (planSource === "file" && planFile) {
-      plan = planFile;
-    }
-    // planSource === "auto" → undefined (API resolves from DB)
-
+    const plan = planSource === "library" && selectedPlanId
+      ? new File([plans.find(p => p.id === selectedPlanId)!.yaml_content], "plan.yaml", { type: "text/yaml" })
+      : planFile;
     const txns = buildMappedFile();
     const pees = payeeFile || buildAutoPayees();
 
-    if (!txns) return;
+    if (!plan || !txns) return;
 
     setStatus("loading");
     setError("");
@@ -235,76 +212,20 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
     }
   }, [planSource, selectedPlanId, plans, planFile, payeeFile, buildMappedFile, buildAutoPayees]);
 
-  // Export statements as ZIP
+  // Export XLSX statements
   const handleExport = useCallback(async () => {
-    setExportError("");
-    setExportStatus("loading");
-
-    // Resolve plan YAML text
-    let planText: string | undefined;
-    let planFileObj: File | undefined;
-    if (planSource === "library" && selectedPlanId) {
-      const p = plans.find(pl => pl.id === selectedPlanId);
-      planText = p?.yaml_content;
-    } else if (planSource === "file" && planFile) {
-      planText = await planFile.text();
-    }
-    // planSource === "auto" → no plan, API resolves from DB
-
-    // Resolve transaction data — send as text for CSV, as file for XLSX
-    let txnText: string | undefined;
-    let txnFileObj: File | undefined;
-    if (txnFile) {
-      if (txnFile.name.endsWith(".xlsx")) {
-        txnFileObj = txnFile;
-      } else {
-        txnText = await txnFile.text();
-      }
-    }
-
-    if (!txnText && !txnFileObj) {
-      setExportError("No transaction data available for export.");
-      setExportStatus("error");
-      return;
-    }
-
-    // Resolve payee data — send as text for CSV, as file for XLSX
-    let payeeText: string | undefined;
-    let payeeFileObj: File | undefined;
+    const plan = planSource === "library" && selectedPlanId
+      ? new File([plans.find(p => p.id === selectedPlanId)!.yaml_content], "plan.yaml", { type: "text/yaml" })
+      : planFile;
+    const txns = buildMappedFile();
     const pees = payeeFile || buildAutoPayees();
-    if (pees.name.endsWith(".xlsx")) {
-      payeeFileObj = pees;
-    } else {
-      payeeText = await pees.text();
-    }
-
-    const selectedFormats = Object.entries(exportFormats)
-      .filter(([, v]) => v)
-      .map(([k]) => k)
-      .join(",") || "pdf";
-
+    if (!plan || !txns) return;
     try {
-      const result = await exportStatements({
-        plan: planFileObj || undefined,
-        transactions: txnFileObj || new File([], "empty"),
-        payees: payeeFileObj || new File([], "empty"),
-        plan_text: planText,
-        txn_text: txnText,
-        payee_text: payeeText,
-        formats: selectedFormats,
-        period: exportPeriod || undefined,
-        emit_zero: exportEmitZero || undefined,
-      });
-      if (result) {
-        setSavedPath(result);
-      }
-      setExportStatus("done");
+      await exportStatements({ plan, transactions: txns, payees: pees });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Export failed";
-      setExportError(msg);
-      setExportStatus("error");
+      setError(e instanceof Error ? e.message : "Export failed");
     }
-  }, [planSource, selectedPlanId, plans, planFile, txnFile, payeeFile, buildAutoPayees, exportFormats]);
+  }, [planSource, selectedPlanId, plans, planFile, payeeFile, buildMappedFile, buildAutoPayees]);
 
   const stepIndex = ["data", "map", "payees", "plan", "results"].indexOf(step);
 
@@ -520,18 +441,10 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
           {/* Toggle source */}
           <div className="flex gap-1 bg-soft rounded-lg p-1 w-fit">
-            <SourceToggle active={planSource === "auto"} onClick={() => setPlanSource("auto")} label="Auto" />
             <SourceToggle active={planSource === "library"} onClick={() => setPlanSource("library")} label="Library" />
             <SourceToggle active={planSource === "file"} onClick={() => setPlanSource("file")} label="Upload File" />
             <SourceToggle active={planSource === "build"} onClick={() => setPlanSource("build")} label="Build New" />
           </div>
-
-          {planSource === "auto" && (
-            <p className="text-sm text-ink2">
-              Plans will be resolved from the database using each payee's <code>plan_id</code>.
-              Save plans via the <strong>Plans</strong> tab and assign payees to plans via the <strong>Payees</strong> tab first.
-            </p>
-          )}
 
           {planSource === "library" && (
             <div className="space-y-2 max-h-64 overflow-y-auto">
@@ -582,7 +495,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
             <TextButton onClick={() => setStep("payees")}>← Back</TextButton>
             <StepButton
               onClick={run}
-              disabled={planSource !== "auto" && !(selectedPlanId || planFile)}
+              disabled={!(selectedPlanId || planFile)}
               highlight
             >
               Calculate Commissions ✨
@@ -616,106 +529,19 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
             <StatCard label="Commission Lines" value={String(data.commissions.length)} />
           </div>
 
-          {/* Period lock + next period */}
-          {data.calculation_ids && Object.keys(data.calculation_ids).length > 0 && (
-            <PeriodLockPanel calcIds={data.calculation_ids} planId={data.commissions[0]?.payee_id ? "" : ""} />
-          )}
-
-          {/* Export section */}
-          <div className="space-y-3">
-            {/* Period filter + Emit zero */}
-            <div className="flex items-center gap-4 flex-wrap">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-ink2">Period:</span>
-                <input
-                  type="text"
-                  value={exportPeriod}
-                  onChange={e => setExportPeriod(e.target.value)}
-                  placeholder="YYYY-MM (optional)"
-                  className="w-36 px-2 py-1 rounded text-xs bg-soft border border-line text-ink focus:outline-none focus:border-accent"
-                />
-              </div>
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={exportEmitZero}
-                  onChange={() => setExportEmitZero(!exportEmitZero)}
-                  className="accent-accent"
-                />
-                <span className="text-xs text-ink2">Include $0 statements</span>
-              </label>
-            </div>
-
-            {/* Format checkboxes */}
-            <div className="flex items-center gap-4 flex-wrap">
-              <span className="text-xs text-ink2 font-medium">Formats:</span>
-              {(["pdf", "xlsx", "html"] as const).map(fmt => (
-                <label key={fmt} className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={exportFormats[fmt]}
-                    onChange={() => setExportFormats(prev => ({ ...prev, [fmt]: !prev[fmt] }))}
-                    className="accent-accent"
-                  />
-                  <span className="text-sm text-ink">{fmt.toUpperCase()}</span>
-                </label>
-              ))}
-            </div>
-
-            {/* Error banner */}
-            {exportStatus === "error" && exportError && (
-              <div className="px-4 py-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm select-text">
-                {exportError}
-              </div>
-            )}
-
-            {/* Download button */}
-            <div className="flex justify-end items-center gap-3">
-              {exportError && (
-                <span className="text-danger text-xs">{exportError}</span>
-              )}
-              {exportStatus === "done" && savedPath && (
-                <button
-                  onClick={async () => {
-                    try {
-                      await fetch(`${localStorage.getItem("icm_api_base") || ""}/v1/open-folder`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ path: savedPath }),
-                      });
-                    } catch { /* ignore */ }
-                  }}
-                  className="text-xs text-ink2 hover:text-accent underline cursor-pointer"
-                >
-                  Show in folder
-                </button>
-              )}
-              <button
-                onClick={handleExport}
-                disabled={exportStatus === "loading"}
-                className={`
-                  inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-                  transition-all cursor-pointer
-                  ${exportStatus === "loading"
-                    ? "bg-soft border border-line text-ink2 cursor-wait"
-                    : exportStatus === "done"
-                    ? "bg-green-50 border border-green-200 text-green-700"
-                    : "bg-accent/10 border border-accent/20 text-accent hover:bg-accent/15 hover:border-accent/30"
-                  }
-                `}
-              >
-                {exportStatus === "loading" ? (
-                  <>
-                    <span className="inline-block w-3.5 h-3.5 border-2 border-ink2/30 border-t-ink2 rounded-full animate-spin" />
-                    Generating...
-                  </>
-                ) : exportStatus === "done" ? (
-                  "✓ Saved"
-                ) : (
-                  "↓ Download Statements (.zip)"
-                )}
-              </button>
-            </div>
+          {/* Export button */}
+          <div className="flex justify-end">
+            <button
+              onClick={handleExport}
+              className="
+                inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium
+                bg-soft border border-line text-ink
+                hover:bg-soft hover:border-ink2
+                transition-all cursor-pointer
+              "
+            >
+              ↓ Download Statements (.xlsx)
+            </button>
           </div>
 
           {/* Per-payee breakdown */}
@@ -727,14 +553,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
               {Object.entries(data.summary).map(([payee, total]) => (
                 <div key={payee} className="px-5 py-2.5 flex justify-between items-center text-sm">
                   <span className="text-ink font-medium">{payee}</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-ink font-mono">${parseFloat(total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                    <button
-                      onClick={() => { setShowTrace(true); setTracePayee(payee); setTracePeriod(data!.commissions.find(c => c.payee_id === payee)?.period || "all"); }}
-                      className="text-xs text-ink2 hover:text-accent cursor-pointer"
-                      title="View payout trace"
-                    >🔍</button>
-                  </div>
+                  <span className="text-ink font-mono">${parseFloat(total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                 </div>
               ))}
             </div>
@@ -774,37 +593,10 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
               ← Start New Calculation
             </TextButton>
           </div>
-
-          {/* Payee trace panel */}
-          {showTrace ? (tracePayee ? (
-            <>
-              <div className="fixed inset-0 bg-black/20 z-40" onClick={() => { setShowTrace(false); setTracePayee(""); }} />
-              <PayeeTrace payeeId={tracePayee} period={tracePeriod || "all"}
-                commissions={data.commissions} ledger={data.ledger}
-                onClose={() => { setShowTrace(false); setTracePayee(""); }} />
-            </>
-          ) : (
-            <>
-              <div className="fixed inset-0 bg-black/20 z-40" onClick={() => setShowTrace(false)} />
-              <div className="fixed inset-y-0 right-0 w-[460px] max-w-[92vw] bg-white border-l border-line shadow-xl z-50 flex flex-col">
-                <div className="p-5">
-                  <h3 className="text-sm font-semibold mb-2">Select a payee</h3>
-                  {Object.entries(data.summary).map(([pid]) => (
-                    <button key={pid}
-                      onClick={() => { setTracePayee(pid); setTracePeriod(data.commissions.find(c => c.payee_id === pid)?.period || "all"); }}
-                      className="block w-full text-left px-3 py-2 rounded hover:bg-soft text-sm cursor-pointer">{pid}</button>
-                  ))}
-                  <button onClick={() => setShowTrace(false)} className="mt-4 text-xs text-ink2 hover:text-ink cursor-pointer">Close</button>
-                </div>
-              </div>
-            </>
-          )) : null}
         </div>
       )}
-
     </div>
   );
-
 }
 
 // ------------------------------------------------------------------
@@ -925,107 +717,6 @@ function StatCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-
-// ------------------------------------------------------------------
-// Period lock panel
-// ------------------------------------------------------------------
-
-function PeriodLockPanel({ calcIds, planId }: { calcIds: Record<string, string>; planId: string }) {
-  const [locked, setLocked] = useState<Record<string, boolean>>({});
-  const base = localStorage.getItem("icm_api_base") || "";
-
-  // Derive plan_id from the first payee's data if not provided
-  const [resolvedPlanId, setResolvedPlanId] = useState(planId);
-
-  useEffect(() => {
-    // Check lock status for each period
-    const periods = Object.keys(calcIds);
-    if (periods.length === 0) return;
-    // Try to determine plan_id from the first calculation
-    const calcId = calcIds[periods[0]];
-    fetch(`${base}/v1/calculations/${encodeURIComponent(calcId)}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d?.plan_id) setResolvedPlanId(d.plan_id);
-        // Then check lock statuses
-        periods.forEach(period => {
-          fetch(`${base}/v1/periods/${encodeURIComponent(d?.plan_id || resolvedPlanId)}/${period}/status`)
-            .then(r => r.json())
-            .then(s => setLocked(prev => ({ ...prev, [period]: s.locked === true })))
-            .catch(() => {});
-        });
-      })
-      .catch(() => {});
-  }, [calcIds]);
-
-  const toggleLock = async (period: string) => {
-    const calcId = calcIds[period];
-    const pid = resolvedPlanId;
-    if (!pid) return;
-    const currentlyLocked = locked[period];
-    if (currentlyLocked) {
-      await fetch(`${base}/v1/periods/${encodeURIComponent(pid)}/${period}/lock`, { method: "DELETE" });
-    } else {
-      await fetch(`${base}/v1/periods/${encodeURIComponent(pid)}/${period}/lock?calculation_id=${encodeURIComponent(calcId)}`, { method: "POST" });
-    }
-    setLocked(prev => ({ ...prev, [period]: !currentlyLocked }));
-  };
-
-  const periods = Object.keys(calcIds);
-  if (periods.length === 0) return null;
-
-  const nextPeriod = () => {
-    const lastPeriod = periods[periods.length - 1];
-    const [year, month] = lastPeriod.split("-").map(Number);
-    const d = new Date(year, month, 1); // month is 0-indexed, so this gives us the next month
-    const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    // Pre-fill could go here via a callback prop, but for now just show it
-    alert(`Next period: ${next}\n\nStart a new calculation with this period.`);
-  };
-
-  return (
-    <div className="card p-4 space-y-3">
-      <h3 className="text-sm font-semibold text-ink">Periods</h3>
-      {periods.map(period => (
-        <div key={period} className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${locked[period] ? "bg-green-500" : "bg-ink2/30"}`} />
-            <span className="text-xs text-ink2">{period}</span>
-            <span className={`text-xs font-medium ${locked[period] ? "text-green-700" : "text-ink2"}`}>
-              {locked[period] ? "Locked" : "Open"}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => toggleLock(period)}
-              className={`px-2 py-0.5 rounded text-xs cursor-pointer transition-colors ${
-                locked[period]
-                  ? "bg-ink2/10 text-ink2 hover:bg-ink2/20"
-                  : "bg-accent/10 text-accent hover:bg-accent/20"
-              }`}>
-              {locked[period] ? "Unlock" : "Lock"}
-            </button>
-            {locked[period] && resolvedPlanId && (
-              <a
-                href={`${base}/v1/periods/${encodeURIComponent(resolvedPlanId)}/${period}/register`}
-                className="px-2 py-0.5 rounded text-xs bg-green-50 text-green-700 hover:bg-green-100 cursor-pointer transition-colors no-underline"
-              >
-                Register ↓
-              </a>
-            )}
-          </div>
-        </div>
-      ))}
-      <div className="pt-2 border-t border-line">
-        <button onClick={nextPeriod}
-          className="w-full px-3 py-1.5 rounded text-xs font-medium bg-accent/10 text-accent hover:bg-accent/20 cursor-pointer transition-colors">
-          Start Next Period →
-        </button>
-      </div>
-    </div>
-  );
-}
-
-
 // ------------------------------------------------------------------
 // Inline plan builder for wizard
 // ------------------------------------------------------------------
@@ -1058,7 +749,7 @@ interface PlanBuilderRule {
   multiplier?: string;
 }
 
-interface PlanBuilderPlanData {
+interface PlanBuilderPlanData { [key: string]: unknown;
   plan_id: string;
   name: string;
   period_type: string;

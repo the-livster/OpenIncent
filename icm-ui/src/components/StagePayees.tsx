@@ -1,6 +1,5 @@
 import { useState } from "react";
 import type { PayeeRow } from "./Pipeline";
-import FileUpload from "./FileUpload";
 import { previewFile } from "../api";
 
 interface Props {
@@ -70,7 +69,13 @@ export default function StagePayees({ payees, setPayees, onNext }: Props) {
       <h1 className="text-lg font-bold text-zinc-800">1. Payees</h1>
       <p className="text-sm text-zinc-500">Upload your payee roster (CSV or XLSX). Columns: id, name, quota, plan_id, effective_from.</p>
       {payees.length === 0 ? (
-        <FileUpload onFile={handleFile} accept=".csv,.xlsx" label="Upload Payees" loading={loading} />
+        <div className="border-2 border-dashed border-zinc-300 rounded-xl p-8 text-center space-y-3">
+          <p className="text-sm text-zinc-500">Drop a CSV or XLSX file with columns: id, name, quota, plan_id, effective_from</p>
+          <label className="inline-block px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
+            {loading ? "Loading..." : "Upload Payees"}
+            <input type="file" accept=".csv,.xlsx" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+          </label>
+        </div>
       ) : (
         <div className="space-y-3">
           <table className="w-full text-xs border rounded-lg overflow-hidden">
