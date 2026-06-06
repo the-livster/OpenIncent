@@ -1,6 +1,6 @@
 [project]
 name = "icm-engine"
-version = "0.1.0"
+version = "0.2.0"
 description = "Open-source incentive compensation calculation engine"
 readme = "README.md"
 requires-python = ">=3.11"
