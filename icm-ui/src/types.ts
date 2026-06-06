@@ -26,6 +26,10 @@ export interface CalculateResponse {
   ledger: LedgerEntry[];
   summary: Record<string, string>;
   calculation_ids?: Record<string, string>;
+  attainment?: Record<string, unknown>[];
+  draw_balances?: Record<string, string>;
+  effective_period?: string;
+  locked_periods?: string[];
 }
 
 export interface PlanFromTextRequest {

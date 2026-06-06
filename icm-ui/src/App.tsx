@@ -3,14 +3,15 @@ import { useCallback, useState } from "react";
 import CalculatorWizard from "./components/CalculatorWizard";
 import DataModel from "./components/DataModel";
 import PayeeManager from "./components/PayeeManager";
+import Pipeline from "./components/Pipeline";
 import PlanGenerator from "./components/PlanGenerator";
 import PlanLibrary from "./components/PlanLibrary";
 import Settings from "./components/Settings";
 
-type Tab = "calculator" | "plans" | "ai" | "payees" | "data" | "settings";
+type Tab = "pipeline" | "calculator" | "plans" | "ai" | "payees" | "data" | "settings";
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("calculator");
+  const [tab, setTab] = useState<Tab>("pipeline");
 
   const [loadedPlan, setLoadedPlan] = useState<{ yaml: string; name: string } | null>(null);
   const [planToSave, setPlanToSave] = useState<{ yaml: string; name: string } | null>(null);
@@ -35,7 +36,8 @@ export default function App() {
           </div>
 
           <nav className="flex items-center gap-1">
-            <NavTab active={tab === "calculator"} onClick={() => setTab("calculator")} label="Calculator" />
+            <NavTab active={tab === "pipeline"} onClick={() => setTab("pipeline")} label="Pipeline" />
+            <NavTab active={tab === "calculator"} onClick={() => setTab("calculator")} label="Quick Calc" />
             <NavTab active={tab === "plans"} onClick={() => setTab("plans")} label="Plans" />
             <NavTab active={tab === "payees"} onClick={() => setTab("payees")} label="Payees" />
             <NavTab active={tab === "data"} onClick={() => setTab("data")} label="Data" />
@@ -46,6 +48,7 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+        {tab === "pipeline" && <Pipeline />}
         {tab === "calculator" && <CalculatorWizard loadedPlan={loadedPlan} onPlanConsumed={() => setLoadedPlan(null)} />}
         {tab === "plans" && (
           <PlanLibrary onLoadPlan={handleLoadPlan} planToSave={planToSave} onSaved={handlePlanSaved} />
