@@ -31,6 +31,10 @@ htmlcov/
 # Env
 .env
 
+# Private / not for public repo
+openincent-dashboard.html
+website/
+
 # wrangler files
 .wrangler
 .dev.vars*
