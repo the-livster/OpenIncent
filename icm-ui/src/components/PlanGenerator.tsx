@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { generatePlan } from "../api";
-import PlanBuilder from "./PlanBuilder";
+import PlanBuilder, { type PlanBuilderPlanData } from "./PlanBuilder";
 
 interface Props {
   onPlanGenerated: (plan: { yaml: string; name: string }) => void;
@@ -15,15 +15,8 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
   const [generatedYaml, setGeneratedYaml] = useState("");
   const [showBuilder, setShowBuilder] = useState(false);
 
-  const apiKey = localStorage.getItem("icm_anthropic_key") ?? "";
-
   const generate = useCallback(async () => {
     if (!description.trim()) return;
-    if (!apiKey) {
-      setError("No Anthropic API key set. Go to Settings to add one.");
-      setStatus("error");
-      return;
-    }
     setStatus("loading");
     setError("");
     setGeneratedYaml("");
@@ -32,7 +25,6 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
       const result = await generatePlan({
         description,
         plan_id: planId || undefined,
-        api_key: apiKey,
       });
       setGeneratedYaml(result.yaml);
       setGeneratedPlan(result.plan);
@@ -41,7 +33,7 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
       setError(e instanceof Error ? e.message : "Generation failed");
       setStatus("error");
     }
-  }, [description, planId, apiKey]);
+  }, [description, planId]);
 
   const downloadYaml = () => {
     const blob = new Blob([generatedYaml], { type: "text/yaml" });
@@ -50,14 +42,14 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
     a.href = url;
     a.download = `${planId || "plan"}.yaml`;
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   // If builder is open, show it instead
   if (showBuilder && generatedPlan) {
     return (
       <PlanBuilder
-        plan={generatedPlan as unknown as PlanBuilderPlan}
+        plan={generatedPlan as unknown as PlanBuilderPlanData}
         onClose={() => setShowBuilder(false)}
       />
     );
@@ -72,12 +64,6 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
             Describe your commission plan in plain English. We'll generate it and let you tune it with sliders.
           </p>
         </div>
-
-        {!apiKey && (
-          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-warn/10 border border-warn/30 text-warn text-xs">
-            ⚠️ No API key configured. Go to <strong>Settings</strong> to add your Anthropic API key.
-          </div>
-        )}
 
         <div>
           <label className="block text-xs font-medium text-ink2 mb-1.5">
@@ -122,7 +108,7 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
       </div>
 
       {status === "error" && (
-        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/30 text-danger text-sm animate-in">
+        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/30 text-danger text-sm animate-in select-text">
           {error}
         </div>
       )}
@@ -159,23 +145,4 @@ export default function PlanGenerator({ onPlanGenerated }: Props) {
       )}
     </div>
   );
-}
-
-// Type for PlanBuilder props
-interface PlanBuilderRule {
-  type: string;
-  id: string;
-  filter?: string;
-  rate?: string;
-  tiers?: { threshold: string; rate: string }[];
-  threshold_pct?: string;
-  multiplier?: string;
-}
-
-interface PlanBuilderPlan { [key: string]: unknown;
-  plan_id: string;
-  name: string;
-  period_type: string;
-  currency: string;
-  rules: PlanBuilderRule[];
 }

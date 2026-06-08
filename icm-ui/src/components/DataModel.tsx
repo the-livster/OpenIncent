@@ -10,7 +10,8 @@ import {
   type TransactionRow,
   type PeriodStatusRow,
 } from "../api";
-import type { SavedPlan } from "../types";
+import type { Payee, SavedPlan } from "../types";
+import { Th, Td } from "./Table";
 
 type Section = {
   id: string;
@@ -22,7 +23,7 @@ type Section = {
 export default function DataModel() {
   const [sections, setSections] = useState<Section[]>([]);
   const [plans, setPlans] = useState<SavedPlan[]>([]);
-  const [payees, setPayees] = useState<Record<string, unknown>[]>([]);
+  const [payees, setPayees] = useState<Payee[]>([]);
   const [calculations, setCalculations] = useState<CalculationRow[]>([]);
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
   const [periods, setPeriods] = useState<Record<string, PeriodStatusRow[]>>({});
@@ -82,7 +83,7 @@ export default function DataModel() {
   }
 
   if (loading) return <div className="p-6 text-zinc-500">Loading data model...</div>;
-  if (error) return <div className="p-6 text-red-500">{error}</div>;
+  if (error) return <div className="p-6 text-red-500 select-text">{error}</div>;
 
   const sectionOpen = (id: string) => sections.find(s => s.id === id)?.open ?? false;
 
@@ -127,7 +128,7 @@ export default function DataModel() {
               </tr>
             </thead>
             <tbody>
-              {payees.map((p: Record<string, unknown>) => (
+              {payees.map((p) => (
                 <tr key={String(p.id)} className="border-b border-zinc-100 hover:bg-zinc-50">
                   <Td mono>{String(p.id)}</Td>
                   <Td>{String(p.name)}</Td>
@@ -262,18 +263,6 @@ function Section({ label, count, open, onToggle, children }: {
       </button>
       {open && <div className="border-t border-zinc-100 max-h-80 overflow-auto">{children}</div>}
     </div>
-  );
-}
-
-function Th({ children }: { children: React.ReactNode }) {
-  return <th className="px-3 py-2 font-medium whitespace-nowrap">{children}</th>;
-}
-
-function Td({ children, mono }: { children: React.ReactNode; mono?: boolean }) {
-  return (
-    <td className={`px-3 py-1.5 whitespace-nowrap ${mono ? "font-mono text-zinc-600" : "text-zinc-700"}`}>
-      {children}
-    </td>
   );
 }
 

@@ -1,0 +1,11 @@
+# Manager Override Plan
+plan_id: mgmt_plan
+name: "Management Plan"
+period_type: monthly
+currency: USD
+
+rules:
+  - id: R-201
+    type: flat_rate
+    description: "Team override — paid as manager_override on payee record"
+    rate: 0.0       # rate comes from manager_override field

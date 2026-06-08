@@ -1,0 +1,18 @@
+# SaaS SDR Commission Plan — flat rate + meeting bonus
+plan_id: saas_sdr_plan
+name: "SaaS SDR Plan"
+period_type: monthly
+currency: USD
+
+rules:
+  - id: R-101
+    type: flat_rate
+    description: "Flat commission on all qualified meetings"
+    rate: 0.03
+
+  - id: R-102
+    type: threshold_gate
+    description: "Bonus for exceeding 20 meetings/month"
+    threshold_pct: 0.0
+    multiplier: 1.5
+    rate: 0.03

@@ -41,10 +41,10 @@ logger = logging.getLogger("icm.updater")
 # the maintainer and used only to sign releases via tools/sign_release.py.
 # If this key needs to rotate, bump the version and embed the new key.
 _UPDATE_PUBLIC_KEY_HEX = (
-    "00000000000000000000000000000000"
-    "00000000000000000000000000000000"
+    "d29ae3f0a207d7e6156296d91f0f50b8"
+    "5938004a347734c5a10cfcbd4dae7235"
 )
-_PUBLIC_KEY_PLACEHOLDER = True  # set to False after generating real keys
+_PUBLIC_KEY_PLACEHOLDER = False
 
 
 # ------------------------------------------------------------------

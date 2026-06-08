@@ -56,7 +56,6 @@ export default function Settings() {
       const rates = await getSetting(KEY_EXCHANGE_RATES);
       const rmode = await getSetting(KEY_ROUNDING);
       if (key !== null) setApiKey(key);
-      else setApiKey(localStorage.getItem("icm_anthropic_key") ?? "");
       if (base !== null) setApiBase(base);
       else setApiBase(localStorage.getItem("icm_api_base") ?? "");
       if (rates !== null) setExchangeRates(rates);
@@ -126,12 +125,7 @@ export default function Settings() {
       await deleteSetting(KEY_ROUNDING);
     }
 
-    // Also keep localStorage as fallback
-    if (apiKey.trim()) {
-      localStorage.setItem("icm_anthropic_key", apiKey.trim());
-    } else {
-      localStorage.removeItem("icm_anthropic_key");
-    }
+    // Also keep api_base in localStorage as fallback (not a secret)
     if (apiBase.trim()) {
       localStorage.setItem("icm_api_base", apiBase.trim());
     } else {
@@ -141,7 +135,7 @@ export default function Settings() {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
     healthCheck().then((ok) => setHealth(ok ? "ok" : "error"));
-  }, [apiKey, apiBase]);
+  }, [apiKey, apiBase, exchangeRates, roundingMode]);
 
   const maskedKey = apiKey
     ? `${apiKey.slice(0, 7)}${"\u2022".repeat(Math.max(0, apiKey.length - 11))}${apiKey.slice(-4)}`
@@ -343,8 +337,8 @@ export default function Settings() {
       <div className="card p-4 text-xs text-ink2 space-y-2">
         <div className="font-semibold text-ink2">Privacy &amp; Security</div>
         <ul className="list-disc list-inside space-y-1">
-          <li>Your API key is stored server-side in the local database and sent to Anthropic per-request.</li>
-          <li>Settings are also cached in your browser's localStorage as a fallback.</li>
+          <li>Your API key is stored server-side in the local database and sent to Anthropic per-request. It is never stored in your browser.</li>
+          <li>Non-sensitive settings (API base URL) are cached in localStorage for convenience.</li>
           <li>Clear your browser data or delete settings via the API to remove stored keys.</li>
         </ul>
       </div>

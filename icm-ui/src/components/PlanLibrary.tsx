@@ -55,6 +55,7 @@ export default function PlanLibrary({ onLoadPlan, planToSave, onSaved }: Props) 
   }, [planToSave, saveName, onSaved, refresh]);
 
   const handleDelete = useCallback(async (id: string) => {
+    if (!window.confirm("Delete this plan? This cannot be undone.")) return;
     try {
       await deletePlan(id);
       setPlans((prev) => prev.filter((p) => p.id !== id));

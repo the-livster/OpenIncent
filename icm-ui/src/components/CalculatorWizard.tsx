@@ -1,51 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { calculate, listPlans, exportStatements, previewFile } from "../api";
-import PlanBuilder from "./PlanBuilder";
+import PlanBuilder, { type PlanBuilderPlanData } from "./PlanBuilder";
+import DropZone from "./DropZone";
+import CalcResultsView from "./CalcResultsView";
+import { parseCsvPreview } from "./csvParser";
 import type { CalculateResponse, SavedPlan } from "../types";
-
-// ------------------------------------------------------------------
-// Simple client-side CSV parser
-// ------------------------------------------------------------------
-
-function parseCsvPreview(text: string): { headers: string[]; rows: string[][] } {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length === 0) return { headers: [], rows: [] };
-  const headers = parseCsvLine(lines[0]);
-  const rows = lines.slice(1, 6).map(parseCsvLine);
-  return { headers, rows };
-}
-
-function parseCsvLine(line: string): string[] {
-  const cells: string[] = [];
-  let current = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (inQuotes) {
-      if (c === '"') {
-        if (i + 1 < line.length && line[i + 1] === '"') {
-          current += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        current += c;
-      }
-    } else {
-      if (c === '"') {
-        inQuotes = true;
-      } else if (c === ",") {
-        cells.push(current.trim());
-        current = "";
-      } else {
-        current += c;
-      }
-    }
-  }
-  cells.push(current.trim());
-  return cells;
-}
 
 // ------------------------------------------------------------------
 // Types
@@ -191,9 +150,16 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
   // Run calculation
   const run = useCallback(async () => {
-    const plan = planSource === "library" && selectedPlanId
-      ? new File([plans.find(p => p.id === selectedPlanId)!.yaml_content], "plan.yaml", { type: "text/yaml" })
-      : planFile;
+    let plan: File | null | undefined = planFile;
+    if (planSource === "library" && selectedPlanId) {
+      const found = plans.find(p => p.id === selectedPlanId);
+      if (!found) {
+        setError("Selected plan no longer exists. Please select another.");
+        setStatus("error");
+        return;
+      }
+      plan = new File([found.yaml_content], "plan.yaml", { type: "text/yaml" });
+    }
     const txns = buildMappedFile();
     const pees = payeeFile || buildAutoPayees();
 
@@ -214,9 +180,15 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
   // Export XLSX statements
   const handleExport = useCallback(async () => {
-    const plan = planSource === "library" && selectedPlanId
-      ? new File([plans.find(p => p.id === selectedPlanId)!.yaml_content], "plan.yaml", { type: "text/yaml" })
-      : planFile;
+    let plan: File | null | undefined = planFile;
+    if (planSource === "library" && selectedPlanId) {
+      const found = plans.find(p => p.id === selectedPlanId);
+      if (!found) {
+        setError("Selected plan no longer exists. Please select another.");
+        return;
+      }
+      plan = new File([found.yaml_content], "plan.yaml", { type: "text/yaml" });
+    }
     const txns = buildMappedFile();
     const pees = payeeFile || buildAutoPayees();
     if (!plan || !txns) return;
@@ -270,12 +242,13 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
             onChange={setTxnFile}
             accept=".csv,.xlsx"
             label="Sales transactions"
+            icon="📊"
           />
 
           {csvPreview && (
             <div className="mt-4">
               <div className="text-xs font-medium text-ink2 mb-2">
-                Detected {csvPreview.headers.length} columns, {csvPreview.rows.length} rows previewed
+                Detected {csvPreview.headers.length} columns, {csvPreview.rows.length} rows (showing first 50)
               </div>
               <div className="overflow-x-auto rounded-lg border border-line">
                 <table className="w-full text-xs">
@@ -287,7 +260,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-line">
-                    {csvPreview.rows.map((row, ri) => (
+                    {csvPreview.rows.slice(0, 50).map((row, ri) => (
                       <tr key={ri}>
                         {row.map((cell, ci) => (
                           <td key={ci} className="px-2.5 py-1.5 text-ink2 whitespace-nowrap max-w-[200px] truncate">{cell}</td>
@@ -382,6 +355,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
             onChange={setPayeeFile}
             accept=".csv,.xlsx"
             label="Payee roster (optional)"
+            icon="👥"
           />
 
           {!payeeFile && csvPreview && mapping.payeeColumn && (
@@ -478,6 +452,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
               onChange={setPlanFile}
               accept=".yaml,.yml"
               label="Plan YAML"
+              icon="📋"
             />
           )}
 
@@ -521,79 +496,11 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
       {/* Results */}
       {step === "results" && status === "success" && data && (
-        <div className="space-y-6 animate-in">
-          {/* Summary cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <StatCard label="Total Commission" value={`$${Object.values(data.summary).reduce((a, b) => a + parseFloat(b), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
-            <StatCard label="Payees" value={String(Object.keys(data.summary).length)} />
-            <StatCard label="Commission Lines" value={String(data.commissions.length)} />
-          </div>
-
-          {/* Export button */}
-          <div className="flex justify-end">
-            <button
-              onClick={handleExport}
-              className="
-                inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium
-                bg-soft border border-line text-ink
-                hover:bg-soft hover:border-ink2
-                transition-all cursor-pointer
-              "
-            >
-              ↓ Download Statements (.xlsx)
-            </button>
-          </div>
-
-          {/* Per-payee breakdown */}
-          <div className="card overflow-hidden">
-            <div className="px-5 py-3 border-b border-line">
-              <h3 className="text-sm font-semibold text-ink">Per Payee</h3>
-            </div>
-            <div className="divide-y divide-line">
-              {Object.entries(data.summary).map(([payee, total]) => (
-                <div key={payee} className="px-5 py-2.5 flex justify-between items-center text-sm">
-                  <span className="text-ink font-medium">{payee}</span>
-                  <span className="text-ink font-mono">${parseFloat(total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Commission details */}
-          <div className="card overflow-hidden">
-            <div className="px-5 py-3 border-b border-line">
-              <h3 className="text-sm font-semibold text-ink">All Commissions ({data.commissions.length})</h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="bg-soft">
-                    <th className="px-3 py-2 text-left font-medium text-ink2">Deal</th>
-                    <th className="px-3 py-2 text-left font-medium text-ink2">Payee</th>
-                    <th className="px-3 py-2 text-left font-medium text-ink2">Rule</th>
-                    <th className="px-3 py-2 text-right font-medium text-ink2">Amount</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-line">
-                  {data.commissions.map((c, i) => (
-                    <tr key={i} className="hover:bg-soft">
-                      <td className="px-3 py-1.5 text-ink font-mono">{c.transaction_id}</td>
-                      <td className="px-3 py-1.5 text-ink">{c.payee_id}</td>
-                      <td className="px-3 py-1.5 text-ink2">{c.rule_id}</td>
-                      <td className="px-3 py-1.5 text-ink font-mono text-right">${parseFloat(c.commission_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="flex justify-center">
-            <TextButton onClick={() => { setStep("data"); setStatus("idle"); setData(null); }}>
-              ← Start New Calculation
-            </TextButton>
-          </div>
-        </div>
+        <CalcResultsView
+          data={data}
+          onExport={handleExport}
+          onStartNew={() => { setStep("data"); setStatus("idle"); setData(null); }}
+        />
       )}
     </div>
   );
@@ -602,65 +509,6 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 // ------------------------------------------------------------------
 // Sub-components
 // ------------------------------------------------------------------
-
-function DropZone({ file, onChange, accept, label }: {
-  file: File | null;
-  onChange: (f: File | null) => void;
-  accept: string;
-  label: string;
-}) {
-  const [dragOver, setDragOver] = useState(false);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const f = e.dataTransfer.files[0];
-    if (f) onChange(f);
-  }, [onChange]);
-
-  return (
-    <div
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={handleDrop}
-      onClick={() => {
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = accept;
-        input.onchange = () => {
-          const f = input.files?.[0];
-          if (f) onChange(f);
-        };
-        input.click();
-      }}
-      className={`
-        rounded-xl border-2 border-dashed p-6 text-center cursor-pointer transition-all
-        ${dragOver
-          ? "border-accent bg-accent/10 scale-[1.01]"
-          : file
-            ? "border-accent bg-accent/5"
-            : "border-line bg-soft hover:border-ink2"
-        }
-      `}
-    >
-      {file ? (
-        <div>
-          <div className="text-lg mb-1">{accept.includes("csv") ? "📊" : accept.includes("yaml") ? "📋" : "📄"}</div>
-          <div className="text-sm font-medium text-ink">{file.name}</div>
-          <div className="text-xs text-ink2 mt-0.5">
-            {(file.size / 1024).toFixed(1)} KB · Click to change
-          </div>
-        </div>
-      ) : (
-        <div>
-          <div className="text-2xl mb-1 opacity-40">📂</div>
-          <div className="text-sm text-ink2">{label}</div>
-          <div className="text-xs text-ink2 mt-0.5">Drag & drop or click to browse</div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 function StepButton({ onClick, disabled, children, highlight }: {
   onClick: () => void;
@@ -708,15 +556,6 @@ function SourceToggle({ active, onClick, label }: { active: boolean; onClick: ()
   );
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="card p-4">
-      <div className="text-xs text-ink2">{label}</div>
-      <div className="text-lg font-bold text-ink mt-0.5">{value}</div>
-    </div>
-  );
-}
-
 // ------------------------------------------------------------------
 // Inline plan builder for wizard
 // ------------------------------------------------------------------
@@ -739,20 +578,3 @@ function PlanBuilderWizard({ onUse, onCancel }: { onUse: (yaml: string) => void;
   );
 }
 
-interface PlanBuilderRule {
-  type: string;
-  id: string;
-  rate?: string;
-  filter?: string;
-  tiers?: { threshold: string; rate: string }[];
-  threshold_pct?: string;
-  multiplier?: string;
-}
-
-interface PlanBuilderPlanData { [key: string]: unknown;
-  plan_id: string;
-  name: string;
-  period_type: string;
-  currency: string;
-  rules: PlanBuilderRule[];
-}

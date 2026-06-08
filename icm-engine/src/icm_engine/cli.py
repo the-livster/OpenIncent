@@ -18,6 +18,7 @@ from icm_engine.exceptions import MissingAPIKeyError, PlanGenerationError
 from icm_engine.ledger import write_ledger_jsonl
 from icm_engine.loader import load_payees, load_plan, load_transactions
 from icm_engine.models import Commission, Payee, Plan, Transaction
+from icm_engine.run import LockedPeriodError, RunContext, execute, persist
 
 app = typer.Typer()
 db_app = typer.Typer(help="Database operations")
@@ -76,8 +77,9 @@ def main(
     Multi-plan mode (--plans or auto-resolve from DB):
       icm --plans plan_a.yaml plan_b.yaml --transactions deals.csv --payees reps.csv --output out/
       icm --transactions deals.csv --payees reps.csv --output out/   (resolves plans from DB)
+      icm --transactions deals.csv --output out/                     (uses saved roster + plans from DB)
     """
-    if transactions is None or payees is None or output is None:
+    if transactions is None or output is None:
         return
     if plan is None and not plans and no_db:
         console.print("[red]Either --plan, --plans, or DB access is required[/red]")
@@ -91,7 +93,15 @@ def main(
         mapping_obj = _load_mapping_file(Path(mapping))
 
     txns, txn_mapping = load_transactions(transactions, mapping=mapping_obj)
-    payee_list, payee_mapping = load_payees(payees, mapping=mapping_obj)
+
+    if payees is not None:
+        payee_list, payee_mapping = load_payees(payees, mapping=mapping_obj)
+        using_saved_roster = False
+    else:
+        if no_db:
+            console.print("[red]--payees is required when --no-db is set[/red]")
+            raise typer.Exit(code=1)
+        using_saved_roster = True
 
     # --- Resolve plans (single-plan or multi-plan) ---
     plan_library: dict[str, Plan] = {}
@@ -101,6 +111,27 @@ def main(
     if not no_db:
         db = Database(db_path or str(default_db_path()), org_id=org)
         db.init()
+
+    # Load payees from saved roster if no file provided
+    if using_saved_roster:
+        assert db is not None
+        payee_list = db.load_saved_roster()
+        if not payee_list:
+            console.print("[red]No saved payees in the database. Import a roster first or use --payees.[/red]")
+            raise typer.Exit(code=1)
+        if effective_period:
+            from datetime import date as _date
+            period_dt = _date.fromisoformat(effective_period + "-01")
+            payee_list = [
+                p for p in payee_list
+                if p.effective_from is None or p.effective_from <= period_dt
+            ]
+            payee_list = [
+                p for p in payee_list
+                if p.effective_to is None or p.effective_to >= period_dt
+            ]
+        console.print(f"[dim]Using saved roster: {len(payee_list)} active payees[/dim]")
+        payee_mapping = None
 
     if single_plan_mode:
         p_obj = load_plan(plan)
@@ -146,7 +177,7 @@ def main(
         )
 
     # Filter-field typo guard
-    from icm_engine.engine import check_filter_fields
+    from icm_engine.filter_parser import check_filter_fields
     for p in plan_library.values():
         for rule in p.rules:
             f_source: str | None = getattr(rule, "filter", None)
@@ -165,66 +196,6 @@ def main(
     if payee_mapping:
         _print_mapping(payee_mapping)
 
-    engine = CommissionEngine()
-
-    # Determine locked periods and effective period
-    locked_periods: set[str] = set()
-    locked_by_plan: dict[str, set[str]] = {}
-    eff_period: str | None = effective_period
-    if db is not None:
-        for pid in plan_library:
-            period_status = db.get_period_status(pid)
-            lp = {r["period"] for r in period_status if r.get("locked_calc_id") is not None}
-            if lp:
-                locked_by_plan[pid] = lp
-                locked_periods |= lp
-
-    txn_periods = {t.period for t in txns}
-    locked_relevant = txn_periods & locked_periods
-
-    if locked_relevant:
-        if not allow_recalculate_locked:
-            console.print(
-                f"[red]Error: Some periods are locked: {sorted(locked_relevant)}. "
-                f"Use --allow-recalculate-locked to proceed.[/red]"
-            )
-            raise typer.Exit(code=1)
-        if eff_period is None:
-            today = _date.today()
-            eff_period = today.strftime("%Y-%m")
-        console.print(
-            f"[yellow]Recalculating with locked periods {sorted(locked_relevant)}. "
-            f"Late transactions will be attributed to {eff_period}.[/yellow]"
-        )
-
-    # Load prior official commission lines for locked periods
-    prior_commissions: list[Commission] | None = None
-    prior_by_plan: dict[str, list[Commission]] = {}
-    if locked_relevant and db is not None:
-        prior_commissions = []
-        for pid in plan_library:
-            plan_priors: list[Commission] = []
-            for period in locked_by_plan.get(pid, set()):
-                official = db.get_official_calculation(pid, period)
-                if official:
-                    lines = db.get_commission_lines(official["id"])
-                    for line in lines:
-                        c = Commission(
-                            transaction_id=line["transaction_id"],
-                            payee_id=line["payee_id"],
-                            period=line["period"],
-                            origin_period=line.get("origin_period", ""),
-                            rule_id=line["rule_id"],
-                            base_amount=Decimal(line["base_amount"]),
-                            rate=Decimal(line["rate"]),
-                            commission_amount=Decimal(line["commission_amount"]),
-                            notes=line.get("notes", ""),
-                        )
-                        plan_priors.append(c)
-                        prior_commissions.append(c)
-            if plan_priors:
-                prior_by_plan[pid] = plan_priors
-
     # Load manual adjustments if provided
     adjustments_list = None
     if adjustments_file:
@@ -237,68 +208,50 @@ def main(
         from icm_engine.loader import load_mbos
         mbos_list = load_mbos(mbos_file)
 
-    if use_multi_plan:
-        result = engine.calculate_run(
-            plan_library, txns, payee_list,
-            locked_periods=locked_by_plan if locked_by_plan else None,
-            effective_period=eff_period if locked_relevant else None,
-            prior_commissions=prior_by_plan if prior_by_plan else None,
-            adjustments=adjustments_list,
-            prior_draw_balances=None,
-            mbos=mbos_list,
-        )
-    else:
-        single_plan = list(plan_library.values())[0]
-        result = engine.calculate(
-            single_plan, txns, payee_list,
-            locked_periods=locked_relevant if locked_relevant else None,
-            effective_period=eff_period if locked_relevant else None,
-            prior_commissions=prior_commissions,
-            adjustments=adjustments_list,
-            mbos=mbos_list,
-        )
-
-    # Persist to database
-    if not no_db and db is not None:
-        commissions = [c.model_dump() for c in result.commissions]
-        ledger_dicts = [e.to_dict() for e in result.ledger]
-
-        by_period: dict[str, list[dict[str, Any]]] = {}
-        for c_dict in commissions:
-            p = c_dict["period"]
-            by_period.setdefault(p, []).append(c_dict)
-
-        # Group commission lines by (plan, period) for per-plan persistence
-        # In single-plan mode, all lines belong to the same plan.
-        # In multi-plan mode, we assign lines to the plan of their payee's plan_id.
-        payee_plan: dict[str, str] = {p.id: p.plan_id for p in payee_list}
-
-        period_plan: dict[str, str] = {}
-        for c_dict in commissions:
-            p = c_dict["period"]
-            pid = payee_plan.get(c_dict["payee_id"], list(plan_library.keys())[0])
-            # Use the first plan_id seen for this period as the "primary" plan
-            if p not in period_plan:
-                period_plan[p] = pid
-
-        calc_ids: dict[str, str] = {}
-        for period_key, comms in sorted(by_period.items()):
-            plan_for_period = period_plan.get(period_key, list(plan_library.keys())[0])
-            calc_id = db.record_calculation(
-                plan_for_period,
-                period=period_key,
-                input_summary={"txn_count": len(txns), "payee_count": len(payee_list)},
+    if no_db or db is None:
+        # No-DB mode: direct engine call, no locking or persistence
+        engine = CommissionEngine()
+        if use_multi_plan:
+            result = engine.calculate_run(
+                plan_library, txns, payee_list,
+                adjustments=adjustments_list, mbos=mbos_list,
             )
-            db.save_commission_lines(calc_id, comms)
-            db.save_ledger_entries(calc_id, ledger_dicts)
-            calc_ids[period_key] = calc_id
+        else:
+            result = engine.calculate(
+                list(plan_library.values())[0], txns, payee_list,
+                adjustments=adjustments_list, mbos=mbos_list,
+            )
+    else:
+        # Full pipeline via shared run orchestration
+        ctx = RunContext(
+            plan_library=plan_library,
+            transactions=txns,
+            payees=payee_list,
+            db=db,
+            single_plan_mode=single_plan_mode,
+            effective_period=effective_period,
+            allow_recalculate_locked=allow_recalculate_locked,
+            adjustments=adjustments_list,
+            mbos=mbos_list,
+            using_saved_roster=using_saved_roster,
+        )
+        try:
+            ctx.resolve()
+        except LockedPeriodError as e:
+            console.print(
+                f"[red]Error: Some periods are locked: {e.locked_periods}. "
+                f"Use --allow-recalculate-locked to proceed.[/red]"
+            )
+            raise typer.Exit(code=1) from e
 
-        # Persist transactions and link them to all calculations in this run
-        txn_dicts = [t.model_dump() for t in txns]
-        db.save_transactions(txn_dicts)
-        all_txn_ids = [t.id for t in txns]
-        for cid in calc_ids.values():
-            db.link_transactions(cid, all_txn_ids)
+        if ctx.locked_relevant:
+            console.print(
+                f"[yellow]Recalculating with locked periods {sorted(ctx.locked_relevant)}. "
+                f"Late transactions will be attributed to {ctx.effective_period}.[/yellow]"
+            )
+
+        result = execute(ctx)
+        calc_ids = persist(ctx, result)
 
         console.print("[green]Saved to database[/green]")
         for p, cid in sorted(calc_ids.items()):

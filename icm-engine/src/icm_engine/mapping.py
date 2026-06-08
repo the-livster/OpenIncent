@@ -57,6 +57,18 @@ _FIELD_ALIASES: dict[str, list[str]] = {
         "manager override", "manager rate", "manager %", "override",
         "manager override %", "manager_override",
     ],
+    "bill_rate": [
+        "bill rate", "bill", "charge rate", "client rate", "bill_rate",
+    ],
+    "pay_rate": [
+        "pay rate", "pay", "cost rate", "contractor rate", "candidate rate", "pay_rate",
+    ],
+    "units": [
+        "hours", "units", "days", "quantity", "qty",
+    ],
+    "margin": [
+        "margin", "gross profit", "gp", "gross margin", "spread",
+    ],
 }
 
 
@@ -107,7 +119,8 @@ def infer_mapping(headers: list[str], file_pattern: str) -> ColumnMapping:
         ColumnMapping with best-match mappings and confidence scores.
     """
     if file_pattern == "transactions":
-        target_fields = ["id", "payee_id", "deal_id", "period", "amount", "product", "close_date"]
+        target_fields = ["id", "payee_id", "deal_id", "period", "amount", "product", "close_date",
+                         "bill_rate", "pay_rate", "units", "margin"]
     elif file_pattern == "payees":
         target_fields = ["id", "name", "quota", "plan_id", "effective_from", "effective_to"]
     else:

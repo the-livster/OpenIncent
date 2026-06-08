@@ -2,6 +2,9 @@ import { useState } from "react";
 import { calculate, previewFile } from "../api";
 import type { CalculateResponse, SavedPlan } from "../types";
 import type { PayeeRow, TransactionRow } from "./Pipeline";
+import { Td } from "./Table";
+import { useTableSort } from "./useTableSort";
+import { FilterBar, FilterTh, SortTh } from "./SortableTable";
 
 interface Props {
   payees: PayeeRow[];
@@ -16,11 +19,15 @@ export default function StageCrediting({ payees, transactions: _transactions, se
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<TransactionRow[]>(_transactions);
+  const [txnFile, setTxnFile] = useState<File | null>(null);
+
+  const { paginated, totalItems, page, totalPages, setPage, sortCol, sortDir, filters, toggleSort, setFilter, clearFilters } = useTableSort(preview, "id");
 
   async function handleFile(f: File) {
     try {
+      setTxnFile(f);
       const p = await previewFile(f, "transactions");
-      const rows = p.preview_rows.slice(0, 100).map((row, _i) => {
+      const rows = p.preview_rows.map((row, _i) => {
         const get = (target: string, fallback: string) => {
           const src = p.mapping[target];
           if (src !== undefined) {
@@ -39,31 +46,26 @@ export default function StageCrediting({ payees, transactions: _transactions, se
       setPreview(rows);
       setTransactions(rows);
     } catch {
-      setError("Could not parse transactions file. Ensure it's CSV or XLSX with id, payee_id, amount, period columns.");
+      setError("Could not parse transactions file.");
     }
   }
 
   async function runCalc() {
     if (preview.length === 0) { setError("No transactions loaded."); return; }
     setStatus("loading"); setError("");
-
-    // Build payee CSV and transaction CSV for the API call
     const peeHeaders = ["id","name","quota","plan_id","effective_from","effective_to","email","manager_id","manager_override","team_id"];
     const peeCSV = [peeHeaders.join(","), ...payees.map(p =>
-      [p.id, p.name, p.quota, p.plan_id, p.effective_from, p.effective_to, p.email, p.manager_id, p.manager_override, p.team_id].map(v => `"${v}"`).join(",")
+      [p.id, p.name, p.quota, p.plan_id, p.effective_from, p.effective_to, p.email, p.manager_id, p.manager_override, p.team_id].map(v => `"${v ?? ""}"`).join(",")
     )].join("\n");
-
     const txnHeaders = ["id","payee_id","deal_id","period","amount","product","close_date"];
     const txnCSV = [txnHeaders.join(","), ...preview.map(t =>
-      [t.id, t.payee_id, t.deal_id, t.period, t.amount, t.product, t.close_date].map(v => `"${v}"`).join(",")
+      [t.id, t.payee_id, t.deal_id, t.period, t.amount, t.product, t.close_date].map(v => `"${v ?? ""}"`).join(",")
     )].join("\n");
-
     try {
       const pees = new File([peeCSV], "payees.csv", { type: "text/csv" });
-      const txns = new File([txnCSV], "transactions.csv", { type: "text/csv" });
-
-      // If all payees have a plan_id and all plans exist in DB, send without plan (multi-plan auto-resolve)
-      // Otherwise, try with the first plan
+      // Send the original uploaded file so the FULL dataset is calculated,
+      // not the capped on-screen preview; fall back to reconstructed rows.
+      const txns = txnFile ?? new File([txnCSV], "transactions.csv", { type: "text/csv" });
       const result = await calculate({ transactions: txns, payees: pees });
       onCalculated(result);
       setStatus("done");
@@ -75,9 +77,8 @@ export default function StageCrediting({ payees, transactions: _transactions, se
 
   return (
     <div className="max-w-4xl space-y-4">
-      <h1 className="text-lg font-bold text-zinc-800">4. Crediting</h1>
-      <p className="text-sm text-zinc-500">Upload the period's deals (transactions). The engine resolves credits — splits, overlays, and manager overrides — then runs the full pipeline once.</p>
-
+      <h1 className="text-lg font-bold text-zinc-800">5. Crediting</h1>
+      <p className="text-sm text-zinc-500">Upload the period's deals (transactions).</p>
       {preview.length === 0 ? (
         <div className="space-y-3">
           <div className="border-2 border-dashed border-zinc-300 rounded-xl p-8 text-center">
@@ -92,23 +93,41 @@ export default function StageCrediting({ payees, transactions: _transactions, se
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             <span className="text-sm text-zinc-600">{preview.length} deals loaded</span>
-            <button onClick={() => { setPreview([]); setTransactions([]); }} className="text-xs text-zinc-400 hover:text-zinc-600">Clear</button>
+            <button onClick={() => { setPreview([]); setTransactions([]); setTxnFile(null); }} className="text-xs text-zinc-400 hover:text-zinc-600">Clear</button>
           </div>
+          <FilterBar total={preview.length} shown={totalItems} filters={filters} onClear={clearFilters} />
           <table className="w-full text-xs border rounded-lg overflow-hidden">
             <thead className="bg-zinc-100">
               <tr>
-                <Th>ID</Th><Th>Payee</Th><Th>Period</Th><Th>Amount</Th><Th>Product</Th>
+                <SortTh col="id" label="ID" current={sortCol} dir={sortDir} onClick={toggleSort} />
+                <SortTh col="payee_id" label="Payee" current={sortCol} dir={sortDir} onClick={toggleSort} />
+                <SortTh col="period" label="Period" current={sortCol} dir={sortDir} onClick={toggleSort} />
+                <SortTh col="amount" label="Amount" current={sortCol} dir={sortDir} onClick={toggleSort} />
+                <SortTh col="product" label="Product" current={sortCol} dir={sortDir} onClick={toggleSort} />
+              </tr>
+              <tr className="bg-zinc-50">
+                <FilterTh value={filters["id"] || ""} onChange={v => setFilter("id", v)} />
+                <FilterTh value={filters["payee_id"] || ""} onChange={v => setFilter("payee_id", v)} />
+                <FilterTh value={filters["period"] || ""} onChange={v => setFilter("period", v)} />
+                <FilterTh value={filters["amount"] || ""} onChange={v => setFilter("amount", v)} />
+                <FilterTh value={filters["product"] || ""} onChange={v => setFilter("product", v)} />
               </tr>
             </thead>
             <tbody>
-              {preview.slice(0, 15).map(t => (
+              {paginated.map(t => (
                 <tr key={t.id} className="border-b border-zinc-100 hover:bg-zinc-50">
                   <Td mono>{t.id}</Td><Td mono>{t.payee_id}</Td><Td mono>{t.period}</Td><Td>{t.amount}</Td><Td>{t.product}</Td>
                 </tr>
               ))}
             </tbody>
           </table>
-
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-3 text-xs text-zinc-500">
+              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="px-2 py-1 rounded hover:bg-zinc-100 disabled:opacity-30 cursor-pointer">← Prev</button>
+              <span>Page {page} of {totalPages}</span>
+              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-2 py-1 rounded hover:bg-zinc-100 disabled:opacity-30 cursor-pointer">Next →</button>
+            </div>
+          )}
           <div className="flex justify-between items-center">
             <button onClick={onBack} className="text-sm text-zinc-500 hover:text-zinc-700">← Back</button>
             <button onClick={runCalc} disabled={status === "loading"}
@@ -116,16 +135,9 @@ export default function StageCrediting({ payees, transactions: _transactions, se
               {status === "loading" ? "Calculating..." : "Calculate Commissions →"}
             </button>
           </div>
-          {error && <div className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs">{error}</div>}
+          {error && <div className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs select-text">{error}</div>}
         </div>
       )}
     </div>
   );
-}
-
-function Th({ children }: { children: React.ReactNode }) {
-  return <th className="px-3 py-2 text-left font-medium text-zinc-500 whitespace-nowrap">{children}</th>;
-}
-function Td({ children, mono }: { children: React.ReactNode; mono?: boolean }) {
-  return <td className={`px-3 py-1.5 whitespace-nowrap ${mono ? "font-mono text-zinc-600" : "text-zinc-700"}`}>{children}</td>;
 }

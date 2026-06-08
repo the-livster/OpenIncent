@@ -19,11 +19,15 @@ import sys
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date as _date
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-SCHEMA_VERSION = 9
+if TYPE_CHECKING:
+    from icm_engine.models import Payee
+
+SCHEMA_VERSION = 10
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS _schema_version (
@@ -70,9 +74,10 @@ CREATE TABLE IF NOT EXISTS payees (
     quota TEXT NOT NULL,
     quotas TEXT NOT NULL DEFAULT '{}',
     plan_id TEXT NOT NULL,
-    effective_from TEXT NOT NULL,
+    effective_from TEXT,
     effective_to TEXT,
     ramp TEXT,
+    draw TEXT,
     email TEXT,
     category_quotas TEXT,
     manager_id TEXT NOT NULL DEFAULT '',
@@ -80,6 +85,15 @@ CREATE TABLE IF NOT EXISTS payees (
     team_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (id, org_id)
+);
+
+CREATE TABLE IF NOT EXISTS draw_balances (
+    org_id TEXT NOT NULL DEFAULT 'default',
+    payee_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    balance TEXT NOT NULL DEFAULT '0',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (org_id, payee_id, plan_id)
 );
 
 CREATE TABLE IF NOT EXISTS calculations (
@@ -208,6 +222,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE payees ADD COLUMN manager_override TEXT",
         # v8 → v9: team quotas
         "ALTER TABLE payees ADD COLUMN team_id TEXT NOT NULL DEFAULT ''",
+        # v9 → v10: draw on payees
+        "ALTER TABLE payees ADD COLUMN draw TEXT",
+        # draw_balances table (recoverable draw state across periods)
+        """CREATE TABLE IF NOT EXISTS draw_balances (
+            org_id TEXT NOT NULL DEFAULT 'default',
+            payee_id TEXT NOT NULL,
+            plan_id TEXT NOT NULL,
+            balance TEXT NOT NULL DEFAULT '0',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (org_id, payee_id, plan_id)
+        )""",
     ]
     for m in migrations:
         try:
@@ -339,7 +364,10 @@ class Database:
     def save_payee(
         self, payee_id: str, name: str, quota: str, plan_id: str,
         effective_from: str, effective_to: str | None = None,
+        quotas: str = "{}",
         ramp: str | None = None,
+        draw: str | None = None,
+        email: str | None = None,
         category_quotas: str | None = None,
         manager_id: str = "",
         manager_override: str | None = None,
@@ -348,34 +376,52 @@ class Database:
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO payees (id, org_id, name, quota, quotas, plan_id,
-                   effective_from, effective_to, ramp, category_quotas, manager_id, manager_override, team_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   effective_from, effective_to, ramp, draw, email, category_quotas,
+                   manager_id, manager_override, team_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id, org_id) DO UPDATE SET
                        name=excluded.name, quota=excluded.quota, quotas=excluded.quotas,
                        plan_id=excluded.plan_id,
                        effective_from=excluded.effective_from, effective_to=excluded.effective_to,
-                       ramp=excluded.ramp, category_quotas=excluded.category_quotas,
+                       ramp=excluded.ramp, draw=excluded.draw, email=excluded.email,
+                       category_quotas=excluded.category_quotas,
                        manager_id=excluded.manager_id, manager_override=excluded.manager_override,
                        team_id=excluded.team_id""",
-                 (payee_id, self.org_id, name, quota, "{}", plan_id,
-                  effective_from, effective_to, ramp, category_quotas, manager_id, manager_override, team_id),
+                 (payee_id, self.org_id, name, quota, quotas, plan_id,
+                  effective_from, effective_to, ramp, draw, email, category_quotas,
+                  manager_id, manager_override, team_id),
             )
         return payee_id
 
+    _PAYEE_UPSERT_SQL = """INSERT INTO payees (id, org_id, name, quota, quotas, plan_id,
+                   effective_from, effective_to, ramp, draw, email, category_quotas,
+                   manager_id, manager_override, team_id)
+                   VALUES (:id, :org_id, :name, :quota, :quotas, :plan_id,
+                           :effective_from, :effective_to, :ramp, :draw, :email,
+                           :category_quotas, :manager_id, :manager_override, :team_id)
+                   ON CONFLICT(id, org_id) DO UPDATE SET
+                       name=excluded.name, quota=excluded.quota, quotas=excluded.quotas,
+                       plan_id=excluded.plan_id,
+                       effective_from=excluded.effective_from, effective_to=excluded.effective_to,
+                       ramp=excluded.ramp, draw=excluded.draw, email=excluded.email,
+                       category_quotas=excluded.category_quotas,
+                       manager_id=excluded.manager_id, manager_override=excluded.manager_override,
+                       team_id=excluded.team_id"""
+
     def save_payees_batch(self, payees: list[dict[str, Any]]) -> int:
+        """Upsert a batch of payees — merges into existing, never wipes."""
         with self._conn() as conn:
             for p in payees:
                 p["org_id"] = self.org_id
-            conn.executemany(
-                """INSERT INTO payees (id, org_id, name, quota, plan_id, effective_from, effective_to, ramp)
-                   VALUES (:id, :org_id, :name, :quota, :plan_id, :effective_from, :effective_to, :ramp)
-                   ON CONFLICT(id, org_id) DO UPDATE SET
-                       name=excluded.name, quota=excluded.quota, plan_id=excluded.plan_id,
-                       effective_from=excluded.effective_from, effective_to=excluded.effective_to,
-                       ramp=excluded.ramp""",
-                payees,
-            )
+            conn.executemany(self._PAYEE_UPSERT_SQL, payees)
         return len(payees)
+
+    def get_payee(self, payee_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM payees WHERE id=? AND org_id=?", (payee_id, self.org_id),
+            ).fetchone()
+        return dict(row) if row else None
 
     def list_payees(self, plan_id: str | None = None) -> list[dict[str, Any]]:
         with self._conn() as conn:
@@ -396,6 +442,91 @@ class Database:
                 "DELETE FROM payees WHERE id=? AND org_id=?", (payee_id, self.org_id),
             )
         return cur.rowcount > 0
+
+    def row_to_payee(self, row: dict[str, Any]) -> Payee:
+        """Reconstruct a Payee model object from a DB row (lossless round-trip)."""
+        import json as _json
+
+        from icm_engine.models import Draw, Payee, RampSchedule
+
+        def _parse_date(s: str | None) -> _date | None:
+            if not s:
+                return None
+            from datetime import date as _date
+            return _date.fromisoformat(s)
+
+        quotas_raw = row.get("quotas", "{}") or "{}"
+        quotas = {k: Decimal(v) for k, v in _json.loads(quotas_raw).items()}
+
+        ramp_raw = row.get("ramp") or None
+        ramp = RampSchedule.model_validate(_json.loads(ramp_raw)) if ramp_raw else None
+
+        draw_raw = row.get("draw") or None
+        draw = Draw.model_validate(_json.loads(draw_raw)) if draw_raw else None
+
+        cat_raw = row.get("category_quotas") or "{}"
+        category_quotas = {k: Decimal(v) for k, v in _json.loads(cat_raw).items()}
+
+        mgr_override_raw = row.get("manager_override")
+        manager_override = Decimal(str(mgr_override_raw)) if mgr_override_raw else None
+
+        return Payee(
+            id=row["id"],
+            name=row["name"],
+            quota=Decimal(row.get("quota", "0")),
+            quotas=quotas,
+            plan_id=row.get("plan_id", ""),
+            effective_from=_parse_date(row.get("effective_from")),
+            effective_to=_parse_date(row.get("effective_to")),
+            email=row.get("email") or None,
+            ramp=ramp,
+            draw=draw,
+            category_quotas=category_quotas,
+            manager_id=row.get("manager_id", ""),
+            manager_override=manager_override,
+            team_id=row.get("team_id", ""),
+        )
+
+    def load_saved_roster(self) -> list[Payee]:
+        """Load all saved payees for this org as Payee model objects."""
+        return [self.row_to_payee(row) for row in self.list_payees()]
+
+    def replace_all_payees(self, payees: list[dict[str, Any]]) -> int:
+        """Wipe the saved roster and insert a fresh batch, atomically.
+
+        The DELETE and re-insert run in a single transaction, so a failure
+        partway through rolls back the delete — the existing roster is never
+        lost with nothing to replace it.
+        """
+        with self._conn() as conn:
+            conn.execute("DELETE FROM payees WHERE org_id=?", (self.org_id,))
+            for p in payees:
+                p["org_id"] = self.org_id
+            if payees:
+                conn.executemany(self._PAYEE_UPSERT_SQL, payees)
+        return len(payees)
+
+    # ------------------------------------------------------------------
+    # Draw balances (recoverable draw state across periods)
+    # ------------------------------------------------------------------
+
+    def get_draw_balance(self, payee_id: str, plan_id: str) -> Decimal:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT balance FROM draw_balances WHERE org_id=? AND payee_id=? AND plan_id=?",
+                (self.org_id, payee_id, plan_id),
+            ).fetchone()
+        return Decimal(row["balance"]) if row else Decimal("0")
+
+    def set_draw_balance(self, payee_id: str, plan_id: str, balance: Decimal) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO draw_balances (org_id, payee_id, plan_id, balance, updated_at)
+                   VALUES (?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT(org_id, payee_id, plan_id) DO UPDATE SET
+                       balance=excluded.balance, updated_at=datetime('now')""",
+                (self.org_id, payee_id, plan_id, str(balance)),
+            )
 
     # ------------------------------------------------------------------
     # Settings

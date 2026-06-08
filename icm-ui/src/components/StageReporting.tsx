@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { CalculateResponse } from "../types";
+import { Th, Td } from "./Table";
 
 interface Props { result: CalculateResponse; onBack: () => void; }
 
@@ -7,7 +8,7 @@ export default function StageReporting({ result, onBack }: Props) {
   const [view, setView] = useState<"summary" | "ledger">("summary");
 
   const commissions = result.commissions || [];
-  const ledger = (result as Record<string, unknown>).ledger as Record<string, unknown>[] | undefined;
+  const ledger = result.ledger;
 
   // Summary by payee
   const byPayee: Record<string, number> = {};
@@ -15,11 +16,9 @@ export default function StageReporting({ result, onBack }: Props) {
     byPayee[c.payee_id] = (byPayee[c.payee_id] || 0) + parseFloat(c.commission_amount || "0");
   }
 
-  const base = localStorage.getItem("icm_api_base") || "";
-
   return (
     <div className="max-w-4xl space-y-4">
-      <h1 className="text-lg font-bold text-zinc-800">8. Reporting / Output</h1>
+      <h1 className="text-lg font-bold text-zinc-800">9. Reporting / Output</h1>
 
       <div className="flex gap-2">
         <button onClick={() => setView("summary")} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${view === "summary" ? "bg-blue-100 text-blue-700" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"}`}>
@@ -52,19 +51,15 @@ export default function StageReporting({ result, onBack }: Props) {
             </tbody>
           </table>
 
-          {/* Export */}
+          {/* Navigate back to calculator for full export */}
           <div className="border border-blue-200 bg-blue-50 rounded-lg p-4">
             <h3 className="text-sm font-semibold text-blue-800 mb-2">Export Statements</h3>
-            <p className="text-xs text-blue-700 mb-2">Generate per-rep statements (PDF, XLSX, HTML) from this calculation.</p>
+            <p className="text-xs text-blue-700 mb-2">Return to the Calculator tab to export per-rep statements (PDF, XLSX, HTML).</p>
             <button
-              onClick={() => {
-                // Navigate back to old wizard for export or trigger export directly
-                // For now, link to the export API
-                window.open(`${base}/v1/export`, "_blank");
-              }}
+              onClick={onBack}
               className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer"
             >
-              Export Statements →
+              ← Back to Calculator
             </button>
           </div>
         </div>
@@ -99,5 +94,3 @@ export default function StageReporting({ result, onBack }: Props) {
     </div>
   );
 }
-function Th({ children, className }: { children: React.ReactNode; className?: string }) { return <th className={`px-3 py-2 text-left font-medium text-zinc-500 whitespace-nowrap ${className || ""}`}>{children}</th>; }
-function Td({ children, mono, className }: { children: React.ReactNode; mono?: boolean; className?: string }) { return <td className={`px-3 py-1.5 whitespace-nowrap ${mono ? "font-mono text-zinc-600" : "text-zinc-700"} ${className || ""}`}>{children}</td>; }

@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useMemo, useState } from "react";
 import type { Commission, LedgerEntry, SortState } from "../types";
+import { useDebounce } from "./useDebounce";
 import TracePanel from "./TracePanel";
 
 interface Props {
@@ -22,6 +23,7 @@ const PAGE_SIZE = 50;
 export default function CommissionsTable({ commissions, ledger }: Props) {
   const [sort, setSort] = useState<SortState>({ column: "commission_amount", dir: "desc" });
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search, 200);
   const [filterPayee, setFilterPayee] = useState("");
   const [filterRule, setFilterRule] = useState("");
   const [filterPeriod, setFilterPeriod] = useState("");
@@ -53,8 +55,8 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
     if (filterPayee) result = result.filter((c) => c.payee_id === filterPayee);
     if (filterRule) result = result.filter((c) => c.rule_id === filterRule);
     if (filterPeriod) result = result.filter((c) => c.period === filterPeriod);
-    if (search) {
-      const q = search.toLowerCase();
+    if (debouncedSearch) {
+      const q = debouncedSearch.toLowerCase();
       result = result.filter((c) =>
         Object.values(c).some((v) => String(v).toLowerCase().includes(q))
       );

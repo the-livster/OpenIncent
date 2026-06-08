@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { CalculateResponse, Commission } from "../types";
+import { Th, Td } from "./Table";
 
 interface Props { result: CalculateResponse; onNext: () => void; onBack: () => void; }
 
@@ -18,7 +19,7 @@ export default function StageEarnings({ result, onNext, onBack }: Props) {
 
   return (
     <div className="max-w-4xl space-y-4">
-      <h1 className="text-lg font-bold text-zinc-800">6. Earnings</h1>
+      <h1 className="text-lg font-bold text-zinc-800">7. Earnings</h1>
       <p className="text-sm text-zinc-500">Commission earned per payee, grouped by rule. Click a payee to drill into rule-level detail.</p>
 
       <div className="space-y-2">
@@ -65,5 +66,3 @@ export default function StageEarnings({ result, onNext, onBack }: Props) {
     </div>
   );
 }
-function Th({ children }: { children: React.ReactNode }) { return <th className="px-3 py-2 text-left font-medium text-zinc-500 whitespace-nowrap">{children}</th>; }
-function Td({ children, mono }: { children: React.ReactNode; mono?: boolean }) { return <td className={`px-3 py-1.5 whitespace-nowrap ${mono ? "font-mono text-zinc-600" : "text-zinc-700"}`}>{children}</td>; }

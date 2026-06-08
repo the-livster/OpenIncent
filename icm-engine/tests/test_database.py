@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -134,9 +135,13 @@ class TestPayees:
         db, pid = self._make_db_with_plan(tmp_path)
         count = db.save_payees_batch([
             {"id": "P001", "name": "Alice", "quota": "100000", "plan_id": pid,
-             "effective_from": "2026-01-01", "effective_to": None, "ramp": None},
+             "effective_from": "2026-01-01", "effective_to": None, "ramp": None,
+             "draw": None, "email": None, "category_quotas": None,
+             "manager_id": "", "manager_override": None, "team_id": "", "quotas": "{}"},
             {"id": "P002", "name": "Bob", "quota": "80000", "plan_id": pid,
-             "effective_from": "2026-01-01", "effective_to": "2026-12-31", "ramp": None},
+             "effective_from": "2026-01-01", "effective_to": "2026-12-31", "ramp": None,
+             "draw": None, "email": None, "category_quotas": None,
+             "manager_id": "", "manager_override": None, "team_id": "", "quotas": "{}"},
         ])
         assert count == 2
         assert len(db.list_payees()) == 2
@@ -327,3 +332,141 @@ class TestTransactions:
         jan = db.list_transactions(period="2026-01")
         assert len(jan) == 1
         assert jan[0]["id"] == "T1"
+
+
+class TestPayeePersistence:
+    """Regression tests: payee save/load must be lossless."""
+
+    def test_save_and_reload_preserves_all_fields(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "test.db")
+        db.init()
+
+        db.save_payee(
+            payee_id="P001", name="Alice Smith", quota="100000", plan_id="saas_ae",
+            effective_from="2026-01-01", effective_to="2027-12-31",
+            quotas='{"2026-01": "50000", "2026-02": "75000"}',
+            ramp='{"months": 3, "schedule": ["0.25", "0.50", "0.75"]}',
+            draw='{"amount": "2000", "recoverable": true}',
+            email="alice@example.com",
+            category_quotas='{"Enterprise": "300000"}',
+            manager_id="M001", manager_override="0.05", team_id="Team-A",
+        )
+
+        row = db.get_payee("P001")
+        assert row is not None
+        assert row["name"] == "Alice Smith"
+        assert row["quota"] == "100000"
+        assert row["email"] == "alice@example.com"
+        assert row["manager_id"] == "M001"
+        assert row["manager_override"] == "0.05"
+        assert row["team_id"] == "Team-A"
+        assert '"2026-01"' in (row["quotas"] or "")
+        assert '"months": 3' in (row["ramp"] or "")
+        assert '"recoverable": true' in (row["draw"] or "")
+        assert '"Enterprise"' in (row["category_quotas"] or "")
+
+        # Round-trip through Payee model
+        payee = db.row_to_payee(row)
+        assert payee.id == "P001"
+        assert payee.name == "Alice Smith"
+        assert payee.quotas["2026-01"] == Decimal("50000")
+        assert payee.ramp is not None
+        assert payee.ramp.months == 3
+        assert payee.draw is not None
+        assert payee.draw.amount == Decimal("2000")
+        assert payee.draw.recoverable is True
+        assert payee.email == "alice@example.com"
+        assert payee.manager_override == Decimal("0.05")
+
+    def test_quotas_not_hardcoded_to_empty(self, tmp_path: Path) -> None:
+        """Regression: quotas must NOT be hardcoded to {}"""
+        db = Database(tmp_path / "test.db")
+        db.init()
+
+        db.save_payee(
+            payee_id="P001", name="Bob", quota="80000", plan_id="saas_ae",
+            effective_from="2026-01-01",
+            quotas='{"2026-01": "80000"}',
+        )
+        row = db.get_payee("P001")
+        assert row is not None
+        assert '"2026-01"' in (row["quotas"] or "")
+        assert row["quotas"] != "{}"
+
+    def test_batch_merge_preserves_existing(self, tmp_path: Path) -> None:
+        """save_payees_batch must merge, not wipe."""
+        db = Database(tmp_path / "test.db")
+        db.init()
+
+        # Initial batch
+        db.save_payees_batch([
+            {"id": "P001", "name": "Alice", "quota": "100000", "plan_id": "saas_ae",
+             "effective_from": "2026-01-01", "effective_to": "", "ramp": None,
+             "draw": None, "email": None, "category_quotas": None,
+             "manager_id": "", "manager_override": None, "team_id": "",
+             "quotas": "{}"},
+            {"id": "P002", "name": "Bob", "quota": "80000", "plan_id": "saas_ae",
+             "effective_from": "2026-01-01", "effective_to": "", "ramp": None,
+             "draw": None, "email": None, "category_quotas": None,
+             "manager_id": "", "manager_override": None, "team_id": "",
+             "quotas": "{}"},
+        ])
+        assert len(db.list_payees()) == 2
+
+        # Second batch: update P001, add P003 — P002 must survive unchanged
+        db.save_payees_batch([
+            {"id": "P001", "name": "Alice Updated", "quota": "120000", "plan_id": "saas_ae",
+             "effective_from": "2026-01-01", "effective_to": "", "ramp": None,
+             "draw": None, "email": "alice@new.com", "category_quotas": None,
+             "manager_id": "", "manager_override": None, "team_id": "",
+             "quotas": "{}"},
+            {"id": "P003", "name": "Carol", "quota": "90000", "plan_id": "saas_ae",
+             "effective_from": "2026-01-01", "effective_to": "", "ramp": None,
+             "draw": None, "email": None, "category_quotas": None,
+             "manager_id": "", "manager_override": None, "team_id": "",
+             "quotas": "{}"},
+        ])
+
+        all_payees = db.list_payees()
+        assert len(all_payees) == 3  # merge, not replace
+
+        p1 = db.get_payee("P001")
+        assert p1["name"] == "Alice Updated"
+        assert p1["quota"] == "120000"
+        assert p1["email"] == "alice@new.com"
+
+        p2 = db.get_payee("P002")
+        assert p2 is not None  # still exists
+        assert p2["name"] == "Bob"
+
+    def test_replace_all_wipes_and_replaces(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "test.db")
+        db.init()
+
+        db.save_payees_batch([
+            {"id": "P001", "name": "Alice", "quota": "100000", "plan_id": "saas_ae",
+             "effective_from": "2026-01-01", "effective_to": "", "ramp": None,
+             "draw": None, "email": None, "category_quotas": None,
+             "manager_id": "", "manager_override": None, "team_id": "",
+             "quotas": "{}"},
+        ])
+        assert len(db.list_payees()) == 1
+
+        db.replace_all_payees([
+            {"id": "P002", "name": "Bob", "quota": "80000", "plan_id": "saas_sdr",
+             "effective_from": "2026-01-01", "effective_to": "", "ramp": None,
+             "draw": None, "email": None, "category_quotas": None,
+             "manager_id": "", "manager_override": None, "team_id": "",
+             "quotas": "{}"},
+        ])
+        all_payees = db.list_payees()
+        assert len(all_payees) == 1  # wiped
+        assert all_payees[0]["id"] == "P002"
+
+    def test_init_idempotent(self, tmp_path: Path) -> None:
+        """init() run twice must not error."""
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.init()
+        db.init()  # second init must not raise
+        assert db_path.exists()

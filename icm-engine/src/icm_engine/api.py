@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from datetime import date as _date
@@ -12,12 +13,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.routing import APIRouter
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 from icm_engine.database import Database, default_db_path
 from icm_engine.engine import CommissionEngine
 from icm_engine.ledger import LedgerEntry
 from icm_engine.loader import load_payees, load_plan, load_transactions
 from icm_engine.models import Commission, Payee, Plan
+from icm_engine.run import LockedPeriodError, RunContext, execute, persist
 
 app = FastAPI(title="icm-engine")
 
@@ -31,42 +37,53 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+app.add_middleware(SlowAPIMiddleware)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    import traceback as _tb
+    # Log the full traceback server-side; never leak internals to the client.
+    logging.getLogger(__name__).exception(
+        "Unhandled error handling %s %s", request.method, request.url.path
+    )
     return JSONResponse(
         status_code=500,
-        content={"error": str(exc), "traceback": _tb.format_exc()},
+        content={"error": "Internal server error"},
     )
 
 v1 = APIRouter(prefix="/v1")
 
-_db: Database | None = None
-_db_path: str | None = None
+_db_cache: dict[tuple[str, str], Database] = {}
 
 
 def _get_db(org_id: str = "default") -> Database:
-    global _db, _db_path
     path = os.environ.get("ICM_DB_PATH", str(default_db_path()))
-    if _db is None or _db_path != path:
-        _db = Database(path, org_id=org_id)
-        _db.init()
-        _db_path = path
-    elif _db.org_id != org_id:
-        _db = Database(path, org_id=org_id)
-        _db.init()
-    return _db
+    key = (path, org_id)
+    if key not in _db_cache:
+        db = Database(path, org_id=org_id)
+        db.init()
+        _db_cache[key] = db
+    return _db_cache[key]
 
 
 def get_org(authorization: str | None = Header(None)) -> str:
-    """Extract org_id from Bearer token, or return 'default' for unauthenticated requests."""
+    """Extract org_id from Bearer token.
+
+    If ICM_REQUIRE_AUTH is set, unauthenticated requests get a 401.
+    Otherwise falls back to 'default' org (desktop / single-user mode).
+    """
     if authorization and authorization.startswith("Bearer "):
         token = authorization.removeprefix("Bearer ").strip()
         db = _get_db()
         org = db.validate_api_key(token)
         if org:
             return org
+    if os.environ.get("ICM_REQUIRE_AUTH", "").lower() in ("1", "true", "yes"):
+        raise HTTPException(status_code=401, detail="Authentication required")
     return "default"
 
 
@@ -101,7 +118,7 @@ def _serialize(obj: Any) -> Any:
 async def calculate(
     plan: UploadFile | None = File(None),  # noqa: B008
     transactions: UploadFile = File(...),  # noqa: B008
-    payees: UploadFile = File(...),  # noqa: B008
+    payees: UploadFile | None = File(None),  # noqa: B008 — optional: saved roster used when absent
     adjustments: UploadFile | None = File(None),  # noqa: B008
     mbos: UploadFile | None = File(None),  # noqa: B008
     effective_period: str | None = None,
@@ -113,29 +130,77 @@ async def calculate(
     Single-plan mode: upload a plan file.
     Multi-plan mode: omit the plan file — resolves each payee's plan from
     the saved DB library by payee.plan_id.
+
+    With a payee file: one-off / first-time import (file-based).
+    Without a payee file: uses the saved roster from the DB.
     """
+    db = _get_db(org)
+
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
         files: dict[str, Path] = {}
-        for name, upload in [("transactions", transactions), ("payees", payees)]:
-            content = await upload.read()
-            if len(content) > MAX_UPLOAD_BYTES:
-                raise HTTPException(status_code=413, detail={
-                    "error": f"{name} file exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit",
-                })
-            ext = Path(upload.filename or "").suffix or ".csv"
-            filepath = root / f"{name}{ext}"
-            filepath.write_bytes(content)
-            files[name] = filepath
+
+        # Transactions (always required)
+        content = await transactions.read()
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail={
+                "error": "Transactions file exceeds limit",
+            })
+        ext = Path(transactions.filename or "").suffix or ".csv"
+        txn_path = root / f"transactions{ext}"
+        txn_path.write_bytes(content)
+        files["transactions"] = txn_path
 
         try:
-            txn_list, _ = load_transactions(files["transactions"])
+            txn_list, _ = load_transactions(txn_path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail={"error": "Invalid transactions file", "detail": str(e)}) from e
-        try:
-            payee_list, _ = load_payees(files["payees"])
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail={"error": "Invalid payees file", "detail": str(e)}) from e
+
+        # Payees: file-based or saved roster
+        using_saved_roster = payees is None
+        if payees is not None:
+            content = await payees.read()
+            if len(content) > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail={"error": "Payees file exceeds limit"})
+            ext = Path(payees.filename or "").suffix or ".csv"
+            pee_path = root / f"payees{ext}"
+            pee_path.write_bytes(content)
+            files["payees"] = pee_path
+            try:
+                payee_list, _ = load_payees(pee_path)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail={"error": "Invalid payees file", "detail": str(e)}) from e
+        else:
+            # Load from saved roster
+            payee_list = db.load_saved_roster()
+            if not payee_list:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error": "No saved payees and no payee file uploaded. Import a roster first."},
+                )
+            # Filter by eligibility: only payees active for the run period
+            if effective_period:
+                from datetime import date as _date
+                try:
+                    period_dt = _date.fromisoformat(effective_period + "-01")
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={"error": f"Invalid effective_period {effective_period!r}; expected YYYY-MM."},
+                    ) from None
+                payee_list = [
+                    p for p in payee_list
+                    if p.effective_from is None or p.effective_from <= period_dt
+                ]
+                payee_list = [
+                    p for p in payee_list
+                    if p.effective_to is None or p.effective_to >= period_dt
+                ]
+            if not payee_list:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error": f"No active payees for period {effective_period or 'any'}."},
+                )
 
         db = _get_db(org)
 
@@ -168,104 +233,74 @@ async def calculate(
         if not plan_library:
             raise HTTPException(status_code=400, detail={"error": "No plan available"})
 
-        use_multi_plan = len(plan_library) > 1 or (
-            not single_plan_mode and any(
-                p.plan_id != (list(plan_library.keys())[0]) for p in payee_list
-            )
-        )
-
-        # Determine locked periods
-        locked_by_plan: dict[str, set[str]] = {}
-        locked_periods: set[str] = set()
-        for pid in plan_library:
-            period_status = db.get_period_status(pid)
-            lp = {r["period"] for r in period_status if r.get("locked_calc_id") is not None}
-            if lp:
-                locked_by_plan[pid] = lp
-                locked_periods |= lp
-
-        txn_periods = {t.period for t in txn_list}
-        locked_relevant = txn_periods & locked_periods
-
-        if locked_relevant:
-            if not allow_recalculate_locked:
+        # Validate that every payee's plan_id exists in the library
+        if not single_plan_mode:
+            missing_plans: dict[str, set[str]] = {}
+            for p in payee_list:
+                if p.plan_id and p.plan_id not in plan_library:
+                    missing_plans.setdefault(p.plan_id, set()).add(p.id)
+            if missing_plans:
+                available = sorted(plan_library.keys())
+                details = []
+                for plan_id, pids in sorted(missing_plans.items()):
+                    details.append(f"Payees {sorted(pids)} reference '{plan_id}'")
                 raise HTTPException(
-                    status_code=409,
+                    status_code=400,
                     detail={
-                        "error": "Some periods are locked",
-                        "locked_periods": sorted(locked_relevant),
-                        "hint": "Set allow_recalculate_locked=true to create draft versions",
+                        "error": "Some payees reference plans not in the library.",
+                        "missing": details,
+                        "available_plans": available,
+                        "hint": "Import the missing plans or reassign the payees to an available plan.",
                     },
                 )
-            if effective_period is None:
-                today = _date.today()
-                effective_period = today.strftime("%Y-%m")
 
-        # Load prior official commission lines for locked periods
-        prior_commissions: list[Commission] = []
-        prior_by_plan: dict[str, list[Commission]] = {}
-        if locked_relevant:
-            for pid in plan_library:
-                plan_priors: list[Commission] = []
-                for period in locked_by_plan.get(pid, set()):
-                    official = db.get_official_calculation(pid, period)
-                    if official:
-                        lines = db.get_commission_lines(official["id"])
-                        for line in lines:
-                            c = Commission(**{
-                                "transaction_id": line["transaction_id"],
-                                "payee_id": line["payee_id"],
-                                "period": line["period"],
-                                "origin_period": line.get("origin_period", ""),
-                                "rule_id": line["rule_id"],
-                                "base_amount": line["base_amount"],
-                                "rate": line["rate"],
-                                "commission_amount": line["commission_amount"],
-                                "notes": line.get("notes", ""),
-                            })
-                            plan_priors.append(c)
-                            prior_commissions.append(c)
-                if plan_priors:
-                    prior_by_plan[pid] = plan_priors
+        # Parse optional adjustments and MBOs from uploads (API-specific)
+        adjustments_list = None
+        if adjustments is not None:
+            adj_bytes = await adjustments.read()
+            if adj_bytes:
+                adj_path = root / "adjustments.csv"
+                adj_path.write_bytes(adj_bytes)
+                from icm_engine.loader import load_adjustments
+                adjustments_list = load_adjustments(adj_path)
+        mbos_list = None
+        if mbos is not None:
+            mbo_bytes = await mbos.read()
+            if mbo_bytes:
+                mbo_path = root / "mbos.csv"
+                mbo_path.write_bytes(mbo_bytes)
+                from icm_engine.loader import load_mbos
+                mbos_list = load_mbos(mbo_path)
+
+        # --- Delegate to shared run orchestration ---
+        ctx = RunContext(
+            plan_library=plan_library,
+            transactions=txn_list,
+            payees=payee_list,
+            db=db,
+            single_plan_mode=single_plan_mode,
+            effective_period=effective_period,
+            allow_recalculate_locked=allow_recalculate_locked,
+            adjustments=adjustments_list,
+            mbos=mbos_list,
+            using_saved_roster=using_saved_roster,
+        )
 
         try:
-            engine = CommissionEngine()
-            adjustments_list = None
-            if adjustments is not None:
-                adj_bytes = await adjustments.read()
-                if adj_bytes:
-                    adj_path = root / "adjustments.csv"
-                    adj_path.write_bytes(adj_bytes)
-                    from icm_engine.loader import load_adjustments
-                    adjustments_list = load_adjustments(adj_path)
-            mbos_list = None
-            if mbos is not None:
-                mbo_bytes = await mbos.read()
-                if mbo_bytes:
-                    mbo_path = root / "mbos.csv"
-                    mbo_path.write_bytes(mbo_bytes)
-                    from icm_engine.loader import load_mbos
-                    mbos_list = load_mbos(mbo_path)
+            ctx.resolve()
+        except LockedPeriodError as e:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Some periods are locked",
+                    "locked_periods": e.locked_periods,
+                    "hint": "Set allow_recalculate_locked=true to create draft versions",
+                },
+            ) from e
 
-            if use_multi_plan:
-                result = engine.calculate_run(
-                    plan_library, txn_list, payee_list,
-                    locked_periods=locked_by_plan if locked_by_plan else None,
-                    effective_period=effective_period if locked_relevant else None,
-                    prior_commissions=prior_by_plan if prior_by_plan else None,
-                    adjustments=adjustments_list,
-                    mbos=mbos_list,
-                )
-            else:
-                plan_obj = list(plan_library.values())[0]
-                result = engine.calculate(
-                    plan_obj, txn_list, payee_list,
-                    locked_periods=locked_relevant if locked_relevant else None,
-                    effective_period=effective_period if locked_relevant else None,
-                    prior_commissions=prior_commissions if prior_commissions else None,
-                    adjustments=adjustments_list,
-                    mbos=mbos_list,
-                )
+        try:
+            result = execute(ctx)
+            calc_ids = persist(ctx, result)
         except Exception as e:
             import traceback as _tb
             raise HTTPException(status_code=500, detail={
@@ -277,40 +312,6 @@ async def calculate(
         commissions = [c.model_dump() for c in result.commissions]
         ledger_dicts = [e.to_dict() for e in result.ledger]
 
-        # Split commissions by effective period, record one calculation per period
-        by_period: dict[str, list[dict[str, Any]]] = {}
-        for c_dict in commissions:
-            p = c_dict["period"]
-            by_period.setdefault(p, []).append(c_dict)
-
-        # Map payee_id → plan_id for per-plan persistence
-        payee_plan: dict[str, str] = {p.id: p.plan_id for p in payee_list}
-
-        calc_ids: dict[str, str] = {}
-        for period_key, comms in sorted(by_period.items()):
-            # Determine which plan this period's commission lines belong to
-            plan_for_period = list(plan_library.keys())[0]
-            for c_dict in comms:
-                ppid = payee_plan.get(c_dict["payee_id"])
-                if ppid and ppid in plan_library:
-                    plan_for_period = ppid
-                    break
-            calc_id = db.record_calculation(
-                plan_for_period,
-                period=period_key,
-                input_summary={"txn_count": len(txn_list), "payee_count": len(payee_list)},
-            )
-            db.save_commission_lines(calc_id, comms)
-            db.save_ledger_entries(calc_id, ledger_dicts)
-            calc_ids[period_key] = calc_id
-
-        # Persist transactions and link to all calculations in this run
-        txn_dicts = [t.model_dump() for t in txn_list]
-        db.save_transactions(txn_dicts)
-        all_txn_ids = [t.id for t in txn_list]
-        for cid in calc_ids.values():
-            db.link_transactions(cid, all_txn_ids)
-
         summary: dict[str, Decimal] = {}
         for c in result.commissions:
             summary[c.payee_id] = summary.get(c.payee_id, Decimal("0")) + c.commission_amount
@@ -320,8 +321,10 @@ async def calculate(
             "commissions": commissions,
             "ledger": ledger_dicts,
             "summary": {k: str(v) for k, v in summary.items()},
+            "draw_balances": {k: str(v) for k, v in result.draw_balances.items()},
             "effective_period": effective_period,
-            "locked_periods": sorted(locked_relevant) if locked_relevant else [],
+            "locked_periods": sorted(ctx.locked_relevant) if ctx.locked_relevant else [],
+            "using_saved_roster": using_saved_roster,
             "attainment": [
                 {
                     "payee_id": a.payee_id,
@@ -342,17 +345,27 @@ async def calculate(
 class PlanFromTextRequest(BaseModel):
     description: str
     plan_id: str | None = None
-    api_key: str
+    api_key: str | None = None
     base_url: str | None = None
 
 
 @v1.post("/plan-from-text")
-async def plan_from_text(req: PlanFromTextRequest) -> dict[str, Any]:
+async def plan_from_text(
+    req: PlanFromTextRequest, org: str = Depends(get_org),
+) -> dict[str, Any]:
     from icm_engine.ai.plan_author import generate_plan_from_text
     from icm_engine.exceptions import MissingAPIKeyError, PlanGenerationError
 
+    # Resolve API key: explicit request key > server-stored setting
+    resolved_key = req.api_key or _get_db(org).get_setting("anthropic_api_key")
+    if not resolved_key:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "No Anthropic API key configured. Set it in Settings or pass it with the request."},
+        )
+
     old_key = os.environ.get("ICM_LLM_API_KEY")
-    os.environ["ICM_LLM_API_KEY"] = req.api_key
+    os.environ["ICM_LLM_API_KEY"] = resolved_key
     try:
         plan = generate_plan_from_text(
             req.description, plan_id=req.plan_id or None, base_url=req.base_url,
@@ -424,15 +437,19 @@ def delete_plan(plan_id: str, org: str = Depends(get_org)) -> dict[str, str]:
 class PayeeSaveRequest(BaseModel):
     name: str
     quota: str = "0"
+    quotas: dict[str, str] | None = None  # per-window quota overrides
     plan_id: str = ""
     effective_from: str = ""
     effective_to: str | None = None
     email: str | None = None
     ramp_months: int | None = None
     ramp_schedule: str | None = None  # space-separated decimals
+    draw_amount: str | None = None
+    draw_recoverable: bool = False
     category_quotas: dict[str, str] | None = None
     manager_id: str = ""
     manager_override: str | None = None
+    team_id: str = ""
 
 
 @v1.get("/payees")
@@ -442,12 +459,10 @@ def list_payees_all(org: str = Depends(get_org)) -> list[dict[str, Any]]:
 
 @v1.get("/payees/{payee_id}")
 def get_payee(payee_id: str, org: str = Depends(get_org)) -> dict[str, Any]:
-    db = _get_db(org)
-    payees = db.list_payees()
-    for p in payees:
-        if p["id"] == payee_id:
-            return p
-    raise HTTPException(status_code=404, detail="Payee not found")
+    payee = _get_db(org).get_payee(payee_id)
+    if payee is None:
+        raise HTTPException(status_code=404, detail="Payee not found")
+    return payee
 
 
 @v1.put("/payees/{payee_id}")
@@ -458,14 +473,24 @@ def upsert_payee(payee_id: str, req: PayeeSaveRequest, org: str = Depends(get_or
         import json as _json
         schedule = [str(Decimal(v.strip())) for v in req.ramp_schedule.split() if v.strip()]
         ramp_json = _json.dumps({"months": req.ramp_months, "schedule": schedule})
+    draw_json = None
+    if req.draw_amount:
+        import json as _json
+        draw_json = _json.dumps({"amount": req.draw_amount, "recoverable": req.draw_recoverable})
     cat_json = None
     if req.category_quotas:
         import json as _json
         cat_json = _json.dumps(req.category_quotas)
+    quotas_json = "{}"
+    if req.quotas:
+        import json as _json
+        quotas_json = _json.dumps(req.quotas)
     db.save_payee(
         payee_id, req.name, req.quota, req.plan_id,
-        req.effective_from, req.effective_to, ramp_json, cat_json,
-        manager_id=req.manager_id, manager_override=req.manager_override,
+        req.effective_from, req.effective_to,
+        quotas=quotas_json, ramp=ramp_json, draw=draw_json, email=req.email,
+        category_quotas=cat_json,
+        manager_id=req.manager_id, manager_override=req.manager_override, team_id=req.team_id,
     )
     return {"status": "saved", "id": payee_id}
 
@@ -475,6 +500,65 @@ def delete_payee(payee_id: str, org: str = Depends(get_org)) -> dict[str, str]:
     if not _get_db(org).delete_payee(payee_id):
         raise HTTPException(status_code=404, detail="Payee not found")
     return {"status": "deleted"}
+
+
+class PayeeImportRequest(BaseModel):
+    replace: bool = False  # if True, wipe roster before import
+
+
+@v1.post("/payees/import")
+async def import_payees(
+    file: UploadFile = File(...),  # noqa: B008
+    replace: bool = Form(False),
+    org: str = Depends(get_org),
+) -> dict[str, Any]:
+    """Bulk import payees from a CSV or XLSX file. Merges by default; set replace=true to wipe first."""
+    from icm_engine.loader import load_payees
+    import tempfile as _tf
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail={"error": "File too large"})
+
+    ext = Path(file.filename or "").suffix or ".csv"
+    with _tf.NamedTemporaryFile(suffix=ext, delete=False) as tf:
+        tf.write(content)
+        tf.flush()
+        try:
+            payee_list, _ = load_payees(Path(tf.name))
+        except ValueError as e:
+            Path(tf.name).unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail={"error": "Invalid payee file", "detail": str(e)}) from e
+    Path(tf.name).unlink(missing_ok=True)
+
+    db = _get_db(org)
+
+    # Build rows from Payee models
+    import json as _json
+
+    rows: list[dict[str, Any]] = []
+    for p in payee_list:
+        quotas_raw = _json.dumps({k: str(v) for k, v in p.quotas.items()}) if p.quotas else "{}"
+        ramp_raw = _json.dumps(p.ramp.model_dump()) if p.ramp else None
+        draw_raw = _json.dumps(p.draw.model_dump()) if p.draw else None
+        cat_raw = _json.dumps({k: str(v) for k, v in p.category_quotas.items()}) if p.category_quotas else None
+        rows.append({
+            "id": p.id, "name": p.name, "quota": str(p.quota), "quotas": quotas_raw,
+            "plan_id": p.plan_id,
+            "effective_from": str(p.effective_from) if p.effective_from else "",
+            "effective_to": str(p.effective_to) if p.effective_to else None,
+            "ramp": ramp_raw, "draw": draw_raw, "email": p.email or None,
+            "category_quotas": cat_raw,
+            "manager_id": p.manager_id, "manager_override": str(p.manager_override) if p.manager_override else None,
+            "team_id": p.team_id,
+        })
+
+    if replace:
+        count = db.replace_all_payees(rows)
+    else:
+        count = db.save_payees_batch(rows)
+
+    return {"imported": len(payee_list), "total_in_roster": len(db.list_payees()), "replace": replace}
 
 
 # ------------------------------------------------------------------
@@ -588,6 +672,7 @@ def query_ledger(
 async def preview_file(
     file: UploadFile = File(...),  # noqa: B008
     type: str = "transactions",
+    org: str = Depends(get_org),
 ) -> dict[str, Any]:
     """Return detected headers and suggested column mappings for a file."""
     import csv
@@ -620,7 +705,7 @@ async def preview_file(
             headers = [h.strip() for h in next(reader)]
         except StopIteration:
             headers = []
-        rows = [dict(zip(headers, row, strict=False)) for row in list(reader)[:5]]
+        rows = list(reader)[:50]
 
     # Run fuzzy mapping on the detected headers
     mapping: dict[str, str] = {}

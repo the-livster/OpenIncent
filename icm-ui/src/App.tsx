@@ -2,10 +2,10 @@ import { useCallback, useState } from "react";
 
 import CalculatorWizard from "./components/CalculatorWizard";
 import DataModel from "./components/DataModel";
-import PayeeManager from "./components/PayeeManager";
 import Pipeline from "./components/Pipeline";
 import PlanGenerator from "./components/PlanGenerator";
 import PlanLibrary from "./components/PlanLibrary";
+import Roster from "./components/Roster";
 import Settings from "./components/Settings";
 
 type Tab = "pipeline" | "calculator" | "plans" | "ai" | "payees" | "data" | "settings";
@@ -54,7 +54,7 @@ export default function App() {
           <PlanLibrary onLoadPlan={handleLoadPlan} planToSave={planToSave} onSaved={handlePlanSaved} />
         )}
         {tab === "ai" && <PlanGenerator onPlanGenerated={setPlanToSave} />}
-        {tab === "payees" && <PayeeManager />}
+        {tab === "payees" && <Roster />}
         {tab === "data" && <DataModel />}
         {tab === "settings" && <Settings />}
       </main>

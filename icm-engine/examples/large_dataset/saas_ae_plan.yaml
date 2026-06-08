@@ -1,0 +1,31 @@
+# SaaS AE Commission Plan — tiered with accelerators
+plan_id: saas_ae_plan
+name: "SaaS AE Plan"
+period_type: monthly
+currency: USD
+
+# Tiered rates: higher attainment = higher commission rate
+# Also includes product-specific SPIFs
+rules:
+  - id: R-001
+    type: tiered_rate
+    description: "Core commission — tiers based on quota attainment"
+    tiers:
+      - threshold_pct: 0.0
+        rate: 0.05        # 5% on first 50% of quota
+      - threshold_pct: 0.5
+        rate: 0.08        # 8% on 50-100% of quota
+      - threshold_pct: 1.0
+        rate: 0.12        # 12% above 100% quota (accelerator)
+
+  - id: R-002
+    type: flat_rate
+    description: "Enterprise deal bonus"
+    filter: "product == 'Enterprise'"
+    rate: 0.02            # Extra 2% on Enterprise deals
+
+  - id: R-003
+    type: flat_rate
+    description: "Multi-year contract bonus"
+    filter: "deal_id in multi_year_deals"
+    rate: 0.01            # Extra 1% for multi-year deals

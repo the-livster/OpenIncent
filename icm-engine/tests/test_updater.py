@@ -101,10 +101,10 @@ class TestVerify:
         """Empty expected hash → passes (no hash check)."""
         assert _verify_sha256(b"data", "") is True
 
-    def test_verify_artifact_requires_both(self) -> None:
-        """With placeholder keys, verification passes."""
+    def test_verify_artifact_rejects_empty(self) -> None:
+        """With real keys active, missing hash/sig must be rejected."""
         data = b"test"
-        assert verify_artifact(data, "", "") is True
+        assert verify_artifact(data, "", "") is False
 
     def test_signature_fails_with_bad_key(self) -> None:
         """Tampered signature should fail when real keys are in use."""

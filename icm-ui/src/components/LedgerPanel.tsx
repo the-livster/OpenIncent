@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { LedgerEntry } from "../types";
+import { useDebounce } from "./useDebounce";
 
 interface Props {
   ledger: LedgerEntry[];
@@ -8,6 +9,8 @@ interface Props {
 export default function LedgerPanel({ ledger }: Props) {
   const [filterEvent, setFilterEvent] = useState("");
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search, 200);
+  const debouncedFilter = useDebounce(filterEvent, 200);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   const eventTypes = useMemo(
@@ -17,9 +20,9 @@ export default function LedgerPanel({ ledger }: Props) {
 
   const filtered = useMemo(() => {
     let result = ledger;
-    if (filterEvent) result = result.filter((e) => e.event_type === filterEvent);
-    if (search) {
-      const q = search.toLowerCase();
+    if (debouncedFilter) result = result.filter((e) => e.event_type === debouncedFilter);
+    if (debouncedSearch) {
+      const q = debouncedSearch.toLowerCase();
       result = result.filter(
         (e) =>
           e.human_readable.toLowerCase().includes(q) ||
@@ -28,7 +31,7 @@ export default function LedgerPanel({ ledger }: Props) {
       );
     }
     return result;
-  }, [ledger, filterEvent, search]);
+  }, [ledger, debouncedFilter, debouncedSearch]);
 
   // Group by transaction
   const grouped = useMemo(() => {

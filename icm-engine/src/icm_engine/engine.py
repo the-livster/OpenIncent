@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import enum
 from collections import defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any
 
+from icm_engine.filter_parser import compile_filter
 from icm_engine.ledger import LedgerEntry
 from icm_engine.models import (
     AcceleratorRule,
@@ -20,445 +19,6 @@ from icm_engine.models import (
     TieredRule,
     Transaction,
 )
-
-# ---------------------------------------------------------------------------
-# Filter expression parser & evaluator
-# ---------------------------------------------------------------------------
-
-_CANONICAL_FIELDS = frozenset({
-    "id", "payee_id", "deal_id", "period", "amount", "product", "close_date",
-})
-
-
-class TokenType(enum.Enum):
-    IDENT = enum.auto()
-    STRING = enum.auto()
-    NUMBER = enum.auto()
-    EQ = enum.auto()
-    NE = enum.auto()
-    GT = enum.auto()
-    GE = enum.auto()
-    LT = enum.auto()
-    LE = enum.auto()
-    IN = enum.auto()
-    LPAREN = enum.auto()
-    RPAREN = enum.auto()
-    LBRACKET = enum.auto()
-    RBRACKET = enum.auto()
-    COMMA = enum.auto()
-    AND = enum.auto()
-    OR = enum.auto()
-    EOF = enum.auto()
-
-
-TOKEN_MAP: dict[str, TokenType] = {
-    "==": TokenType.EQ,
-    "!=": TokenType.NE,
-    ">=": TokenType.GE,
-    "<=": TokenType.LE,
-    ">": TokenType.GT,
-    "<": TokenType.LT,
-    "in": TokenType.IN,
-    "and": TokenType.AND,
-    "or": TokenType.OR,
-    "(": TokenType.LPAREN,
-    ")": TokenType.RPAREN,
-    "[": TokenType.LBRACKET,
-    "]": TokenType.RBRACKET,
-    ",": TokenType.COMMA,
-}
-
-
-@dataclass
-class _Token:
-    type: TokenType
-    value: str
-    pos: int
-
-
-# ------------------------------------------------------------------
-# Field resolution
-# ------------------------------------------------------------------
-
-
-def _resolve_field(txn: Transaction, field: str) -> object:
-    """Resolve a filter field: canonical attribute first, then metadata, else None."""
-    if field in _CANONICAL_FIELDS:
-        return getattr(txn, field, None)
-    meta: dict[str, Any] = getattr(txn, "metadata", None) or {}
-    if field in meta:
-        return meta[field]
-    return None
-
-
-# ------------------------------------------------------------------
-# Type coercion
-# ------------------------------------------------------------------
-
-
-def _try_decimal(v: object) -> Decimal | None:
-    """Attempt to parse a value as Decimal. Returns None on failure."""
-    try:
-        return Decimal(str(v))
-    except Exception:
-        return None
-
-
-def _try_date(v: object) -> date | None:
-    """Attempt to parse a value as a date. Returns None on failure."""
-    if isinstance(v, date):
-        return v
-    try:
-        from datetime import datetime as _dt
-        s = str(v).strip()
-        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y"):
-            try:
-                return _dt.strptime(s, fmt).date()
-            except ValueError:
-                continue
-    except Exception:
-        pass
-    return None
-
-
-def _values_match(a: object, b: object) -> bool:
-    """Test equality with progressive type coercion.
-
-    Tries: Decimal equality → date equality → string equality.
-    """
-    da = _try_decimal(a)
-    db = _try_decimal(b)
-    if da is not None and db is not None:
-        return da == db
-    if _try_date(a) is not None and _try_date(b) is not None:
-        return _try_date(a) == _try_date(b)
-    return str(a) == str(b)
-
-
-# ------------------------------------------------------------------
-# AST nodes
-# ------------------------------------------------------------------
-
-
-class _AST(Protocol):
-    def eval(self, txn: Transaction) -> bool: ...
-
-
-@dataclass
-class _Comparison:
-    field: str
-    op: str
-    value: object
-
-    def eval(self, txn: Transaction) -> bool:
-        field_val = _resolve_field(txn, self.field)
-        if field_val is None:
-            return False  # missing field → never match
-
-        rhs = self.value
-
-        # Try numeric comparison first
-        fd = _try_decimal(field_val)
-        rd = _try_decimal(rhs)
-        if fd is not None and rd is not None:
-            if self.op == "==":
-                return fd == rd
-            if self.op == "!=":
-                return fd != rd
-            if self.op == ">":
-                return fd > rd
-            if self.op == "<":
-                return fd < rd
-            if self.op == ">=":
-                return fd >= rd
-            if self.op == "<=":
-                return fd <= rd
-            return False
-
-        # Try date comparison
-        f_date = _try_date(field_val)
-        r_date = _try_date(rhs)
-        if f_date is not None and r_date is not None:
-            if self.op == "==":
-                return f_date == r_date
-            if self.op == "!=":
-                return f_date != r_date
-            if self.op in (">", "<", ">=", "<="):
-                if self.op == ">":
-                    return f_date > r_date
-                if self.op == "<":
-                    return f_date < r_date
-                if self.op == ">=":
-                    return f_date >= r_date
-                if self.op == "<=":
-                    return f_date <= r_date
-            return False
-
-        # Fallback: string comparison (only for == / !=)
-        if self.op == "==":
-            return str(field_val) == str(rhs)
-        if self.op == "!=":
-            return str(field_val) != str(rhs)
-        return False
-
-
-@dataclass
-class _InExpr:
-    field: str
-    values: list[object]
-
-    def eval(self, txn: Transaction) -> bool:
-        field_val = _resolve_field(txn, self.field)
-        if field_val is None:
-            return False
-        for v in self.values:
-            if _values_match(field_val, v):
-                return True
-        return False
-
-
-@dataclass
-class _And:
-    left: _AST
-    right: _AST
-
-    def eval(self, txn: Transaction) -> bool:
-        return self.left.eval(txn) and self.right.eval(txn)
-
-
-@dataclass
-class _Or:
-    left: _AST
-    right: _AST
-
-    def eval(self, txn: Transaction) -> bool:
-        return self.left.eval(txn) or self.right.eval(txn)
-
-
-# ------------------------------------------------------------------
-# Tokenizer
-# ------------------------------------------------------------------
-
-
-def _tokenize(source: str) -> list[_Token]:
-    tokens: list[_Token] = []
-    i = 0
-    while i < len(source):
-        c = source[i]
-        if c in (" ", "\t", "\n"):
-            i += 1
-            continue
-        # Backtick-quoted field names: `Deal Type`
-        if c == "`":
-            j = i + 1
-            while j < len(source) and source[j] != "`":
-                j += 1
-            if j >= len(source):
-                raise ValueError(f"Unclosed backtick at position {i}")
-            tokens.append(_Token(TokenType.IDENT, source[i + 1 : j], i))
-            i = j + 1
-            continue
-        if source[i : i + 2] in ("==", "!=", ">=", "<="):
-            tokens.append(_Token(TOKEN_MAP[source[i : i + 2]], source[i : i + 2], i))
-            i += 2
-            continue
-        if c in "><()[]=,":
-            tokens.append(_Token(TOKEN_MAP[c], c, i))
-            i += 1
-            continue
-        if c == "'" or c == '"':
-            quote = c
-            j = i + 1
-            while j < len(source) and source[j] != quote:
-                j += 1
-            tokens.append(_Token(TokenType.STRING, source[i + 1 : j], i))
-            i = j + 1
-            continue
-        if c.isdigit():
-            j = i
-            while j < len(source) and (source[j].isdigit() or source[j] == "."):
-                j += 1
-            tokens.append(_Token(TokenType.NUMBER, source[i:j], i))
-            i = j
-            continue
-        if c.isalpha() or c == "_":
-            j = i
-            while j < len(source) and (source[j].isalnum() or source[j] == "_"):
-                j += 1
-            word = source[i:j].lower()
-            ttype = TOKEN_MAP.get(word, TokenType.IDENT)
-            tokens.append(_Token(ttype, source[i:j], i))
-            i = j
-            continue
-        raise ValueError(f"Unexpected character '{c}' at position {i}")
-    tokens.append(_Token(TokenType.EOF, "", len(source)))
-    return tokens
-
-
-# ------------------------------------------------------------------
-# Parser
-# ------------------------------------------------------------------
-
-
-class _Parser:
-    def __init__(self, tokens: list[_Token]) -> None:
-        self.tokens = tokens
-        self.pos = 0
-
-    @property
-    def _cur(self) -> _Token:
-        return self.tokens[self.pos]
-
-    def _expect(self, ttype: TokenType) -> _Token:
-        tok = self._cur
-        if tok.type != ttype:
-            raise ValueError(f"Expected {ttype.name} but got {tok.type.name} at {tok.pos}")
-        self.pos += 1
-        return tok
-
-    def parse(self) -> _AST:
-        node = self._or_expr()
-        self._expect(TokenType.EOF)
-        return node
-
-    def _or_expr(self) -> _AST:
-        left: _AST = self._and_expr()
-        while self._cur.type == TokenType.OR:
-            self.pos += 1
-            left = _Or(left, self._and_expr())
-        return left
-
-    def _and_expr(self) -> _AST:
-        left: _AST = self._atom()
-        while self._cur.type == TokenType.AND:
-            self.pos += 1
-            left = _And(left, self._atom())
-        return left
-
-    def _atom(self) -> _AST:
-        if self._cur.type == TokenType.LPAREN:
-            self.pos += 1
-            node = self._or_expr()
-            self._expect(TokenType.RPAREN)
-            return node
-        return self._comparison()
-
-    def _comparison(self) -> _AST:
-        field = self._expect(TokenType.IDENT).value
-        tok = self._cur
-        if tok.type == TokenType.IN:
-            self.pos += 1
-            return self._in_list(field)
-        if tok.type in (
-            TokenType.EQ, TokenType.NE, TokenType.GT,
-            TokenType.GE, TokenType.LT, TokenType.LE,
-        ):
-            self.pos += 1
-            val_tok = self._cur
-            if val_tok.type == TokenType.NUMBER:
-                self.pos += 1
-                return _Comparison(field, tok.value, Decimal(val_tok.value))
-            val = self._expect(TokenType.STRING).value
-            return _Comparison(field, tok.value, val)
-        raise ValueError(f"Expected operator at {tok.pos}, got {tok.type.name}")
-
-    def _in_list(self, field: str) -> _InExpr:
-        self._expect(TokenType.LBRACKET)
-        values: list[object] = []
-        while True:
-            val_tok = self._cur
-            if val_tok.type == TokenType.STRING:
-                values.append(val_tok.value)
-            elif val_tok.type == TokenType.NUMBER:
-                values.append(Decimal(val_tok.value))
-            else:
-                raise ValueError(f"Expected value in 'in' list at {val_tok.pos}")
-            self.pos += 1
-            if self._cur.type == TokenType.COMMA:
-                self.pos += 1
-                continue
-            break
-        self._expect(TokenType.RBRACKET)
-        return _InExpr(field, values)
-
-
-# ------------------------------------------------------------------
-# Compile
-# ------------------------------------------------------------------
-
-
-def compile_filter(source: str | None) -> Callable[[Transaction], bool]:
-    """Compile a filter expression string into a callable predicate.
-
-    Returns a predicate that always returns True if source is None or blank.
-    """
-    if source is None or source.strip() == "":
-        return lambda txn: True
-    tokens = _tokenize(source)
-    ast: _AST = _Parser(tokens).parse()
-    return ast.eval
-
-
-# ------------------------------------------------------------------
-# Field usage check (typo guard)
-# ------------------------------------------------------------------
-
-
-def _collect_filter_fields(ast: _AST) -> set[str]:
-    """Walk an AST and return the set of field names referenced in filters."""
-    fields: set[str] = set()
-    _walk_fields(ast, fields)
-    return fields
-
-
-def _walk_fields(node: object, fields: set[str]) -> None:
-    if isinstance(node, _Comparison):
-        fields.add(node.field)
-    elif isinstance(node, _InExpr):
-        fields.add(node.field)
-    elif isinstance(node, (_And, _Or)):
-        _walk_fields(node.left, fields)
-        _walk_fields(node.right, fields)
-
-
-def check_filter_fields(
-    filter_source: str | None,
-    transactions: list[Transaction],
-) -> list[str]:
-    """Return filter fields that appear in no transaction (canonical or metadata).
-
-    Used as a typo guard: if a filter references a field that exists nowhere,
-    it will silently match nothing. This returns the list of such fields so
-    the caller can warn the user.
-
-    Args:
-        filter_source: The raw filter expression string.
-        transactions: The loaded transactions to check against.
-
-    Returns:
-        List of field names that are neither canonical nor present in any
-        transaction's metadata.
-    """
-    if not filter_source or not transactions:
-        return []
-    try:
-        tokens = _tokenize(filter_source)
-        ast = _Parser(tokens).parse()
-    except ValueError:
-        return []  # don't interfere with parse errors
-    refs = _collect_filter_fields(ast)
-    unused: list[str] = []
-    for f in sorted(refs):
-        if f in _CANONICAL_FIELDS:
-            continue
-        found = any(
-            isinstance(getattr(t, "metadata", None), dict) and f in (t.metadata or {})
-            for t in transactions
-        )
-        if not found:
-            unused.append(f)
-    return unused
-
 
 # ---------------------------------------------------------------------------
 # Engine
@@ -577,6 +137,7 @@ class _CreditUnit:
     product: str | None
     close_date: date | None
     metadata: dict[str, Any]
+    credited_margin: Decimal | None = None  # margin after splits; None if no margin data
 
 
 def _resolve_credits(transactions: list[Transaction]) -> list[_CreditUnit]:
@@ -586,6 +147,7 @@ def _resolve_credits(transactions: list[Transaction]) -> list[_CreditUnit]:
         credits = txn.credits
         if not credits:
             credits = [Credit(payee_id=txn.payee_id, split_pct=Decimal("1"), kind="split")]
+        mv = txn.margin_value
         for c in credits:
             units.append(_CreditUnit(
                 transaction_id=txn.id,
@@ -597,6 +159,7 @@ def _resolve_credits(transactions: list[Transaction]) -> list[_CreditUnit]:
                 product=txn.product,
                 close_date=txn.close_date,
                 metadata=txn.metadata,
+                credited_margin=(mv * c.split_pct) if mv is not None else None,
             ))
     return units
 
@@ -642,6 +205,7 @@ def _resolve_hierarchy_credits(
                 break  # cycle detected
 
             manager_amount = cu.credited_amount * override
+            manager_margin = (cu.credited_margin * override) if cu.credited_margin is not None else None
             result.append(_CreditUnit(
                 transaction_id=cu.transaction_id,
                 payee_id=manager_id,
@@ -652,6 +216,7 @@ def _resolve_hierarchy_credits(
                 product=cu.product,
                 close_date=cu.close_date,
                 metadata={**cu.metadata, "_hierarchy_depth": str(depth + 1)},
+                credited_margin=manager_margin,
             ))
 
             seen.add(manager_id)
@@ -770,7 +335,11 @@ def _compute_attainment(
 
 
 def _make_synthetic_transactions(credits: list[_CreditUnit]) -> list[Transaction]:
-    """Convert credit units into synthetic Transactions for rule evaluation."""
+    """Convert credit units into synthetic Transactions for rule evaluation.
+
+    Carries both amount and margin onto the synthetic transaction so that
+    margin-based rules can use margin as the commission base.
+    """
     return [
         Transaction(
             id=cu.transaction_id,
@@ -780,6 +349,7 @@ def _make_synthetic_transactions(credits: list[_CreditUnit]) -> list[Transaction
             product=cu.product,
             close_date=cu.close_date,
             metadata={**cu.metadata, "_credit_split_pct": str(cu.split_pct), "_credit_kind": cu.kind},
+            margin=cu.credited_margin,
         )
         for cu in credits
     ]
@@ -1613,6 +1183,7 @@ class CommissionEngine:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
         ledger: list[LedgerEntry] = []
+        use_margin = rule.base == "margin"
         for txn in transactions:
             if not predicate(txn):
                 ledger.append(
@@ -1628,18 +1199,52 @@ class CommissionEngine:
                     )
                 )
                 continue
-            commission_amount = rule.rate * txn.amount
+
+            base_amount: Decimal
+            if use_margin:
+                if txn.margin is None:
+                    # No margin data for a margin-based rule: skip this row and
+                    # record it in the ledger rather than aborting the whole run.
+                    ledger.append(
+                        LedgerEntry(
+                            transaction_id=txn.id,
+                            payee_id=txn.payee_id,
+                            rule_id=rule.id,
+                            event_type="rule_skipped",
+                            inputs={"reason": "no_margin_data"},
+                            human_readable=(
+                                f"Transaction {txn.id} skipped by rule {rule.id}: "
+                                f"base='margin' but no bill_rate/pay_rate/units or margin override"
+                            ),
+                        )
+                    )
+                    continue
+                base_amount = txn.margin
+            else:
+                base_amount = txn.amount
+
+            commission_amount = rule.rate * base_amount
             window = _window_key(txn.period, period_type)
+
+            notes: str
+            hr: str
+            if use_margin:
+                notes = f"Margin flat rate {rule.rate} on margin {base_amount}"
+                hr = f"Flat rate on margin: {base_amount} * {rule.rate} = {commission_amount}"
+            else:
+                notes = f"Flat rate {rule.rate} on {txn.amount}"
+                hr = f"Flat rate: {txn.amount} * {rule.rate} = {commission_amount}"
+
             results.append(
                 Commission(
                     transaction_id=txn.id,
                     payee_id=txn.payee_id,
                     period=window,
                     rule_id=rule.id,
-                    base_amount=txn.amount,
+                    base_amount=base_amount,
                     rate=rule.rate,
                     commission_amount=commission_amount,
-                    notes=f"Flat rate {rule.rate} on {txn.amount}",
+                    notes=notes,
                 )
             )
             ledger.append(
@@ -1648,14 +1253,10 @@ class CommissionEngine:
                     payee_id=txn.payee_id,
                     rule_id=rule.id,
                     event_type="commission_computed",
-                    inputs={
-                        "amount": str(txn.amount),
-                        "rate": str(rule.rate),
-                    },
+                    inputs={"amount": str(base_amount), "rate": str(rule.rate)}
+                           | ({"base": "margin"} if use_margin else {}),
                     outputs={"commission_amount": str(commission_amount)},
-                    human_readable=(
-                        f"Flat rate: {txn.amount} * {rule.rate} = {commission_amount}"
-                    ),
+                    human_readable=hr,
                 )
             )
         return results, ledger
@@ -1672,6 +1273,12 @@ class CommissionEngine:
         fractions: dict[tuple[str, str], Decimal] | None = None,
         quota_overrides: dict[tuple[str, str], Decimal] | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
+        if rule.base == "margin":
+            raise NotImplementedError(
+                f"TieredRule {rule.id!r}: base='margin' is not yet supported for tiered rules. "
+                f"Margin-based tiered commission requires margin-attainment tracking, "
+                f"which is not implemented. Use a FlatRateRule with base='margin' instead."
+            )
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
         ledger: list[LedgerEntry] = []
@@ -1911,6 +1518,12 @@ class CommissionEngine:
         fractions: dict[tuple[str, str], Decimal] | None = None,
         quota_overrides: dict[tuple[str, str], Decimal] | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
+        if rule.base == "margin":
+            raise NotImplementedError(
+                f"AcceleratorRule {rule.id!r}: base='margin' is not yet supported for accelerator rules. "
+                f"Margin-based accelerator commission requires margin-attainment tracking, "
+                f"which is not implemented. Use a FlatRateRule with base='margin' instead."
+            )
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
         ledger: list[LedgerEntry] = []

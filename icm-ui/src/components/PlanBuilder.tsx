@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { savePlan } from "../api";
 
-interface Rule {
+export interface PlanBuilderRule {
   type: string;
   id: string;
   filter?: string;
@@ -11,33 +11,33 @@ interface Rule {
   multiplier?: string;
 }
 
-interface PlanData {
+export interface PlanBuilderPlanData {
   plan_id: string;
   name: string;
   period_type: string;
   currency: string;
-  rules: Rule[];
+  rules: PlanBuilderRule[];
   [key: string]: unknown;
 }
 
 interface Props {
-  plan: PlanData;
+  plan: PlanBuilderPlanData;
   onClose: () => void;
   onUse?: (yaml: string) => void;
 }
 
 export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props) {
-  const [plan, setPlan] = useState<PlanData>(structuredClone(initialPlan));
+  const [plan, setPlan] = useState<PlanBuilderPlanData>(structuredClone(initialPlan));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
 
-  const updatePlan = useCallback((fn: (p: PlanData) => PlanData) => {
+  const updatePlan = useCallback((fn: (p: PlanBuilderPlanData) => PlanBuilderPlanData) => {
     setPlan(prev => fn(structuredClone(prev)));
     setSaved(false);
   }, []);
 
-  const updateRule = useCallback((idx: number, fn: (r: Rule) => Rule) => {
+  const updateRule = useCallback((idx: number, fn: (r: PlanBuilderRule) => PlanBuilderRule) => {
     updatePlan(p => {
       p.rules[idx] = fn(structuredClone(p.rules[idx]));
       return p;
@@ -358,7 +358,7 @@ function SliderField({ label, value, min, max, step, unit, onChange }: {
 // YAML generator (client-side mirror of server serialization)
 // ------------------------------------------------------------------
 
-function generateYaml(plan: PlanData): string {
+function generateYaml(plan: PlanBuilderPlanData): string {
   const rules = plan.rules.map(r => {
     const base: Record<string, unknown> = { type: r.type, id: r.id };
     if (r.filter) base.filter = r.filter;

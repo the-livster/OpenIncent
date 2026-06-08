@@ -80,6 +80,24 @@ class Transaction(BaseModel):
     close_date: date | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     credits: list[Credit] | None = None
+    # Margin-based commission (contract/temp staffing desks)
+    bill_rate: Decimal | None = None
+    pay_rate: Decimal | None = None
+    units: Decimal = Decimal("1")
+    margin: Decimal | None = None  # direct GP override
+
+    @property
+    def margin_value(self) -> Decimal | None:
+        """Gross profit used as commission base for margin-based plans.
+
+        Priority: explicit `margin` field → computed (bill_rate - pay_rate) × units.
+        Returns None when no margin data is present.
+        """
+        if self.margin is not None:
+            return self.margin
+        if self.bill_rate is not None and self.pay_rate is not None:
+            return (self.bill_rate - self.pay_rate) * self.units
+        return None
 
     @model_validator(mode="before")
     @classmethod
@@ -280,6 +298,7 @@ class FlatRateRule(BaseModel):
     cap: Decimal | None = Field(default=None, ge=Decimal("0"))
     min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
     quota_category: str | None = None
+    base: Literal["amount", "margin"] = "amount"
 
 
 class TieredRule(BaseModel):
@@ -290,6 +309,7 @@ class TieredRule(BaseModel):
     cap: Decimal | None = Field(default=None, ge=Decimal("0"))
     min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
     quota_category: str | None = None
+    base: Literal["amount", "margin"] = "amount"
 
     @model_validator(mode="after")
     def _check_tiers_ascending(self) -> TieredRule:
@@ -313,6 +333,7 @@ class AcceleratorRule(BaseModel):
     cap: Decimal | None = Field(default=None, ge=Decimal("0"))
     min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
     quota_category: str | None = None
+    base: Literal["amount", "margin"] = "amount"
 
 
 Rule = Annotated[

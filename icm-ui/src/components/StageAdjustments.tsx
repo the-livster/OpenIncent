@@ -1,4 +1,5 @@
 import type { CalculateResponse, Commission } from "../types";
+import { Th, Td } from "./Table";
 
 interface Props { result: CalculateResponse; onNext: () => void; onBack: () => void; }
 
@@ -6,10 +7,10 @@ const ADJ_RULES = ["payout_cap", "draw", "mbo", "manual_adjustment"];
 
 export default function StageAdjustments({ result, onNext, onBack }: Props) {
   const commissions = result.commissions || [];
-  const drawBalances = (result as Record<string, unknown>).draw_balances as Record<string, string> | undefined;
+  const drawBalances = result.draw_balances;
 
   // Find true_up entries in ledger
-  const ledger = (result as Record<string, unknown>).ledger as { event_type: string; payee_id: string; human_readable: string; inputs?: Record<string, string>; outputs?: Record<string, string> }[] | undefined;
+  const ledger = result.ledger;
   const trueUps = (ledger || []).filter(e => e.event_type === "true_up");
 
   // Group adjustment commissions by type
@@ -17,9 +18,7 @@ export default function StageAdjustments({ result, onNext, onBack }: Props) {
   for (const c of commissions) {
     if (ADJ_RULES.includes(c.rule_id)) {
       (byType[c.rule_id] ??= []).push(c);
-    }
-  }
-
+}
   const labels: Record<string, string> = {
     payout_cap: "Plan Payout Cap",
     draw: "Draw / Guarantee",
@@ -29,7 +28,7 @@ export default function StageAdjustments({ result, onNext, onBack }: Props) {
 
   return (
     <div className="max-w-4xl space-y-4">
-      <h1 className="text-lg font-bold text-zinc-800">7. Payout Adjustments</h1>
+      <h1 className="text-lg font-bold text-zinc-800">8. Payout Adjustments</h1>
       <p className="text-sm text-zinc-500">Non-commission lines that affect the final payout: caps, draws, MBOs, true-ups, and manual adjustments.</p>
 
       {Object.entries(byType).map(([ruleId, lines]) => {
@@ -88,5 +87,4 @@ export default function StageAdjustments({ result, onNext, onBack }: Props) {
     </div>
   );
 }
-function Th({ children }: { children: React.ReactNode }) { return <th className="px-3 py-2 text-left font-medium text-zinc-500 whitespace-nowrap">{children}</th>; }
-function Td({ children, mono, className }: { children: React.ReactNode; mono?: boolean; className?: string }) { return <td className={`px-3 py-1.5 whitespace-nowrap ${mono ? "font-mono text-zinc-600" : "text-zinc-700"} ${className || ""}`}>{children}</td>; }
+}

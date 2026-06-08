@@ -5,11 +5,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from icm_engine.engine import (
-    CommissionEngine,
-    check_filter_fields,
-    compile_filter,
-)
+from icm_engine.engine import CommissionEngine
+from icm_engine.filter_parser import check_filter_fields, compile_filter
 from icm_engine.models import (
     AcceleratorRule,
     FlatRateRule,
@@ -168,13 +165,19 @@ class TestFilterParser:
         t = _txn(amount=Decimal("1000"), metadata={"amount": "500"})
         assert not pred(t)  # canonical amount (1000) != 500
 
-    # -- missing field → always False -----------------------------------
+    # -- missing field semantics ----------------------------------------
 
-    def test_missing_field_eq_always_false(self) -> None:
-        """Field absent from both canonical and metadata → False even for ==."""
-        pred = compile_filter('status != "void"')
+    def test_missing_field_ne_is_true(self) -> None:
+        """A field absent from canonical fields and metadata is 'not equal to'
+        any concrete value: != matches (True); ==, ordering, and 'in' do not.
+
+        Previously != also returned False, which silently dropped payable rows
+        whose field was blank (e.g. `product != "Returns"` excluding no-product
+        deals)."""
         t = _txn(metadata={"region": "EMEA"})  # no status field
-        assert not pred(t)
+        assert compile_filter('status != "void"')(t)
+        assert not compile_filter('status == "void"')(t)
+        assert not compile_filter('status > "void"')(t)
 
     def test_missing_field_in_always_false(self) -> None:
         """Missing field in 'in' → False."""

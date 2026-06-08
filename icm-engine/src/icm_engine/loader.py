@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 import yaml
 
-from icm_engine.models import Payee, Plan, RampSchedule, Transaction
+from icm_engine.models import Draw, Payee, Plan, RampSchedule, Transaction
 
 logger = logging.getLogger(__name__)
 
@@ -66,29 +66,61 @@ def _load_transactions_csv(path: Path) -> list[Transaction]:
             raise ValueError(f"CSV file '{path}' has no header row")
         for row in reader:
             rows.append(row)
+    if not rows:
+        return []
+
+    # Normalize CSV headers: lowercase, spaces→underscores, strip parens
+    remap = {k: _norm(k) for k in rows[0]}
+    rows = [{remap.get(k, k): v for k, v in r.items()} for r in rows]
+
+    # Build alias reverse-lookup so "hours" → units, "gp" → margin, etc.
+    from icm_engine.mapping import _FIELD_ALIASES
+    _canonical_aliases: dict[str, list[str]] = {
+        canonical: [_norm(a) for a in aliases]
+        for canonical, aliases in _FIELD_ALIASES.items()
+    }
+
+    def _get_field(row: dict[str, str], canonical: str) -> str:
+        """Look up a field by canonical name, also checking normalized aliases."""
+        val = row.get(canonical)
+        if val is not None:
+            return val.strip()
+        for alias in _canonical_aliases.get(canonical, []):
+            val = row.get(alias)
+            if val is not None:
+                return val.strip()
+        return ""
 
     transactions: list[Transaction] = []
-    known = {"id", "payee_id", "deal_id", "period", "amount", "product", "close_date"}
+    known = {"id", "payee_id", "deal_id", "period", "amount", "product", "close_date",
+             "bill_rate", "pay_rate", "units", "margin"}
     for i, row in enumerate(rows, start=2):
         meta = {k: v for k, v in row.items() if k and k not in known}
         try:
-            product = (row.get("product") or "").strip() or None
-            deal_id = (row.get("deal_id") or "").strip()
-            period = (row.get("period") or "").strip()
-            close_date_str = (row.get("close_date") or "").strip()
-            # Auto-generate id if missing
-            txn_id = (row.get("id") or "").strip()
+            product = (_get_field(row, "product") or None) or None
+            deal_id = _get_field(row, "deal_id")
+            period = _get_field(row, "period")
+            close_date_str = _get_field(row, "close_date")
+            txn_id = _get_field(row, "id")
             if not txn_id:
                 txn_id = f"T{i - 1:03d}"
+            bill_raw = _get_field(row, "bill_rate")
+            pay_raw = _get_field(row, "pay_rate")
+            units_raw = _get_field(row, "units")
+            margin_raw = _get_field(row, "margin")
             t = Transaction(
                 id=txn_id,
-                payee_id=row.get("payee_id", "").strip(),
+                payee_id=_get_field(row, "payee_id"),
                 deal_id=deal_id,
                 period=period,
-                amount=Decimal(row.get("amount", "0").strip() or "0"),
+                amount=Decimal(_get_field(row, "amount") or "0"),
                 product=product,
                 close_date=_parse_date(close_date_str) if close_date_str else None,
                 metadata=meta,
+                bill_rate=Decimal(bill_raw) if bill_raw else None,
+                pay_rate=Decimal(pay_raw) if pay_raw else None,
+                units=Decimal(units_raw) if units_raw else Decimal("1"),
+                margin=Decimal(margin_raw) if margin_raw else None,
             )
             transactions.append(t)
         except Exception as e:
@@ -139,11 +171,15 @@ def _load_payees_csv(path: Path) -> list[Payee]:
                             "quota": Decimal("0"),
                             "quotas": {},
                             "plan_id": row["plan_id"].strip(),
-                            "effective_from": _parse_date(row["effective_from"].strip()),
+                            "effective_from": _parse_date(ef_from) if (ef_from := row["effective_from"].strip()) else None,
                             "effective_to": _parse_date(effective_to_raw) if effective_to_raw else None,
+                            "email": (row.get("email") or "").strip() or None,
                             "ramp": _parse_ramp(row),
+                            "draw": _parse_draw(row),
+                            "category_quotas": _parse_category_quotas(row),
                             "manager_id": (row.get("manager_id") or "").strip(),
                             "manager_override": _parse_optional_decimal(row.get("manager_override")),
+                            "team_id": (row.get("team_id") or "").strip(),
                         }
                     if period:
                         by_id[pid]["quotas"][period] = quota_val
@@ -156,17 +192,22 @@ def _load_payees_csv(path: Path) -> list[Payee]:
             for i, row in enumerate(reader, start=2):
                 try:
                     effective_to_raw = (row.get("effective_to") or "").strip()
+                    ef_from_raw = row["effective_from"].strip()
                     payees.append(
                         Payee(
                             id=row["id"].strip(),
                             name=row["name"].strip(),
                             quota=Decimal(row["quota"].strip()),
                             plan_id=row["plan_id"].strip(),
-                            effective_from=_parse_date(row["effective_from"].strip()),
+                            effective_from=_parse_date(ef_from_raw) if ef_from_raw else None,
                             effective_to=_parse_date(effective_to_raw) if effective_to_raw else None,
+                            email=(row.get("email") or "").strip() or None,
                             ramp=_parse_ramp(row),
+                            draw=_parse_draw(row),
+                            category_quotas=_parse_category_quotas(row),
                             manager_id=(row.get("manager_id") or "").strip(),
                             manager_override=_parse_optional_decimal(row.get("manager_override")),
+                            team_id=(row.get("team_id") or "").strip(),
                         )
                     )
                 except Exception as e:
@@ -282,6 +323,9 @@ def _parse_optional_decimal(raw: object) -> Decimal | None:
 
 
 def _parse_date(s: str) -> date:
+    if not s or not s.strip():
+        raise ValueError(f"Cannot parse empty date")
+    s = s.strip()
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y"):
         try:
             return datetime.strptime(s, fmt).date()
@@ -304,6 +348,25 @@ def _parse_ramp(row: dict[str, str]) -> RampSchedule | None:
     months = int(months_raw)
     schedule = [Decimal(v) for v in schedule_raw.split()]
     return RampSchedule(months=months, schedule=schedule)
+
+
+def _parse_draw(row: dict[str, str]) -> Draw | None:
+    """Parse draw_amount and draw_recoverable columns into a Draw."""
+    amount_raw = (row.get("draw_amount") or "").strip()
+    if not amount_raw:
+        return None
+    recoverable_raw = (row.get("draw_recoverable") or "").strip().lower()
+    recoverable = recoverable_raw in ("true", "1", "yes", "y", "t", "on")
+    return Draw(amount=Decimal(amount_raw), recoverable=recoverable)
+
+
+def _parse_category_quotas(row: dict[str, str]) -> dict[str, Decimal]:
+    """Parse category_quotas JSON column."""
+    raw = (row.get("category_quotas") or "").strip()
+    if not raw or raw == "{}":
+        return {}
+    import json as _json
+    return {k: Decimal(str(v)) for k, v in _json.loads(raw).items()}
 
 
 # ------------------------------------------------------------------
@@ -374,3 +437,8 @@ def load_mbos(path: str | Path) -> list[Any]:
         except Exception as e:
             raise ValueError(f"Row {i} in '{path}': {e}") from e
     return mbos
+
+
+def _norm(h: str) -> str:
+    """Normalize a CSV header: lowercase, spaces→underscores, strip parens."""
+    return h.strip().lower().replace(" ", "_").replace("(", "").replace(")", "")

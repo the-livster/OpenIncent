@@ -30,13 +30,12 @@ export interface CalculateResponse {
   draw_balances?: Record<string, string>;
   effective_period?: string;
   locked_periods?: string[];
-  [key: string]: unknown;
 }
 
 export interface PlanFromTextRequest {
   description: string;
   plan_id?: string;
-  api_key: string;
+  api_key?: string;
 }
 
 export interface PlanFromTextResponse {
@@ -62,6 +61,21 @@ export interface SavedPlan {
   yaml_content: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface Payee {
+  id: string;
+  name: string;
+  quota: string;
+  plan_id: string;
+  effective_from: string;
+  effective_to: string | null;
+  email: string | null;
+  ramp: string | null;
+  category_quotas: string;
+  manager_id: string;
+  manager_override: string | null;
+  team_id: string;
 }
 
 // ------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import type {
   CalculateResponse,
+  Payee,
   PlanFromTextRequest,
   PlanFromTextResponse,
   SavedPlan,
@@ -16,58 +17,64 @@ function v1(path: string): string {
   return `${getBase()}/v1${path}`;
 }
 
-export async function calculate(args: {
-  plan?: File;
-  transactions: File;
-  payees: File;
-}): Promise<CalculateResponse> {
+export async function calculate(
+  args: { plan?: File; transactions: File; payees?: File },
+  signal?: AbortSignal,
+): Promise<CalculateResponse> {
   const form = new FormData();
   if (args.plan) {
     form.append("plan", args.plan);
   }
-  form.append("payees", args.payees);
+  if (args.payees) {
+    form.append("payees", args.payees);
+  }
+  form.append("transactions", args.transactions);
 
-  const res = await fetch(v1("/calculate"), { method: "POST", body: form });
+  const res = await fetch(v1("/calculate"), { method: "POST", body: form, signal });
 
   if (!res.ok) {
     const text = await res.text();
+    let parsed: Record<string, unknown>;
     try {
-      const err = JSON.parse(text);
-      const detail = err.detail;
-      const msg = detail?.traceback
-        ? `${detail.detail}\n\n${detail.traceback}`
-        : detail?.detail ?? detail?.error ?? JSON.stringify(detail) ?? "Calculation failed";
-      throw new Error(String(msg));
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("Server error")) throw e;
+      parsed = JSON.parse(text);
+    } catch {
       throw new Error(`Server error (${res.status}): ${text.slice(0, 500)}`);
     }
+    const detail = parsed.detail as Record<string, unknown> | undefined;
+    const msg = detail?.traceback
+      ? `${detail.detail}\n\n${detail.traceback}`
+      : (detail?.detail as string) ?? (detail?.error as string) ?? JSON.stringify(detail) ?? "Calculation failed";
+    throw new Error(String(msg));
   }
   return res.json();
 }
 
-export async function generatePlan(req: PlanFromTextRequest): Promise<PlanFromTextResponse> {
+export async function generatePlan(
+  req: PlanFromTextRequest, signal?: AbortSignal,
+): Promise<PlanFromTextResponse> {
   const res = await fetch(v1("/plan-from-text"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
+    signal,
   });
   if (!res.ok) {
     const text = await res.text();
+    let parsed: Record<string, unknown>;
     try {
-      const err = JSON.parse(text);
-      throw new Error(String(err.detail?.detail ?? err.detail?.error ?? "Plan generation failed"));
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("Server error")) throw e;
+      parsed = JSON.parse(text);
+    } catch {
       throw new Error(`Server error (${res.status}): ${text.slice(0, 500)}`);
     }
+    const detail = parsed.detail as Record<string, unknown> | undefined;
+    throw new Error(String(detail?.detail ?? detail?.error ?? "Plan generation failed"));
   }
   return res.json();
 }
 
-export async function healthCheck(): Promise<boolean> {
+export async function healthCheck(signal?: AbortSignal): Promise<boolean> {
   try {
-    const res = await fetch(`${getBase()}/health`);
+    const res = await fetch(`${getBase()}/health`, { signal });
     return res.ok;
   } catch {
     return false;
@@ -78,50 +85,55 @@ export async function healthCheck(): Promise<boolean> {
 // Settings
 // ------------------------------------------------------------------
 
-export async function getSetting(key: string): Promise<string | null> {
-  const res = await fetch(v1(`/settings/${encodeURIComponent(key)}`));
+export async function getSetting(key: string, signal?: AbortSignal): Promise<string | null> {
+  const res = await fetch(v1(`/settings/${encodeURIComponent(key)}`), { signal });
   if (!res.ok) return null;
   const data = await res.json();
   return data.value ?? null;
 }
 
-export async function setSetting(key: string, value: string): Promise<void> {
-  await fetch(v1(`/settings/${encodeURIComponent(key)}`), {
+export async function setSetting(key: string, value: string, signal?: AbortSignal): Promise<void> {
+  const res = await fetch(v1(`/settings/${encodeURIComponent(key)}`), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ value }),
+    signal,
   });
+  if (!res.ok) throw new Error(`Failed to save setting "${key}" (${res.status})`);
 }
 
-export async function deleteSetting(key: string): Promise<void> {
-  await fetch(v1(`/settings/${encodeURIComponent(key)}`), { method: "DELETE" });
+export async function deleteSetting(key: string, signal?: AbortSignal): Promise<void> {
+  const res = await fetch(v1(`/settings/${encodeURIComponent(key)}`), { method: "DELETE", signal });
+  if (!res.ok) throw new Error(`Failed to delete setting "${key}" (${res.status})`);
 }
 
 // ------------------------------------------------------------------
 // Plans
 // ------------------------------------------------------------------
 
-export async function listPlans(): Promise<SavedPlan[]> {
-  const res = await fetch(v1("/plans"));
+export async function listPlans(signal?: AbortSignal): Promise<SavedPlan[]> {
+  const res = await fetch(v1("/plans"), { signal });
   if (!res.ok) return [];
   return res.json();
 }
 
 export async function savePlan(
   name: string, yaml_content: string, plan_id?: string, description?: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const res = await fetch(v1("/plans"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, yaml_content, plan_id, description }),
+    signal,
   });
   if (!res.ok) throw new Error("Failed to save plan");
   const data = await res.json();
   return data.id;
 }
 
-export async function deletePlan(plan_id: string): Promise<void> {
-  const res = await fetch(v1(`/plans/${encodeURIComponent(plan_id)}`), { method: "DELETE" });
+export async function deletePlan(plan_id: string, signal?: AbortSignal): Promise<void> {
+  const res = await fetch(v1(`/plans/${encodeURIComponent(plan_id)}`), { method: "DELETE", signal });
   if (!res.ok) throw new Error("Failed to delete plan");
 }
 
@@ -132,14 +144,14 @@ export async function deletePlan(plan_id: string): Promise<void> {
 export async function exportStatements(args: {
   plan?: File;
   transactions: File;
-  payees: File;
+  payees?: File;
   formats?: string;
   period?: string;
   emit_zero?: boolean;
   plan_text?: string;
   txn_text?: string;
   payee_text?: string;
-}): Promise<string | undefined> {
+}, signal?: AbortSignal): Promise<string | undefined> {
   const form = new FormData();
   if (args.plan_text) {
     form.append("plan_text", args.plan_text);
@@ -153,23 +165,24 @@ export async function exportStatements(args: {
   }
   if (args.payee_text) {
     form.append("payee_text", args.payee_text);
-  } else {
+  } else if (args.payees) {
     form.append("payees", args.payees);
   }
   if (args.formats) form.append("formats", args.formats);
   if (args.period) form.append("period", args.period);
   if (args.emit_zero) form.append("emit_zero", "1");
 
-  const res = await fetch(v1("/export"), { method: "POST", body: form });
+  const res = await fetch(v1("/export"), { method: "POST", body: form, signal });
   if (!res.ok) {
     const text = await res.text();
+    let parsed: Record<string, unknown>;
     try {
-      const err = JSON.parse(text);
-      throw new Error(String(err.detail?.detail ?? err.detail?.error ?? "Export failed"));
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("Server error")) throw e;
+      parsed = JSON.parse(text);
+    } catch {
       throw new Error(`Server error (${res.status}): ${text.slice(0, 500)}`);
     }
+    const detail = parsed.detail as Record<string, unknown> | undefined;
+    throw new Error(String(detail?.detail ?? detail?.error ?? "Export failed"));
   }
 
   // Desktop mode: server returns JSON with saved path
@@ -199,18 +212,18 @@ export async function exportStatements(args: {
 
 import type { OrderTrace } from "./types";
 
-export async function fetchTrace(transaction_id: string, payee_id: string): Promise<OrderTrace> {
+export async function fetchTrace(transaction_id: string, payee_id: string, signal?: AbortSignal): Promise<OrderTrace> {
   const params = new URLSearchParams({ transaction_id, payee_id });
-  const res = await fetch(v1(`/trace?${params}`));
+  const res = await fetch(v1(`/trace?${params}`), { signal });
   if (!res.ok) {
     const text = await res.text();
+    let parsed: Record<string, unknown>;
     try {
-      const err = JSON.parse(text);
-      throw new Error(String(err.detail ?? "Trace not found"));
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("Server error")) throw e;
+      parsed = JSON.parse(text);
+    } catch {
       throw new Error(`Server error (${res.status}): ${text.slice(0, 500)}`);
     }
+    throw new Error(String(parsed.detail ?? "Trace not found"));
   }
   return res.json();
 }
@@ -235,17 +248,18 @@ export interface PayeeSaveArgs {
   team_id?: string;
 }
 
-export async function listPayees(): Promise<Record<string, unknown>[]> {
-  const res = await fetch(v1("/payees"));
+export async function listPayees(signal?: AbortSignal): Promise<Payee[]> {
+  const res = await fetch(v1("/payees"), { signal });
   if (!res.ok) return [];
   return res.json();
 }
 
-export async function savePayee(args: PayeeSaveArgs): Promise<void> {
+export async function savePayee(args: PayeeSaveArgs, signal?: AbortSignal): Promise<void> {
   const res = await fetch(v1(`/payees/${encodeURIComponent(args.payee_id)}`), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(args),
+    signal,
   });
   if (!res.ok) {
     const text = await res.text();
@@ -253,9 +267,27 @@ export async function savePayee(args: PayeeSaveArgs): Promise<void> {
   }
 }
 
-export async function deletePayee(payee_id: string): Promise<void> {
-  const res = await fetch(v1(`/payees/${encodeURIComponent(payee_id)}`), { method: "DELETE" });
+export async function deletePayee(payee_id: string, signal?: AbortSignal): Promise<void> {
+  const res = await fetch(v1(`/payees/${encodeURIComponent(payee_id)}`), { method: "DELETE", signal });
   if (!res.ok) throw new Error("Delete failed");
+}
+
+export interface PayeeImportResult {
+  imported: number;
+  total_in_roster: number;
+  replace: boolean;
+}
+
+export async function importPayees(file: File, replace: boolean = false, signal?: AbortSignal): Promise<PayeeImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("replace", String(replace));
+  const res = await fetch(v1("/payees/import"), { method: "POST", body: form, signal });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text.slice(0, 500));
+  }
+  return res.json();
 }
 
 // ------------------------------------------------------------------
@@ -269,10 +301,10 @@ interface FilePreview {
   is_xlsx: boolean;
 }
 
-export async function previewFile(file: File, type: string = "transactions"): Promise<FilePreview> {
+export async function previewFile(file: File, type: string = "transactions", signal?: AbortSignal): Promise<FilePreview> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(v1(`/preview?type=${encodeURIComponent(type)}`), { method: "POST", body: form });
+  const res = await fetch(v1(`/preview?type=${encodeURIComponent(type)}`), { method: "POST", body: form, signal });
   if (!res.ok) throw new Error("Preview failed");
   return res.json();
 }
@@ -311,33 +343,33 @@ export interface PeriodStatusRow {
   locked_calc_id: string | null;
 }
 
-export async function listCalculations(plan_id?: string, period?: string): Promise<CalculationRow[]> {
+export async function listCalculations(plan_id?: string, period?: string, signal?: AbortSignal): Promise<CalculationRow[]> {
   const params = new URLSearchParams();
   if (plan_id) params.set("plan_id", plan_id);
   if (period) params.set("period", period);
   const qs = params.toString();
-  const res = await fetch(v1(`/calculations${qs ? "?" + qs : ""}`));
+  const res = await fetch(v1(`/calculations${qs ? "?" + qs : ""}`), { signal });
   if (!res.ok) return [];
   return res.json();
 }
 
-export async function listTransactions(period?: string): Promise<TransactionRow[]> {
+export async function listTransactions(period?: string, signal?: AbortSignal): Promise<TransactionRow[]> {
   const params = new URLSearchParams();
   if (period) params.set("period", period);
   params.set("limit", "500");
-  const res = await fetch(v1(`/transactions?${params}`));
+  const res = await fetch(v1(`/transactions?${params}`), { signal });
   if (!res.ok) return [];
   return res.json();
 }
 
-export async function listPeriods(plan_id: string): Promise<PeriodStatusRow[]> {
-  const res = await fetch(v1(`/periods/${encodeURIComponent(plan_id)}`));
+export async function listPeriods(plan_id: string, signal?: AbortSignal): Promise<PeriodStatusRow[]> {
+  const res = await fetch(v1(`/periods/${encodeURIComponent(plan_id)}`), { signal });
   if (!res.ok) return [];
   return res.json();
 }
 
-export async function listMappings(): Promise<Record<string, unknown>[]> {
-  const res = await fetch(v1("/mappings"));
+export async function listMappings(signal?: AbortSignal): Promise<Record<string, unknown>[]> {
+  const res = await fetch(v1("/mappings"), { signal });
   if (!res.ok) return [];
   return res.json();
 }

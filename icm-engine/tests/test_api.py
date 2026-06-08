@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -74,7 +75,8 @@ def test_malformed_plan_returns_400() -> None:
     assert response.status_code == 400
 
 
-def test_missing_payees_file_returns_422() -> None:
+def test_missing_payees_uses_saved_roster() -> None:
+    """Without a payees file, the endpoint falls back to the saved roster (400 if empty)."""
     with (
         open(EXAMPLES / "saas_ae_plan.yaml", "rb") as plan_f,
         open(EXAMPLES / "saas_transactions.csv", "rb") as txn_f,
@@ -86,7 +88,7 @@ def test_missing_payees_file_returns_422() -> None:
                 "transactions": ("transactions.csv", txn_f, "text/csv"),
             },
         )
-    assert response.status_code == 422
+    assert response.status_code == 400  # No saved payees yet
 
 
 def test_invalid_payees_csv_returns_400() -> None:
@@ -363,3 +365,125 @@ class TestExportAPI:
         has_non_pdf = [n for n in names if not n.endswith(".pdf") and "internal" not in n]
         assert len(has_non_pdf) == 0
         assert any(n.endswith(".pdf") for n in names)
+
+
+# ------------------------------------------------------------------
+# Payee CRUD + draw balance tests
+# ------------------------------------------------------------------
+
+V = "/v1"
+
+
+class TestPayeeCRUD:
+    def test_create_get_update_delete(self) -> None:
+        # Create
+        resp = client.put(f"{V}/payees/P001", json={
+            "name": "Alice", "quota": "100000", "plan_id": "saas_ae",
+            "effective_from": "2026-01-01", "email": "alice@test.com",
+            "quotas": {"2026-01": "50000"},
+            "draw_amount": "2000", "draw_recoverable": True,
+            "ramp_months": 3, "ramp_schedule": "0.25 0.50 0.75",
+            "category_quotas": {"Enterprise": "300000"},
+            "manager_id": "M001", "manager_override": "0.05", "team_id": "Team-A",
+        })
+        assert resp.status_code == 200
+
+        # Get
+        resp = client.get(f"{V}/payees/P001")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "Alice"
+        assert data["email"] == "alice@test.com"
+        assert '"2026-01"' in data.get("quotas", "")
+        assert '"recoverable": true' in (data.get("draw") or "").lower()
+
+        # List
+        resp = client.get(f"{V}/payees")
+        assert resp.status_code == 200
+        payees = resp.json()
+        assert any(p["id"] == "P001" for p in payees)
+
+        # Update
+        resp = client.put(f"{V}/payees/P001", json={
+            "name": "Alice Updated", "quota": "120000", "plan_id": "saas_ae",
+            "effective_from": "2026-01-01",
+        })
+        assert resp.status_code == 200
+        resp = client.get(f"{V}/payees/P001")
+        assert resp.json()["name"] == "Alice Updated"
+
+        # Delete
+        resp = client.delete(f"{V}/payees/P001")
+        assert resp.status_code == 200
+        resp = client.get(f"{V}/payees/P001")
+        assert resp.status_code == 404
+
+    def test_bulk_import_merge(self) -> None:
+        # Seed one payee
+        client.put(f"{V}/payees/P001", json={
+            "name": "Original", "quota": "100000", "plan_id": "saas_ae",
+            "effective_from": "2026-01-01",
+        })
+
+        # Import CSV with P001 updated + P002 new
+        csv_content = (
+            "id,name,quota,plan_id,effective_from,email\n"
+            "P001,Alice Merged,100000,saas_ae,2026-01-01,alice@test.com\n"
+            "P002,Bob,80000,saas_ae,2026-01-01,bob@test.com\n"
+        )
+        resp = client.post(f"{V}/payees/import", files={
+            "file": ("payees.csv", csv_content.encode(), "text/csv"),
+        }, data={"replace": "false"})
+        assert resp.status_code == 200
+        result = resp.json()
+        assert result["imported"] == 2
+
+        # P001 should be merged (name updated), P002 new
+        p1 = client.get(f"{V}/payees/P001").json()
+        assert p1["name"] == "Alice Merged"
+        assert p1["email"] == "alice@test.com"
+        assert client.get(f"{V}/payees/P002").status_code == 200
+
+    def test_bulk_import_replace(self) -> None:
+        # Seed
+        client.put(f"{V}/payees/P001", json={
+            "name": "Original", "quota": "100000", "plan_id": "saas_ae",
+            "effective_from": "2026-01-01",
+        })
+
+        # Replace
+        csv_content = "id,name,quota,plan_id,effective_from\nP003,Carol,90000,saas_ae,2026-01-01\n"
+        resp = client.post(f"{V}/payees/import", files={
+            "file": ("payees.csv", csv_content.encode(), "text/csv"),
+        }, data={"replace": "true"})
+        assert resp.status_code == 200
+
+        # P001 gone, only P003
+        assert client.get(f"{V}/payees/P001").status_code == 404
+        assert client.get(f"{V}/payees/P003").status_code == 200
+
+
+class TestDrawBalances:
+    def test_draw_balance_carries_between_runs(self) -> None:
+        # Import payee with a recoverable draw
+        client.put(f"{V}/payees/D001", json={
+            "name": "Draw Test", "quota": "100000", "plan_id": "saas_ae",
+            "effective_from": "2026-01-01",
+            "draw_amount": "5000", "draw_recoverable": True,
+        })
+
+        # Simulate two runs by directly using DB helpers
+        from icm_engine.database import Database
+        db = Database(os.environ["ICM_DB_PATH"])
+
+        # Period 1: advance draw (balance = draw amount)
+        db.set_draw_balance("D001", "saas_ae", Decimal("5000"))
+        assert db.get_draw_balance("D001", "saas_ae") == Decimal("5000")
+
+        # Period 2: recover half
+        db.set_draw_balance("D001", "saas_ae", Decimal("2500"))
+        assert db.get_draw_balance("D001", "saas_ae") == Decimal("2500")
+
+        # Fully recovered
+        db.set_draw_balance("D001", "saas_ae", Decimal("0"))
+        assert db.get_draw_balance("D001", "saas_ae") == Decimal("0")
