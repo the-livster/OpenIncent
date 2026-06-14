@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenIncent — Documentation</title>
+<style>
+  :root{
+    --bg:#ffffff; --panel:#f7f8fa; --ink:#1f2430; --muted:#5b6472;
+    --accent:#4f46e5; --accent-soft:#eef0fe; --border:#e6e8ee; --code:#f4f4f7;
+    --ok:#0f7b4f; --ok-soft:#e7f6ee; --warn:#9a6700; --warn-soft:#fff6e0;
+    --tip:#3a5bd9; --tip-soft:#eaf0ff; --maxw:880px;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+       font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{font-family:var(--mono);font-size:.88em;background:var(--code);
+       padding:.12em .38em;border-radius:4px}
+  pre{background:var(--code);border:1px solid var(--border);border-radius:10px;
+      padding:16px 18px;overflow:auto;font-family:var(--mono);font-size:13.5px;line-height:1.55}
+  pre code{background:none;padding:0}
+  .layout{display:flex;min-height:100vh}
+  /* Sidebar */
+  .sidebar{width:280px;flex:0 0 280px;background:var(--panel);border-right:1px solid var(--border);
+           position:sticky;top:0;height:100vh;overflow-y:auto;padding:22px 18px 60px}
+  .brand{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+  .brand .logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#4f46e5,#7c83ff);
+               display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:15px}
+  .brand b{font-size:17px;letter-spacing:-.2px}
+  .brand small{display:block;color:var(--muted);font-size:12px;font-weight:500;margin-top:1px}
+  nav{margin-top:18px}
+  nav .group{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+             font-weight:700;margin:18px 8px 6px}
+  nav a{display:block;color:var(--ink);padding:5px 10px;border-radius:7px;font-size:14px;line-height:1.4}
+  nav a:hover{background:#eceef3;text-decoration:none}
+  nav a.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+  /* Content */
+  .content{flex:1;min-width:0;display:flex;justify-content:center;padding:0 28px}
+  .doc{max-width:var(--maxw);width:100%;padding:40px 0 120px}
+  h1{font-size:34px;letter-spacing:-.5px;margin:.2em 0 .1em}
+  h2{font-size:24px;letter-spacing:-.3px;margin:2.2em 0 .5em;padding-top:12px;border-top:1px solid var(--border)}
+  h2:first-of-type{border-top:none}
+  h3{font-size:18px;margin:1.8em 0 .4em}
+  h4{font-size:15px;margin:1.4em 0 .3em;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .lede{font-size:18.5px;color:var(--muted);line-height:1.6;margin:.4em 0 1.4em}
+  .tag{display:inline-block;background:var(--accent-soft);color:var(--accent);font-size:12px;
+       font-weight:600;padding:2px 9px;border-radius:999px;vertical-align:middle}
+  table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel);font-weight:600}
+  td code{white-space:nowrap}
+  .callout{border:1px solid var(--border);border-left-width:4px;border-radius:8px;
+           padding:12px 16px;margin:1.2em 0;font-size:14.5px;background:var(--panel)}
+  .callout.note{border-left-color:var(--tip);background:var(--tip-soft)}
+  .callout.tip{border-left-color:var(--ok);background:var(--ok-soft)}
+  .callout.warn{border-left-color:var(--warn);background:var(--warn-soft)}
+  .callout b{display:block;margin-bottom:2px}
+  .pill{font-family:var(--mono);font-size:12px;background:#fff;border:1px solid var(--border);
+        border-radius:5px;padding:1px 6px}
+  .muted{color:var(--muted)}
+  hr{border:none;border-top:1px solid var(--border);margin:2.5em 0}
+  footer{color:var(--muted);font-size:13px;margin-top:40px;padding-top:18px;border-top:1px solid var(--border)}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .card{border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:#fff}
+  .card h4{margin-top:0;color:var(--ink);text-transform:none;letter-spacing:0;font-size:15px;font-weight:700}
+  .menu-btn{display:none}
+  @media(max-width:920px){
+    .sidebar{position:fixed;z-index:30;transform:translateX(-100%);transition:transform .2s;box-shadow:0 0 40px rgba(0,0,0,.12)}
+    .sidebar.open{transform:translateX(0)}
+    .content{padding:0 18px}
+    .doc{padding-top:64px}
+    .cols{grid-template-columns:1fr}
+    .menu-btn{display:flex;position:fixed;top:12px;left:12px;z-index:31;background:#fff;border:1px solid var(--border);
+              border-radius:8px;width:40px;height:40px;align-items:center;justify-content:center;font-size:18px;cursor:pointer}
+  }
+</style>
+</head>
+<body>
+<button class="menu-btn" id="menuBtn" aria-label="Menu">☰</button>
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="logo">OI</div>
+      <div><b>OpenIncent</b><small>Documentation</small></div>
+    </div>
+    <nav id="nav">
+      <div class="group">Getting started</div>
+      <a href="#intro">Introduction</a>
+      <a href="#install">Installation</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="#concepts">Core concepts</a>
+      <div class="group">Configuring</div>
+      <a href="#plan">The plan (YAML)</a>
+      <a href="#rules">Rule types</a>
+      <a href="#crediting">Crediting &amp; splits</a>
+      <a href="#margin">Margin / gross profit</a>
+      <a href="#filters">Filters</a>
+      <a href="#advanced">Draws, ramps, quotas</a>
+      <a href="#rounding">Rounding &amp; currency</a>
+      <div class="group">Data</div>
+      <a href="#transactions">Transactions file</a>
+      <a href="#payees">Payees file</a>
+      <a href="#mapping">Column mapping</a>
+      <div class="group">Recipes</div>
+      <a href="#staffing">Staffing recipes</a>
+      <a href="#worked">Worked example</a>
+      <div class="group">Running &amp; output</div>
+      <a href="#cli">CLI reference</a>
+      <a href="#outputs">Statements &amp; output</a>
+      <a href="#audit">Audit trail &amp; trace</a>
+      <a href="#api">HTTP API</a>
+      <div class="group">Reference</div>
+      <a href="#faq">FAQ &amp; troubleshooting</a>
+    </nav>
+  </aside>
+
+  <main class="content">
+  <article class="doc">
+
+    <h1>OpenIncent</h1>
+    <p class="lede">An open-source incentive-compensation engine. Turn a comp plan and deal data into per-payee commission payouts — with a full, immutable audit trail that explains every number.</p>
+
+    <h2 id="intro">Introduction</h2>
+    <p>OpenIncent computes sales and recruiter commissions from three inputs you control:</p>
+    <ol>
+      <li><b>A plan</b> — your comp rules, written in YAML (or drafted from plain English by the AI builder).</li>
+      <li><b>Transactions</b> — your deals/placements, as CSV, Excel, or Parquet. Messy column names are fuzzy-matched automatically.</li>
+      <li><b>Payees</b> — your reps/recruiters and their quotas.</li>
+    </ol>
+    <p>You get back <b>explained payouts</b>: per-rep statements (XLSX, HTML, PDF) and an audit ledger that traces every dollar to the exact rule and deal behind it. Everything is computed in exact decimal arithmetic — no floating-point drift — and is deterministic: the same inputs always produce byte-identical output.</p>
+    <div class="callout note"><b>Who it's for</b>Teams whose comp has outgrown a spreadsheet but doesn't justify a full RevOps hire or a per-seat SaaS subscription. Splits, tiers, accelerators, draws, clawbacks, manager overrides, team quotas, contract-margin commission — all handled. <span class="muted">Not for tiny teams perfectly happy in a spreadsheet.</span></div>
+    <p>OpenIncent runs entirely on your machine. There is no cloud, no account, and your data never has to leave your computer. It is licensed <b>AGPL-3.0</b> — run it, modify it, and self-host it freely.</p>
+
+    <h2 id="install">Installation</h2>
+    <h3>Desktop app (Windows)</h3>
+    <p>Download the latest release — a single <code>.exe</code>, no install, no cloud, no account.</p>
+    <h3>CLI (Python 3.11+)</h3>
+    <pre><code>pip install icm-engine
+icm --plan plan.yaml --transactions deals.csv --payees reps.csv --output out/</code></pre>
+    <h3>From source</h3>
+    <pre><code>git clone https://github.com/the-livster/OpenIncent.git
+cd OpenIncent/icm-engine
+uv sync
+uv run icm --plan plan.yaml --transactions deals.csv --payees reps.csv --output out/</code></pre>
+
+    <h2 id="quickstart">Quickstart (5 minutes)</h2>
+    <p>Three small files and one command.</p>
+    <h4>1 · plan.yaml</h4>
+    <pre><code>plan_id: starter
+name: "Starter Plan"
+period_type: monthly
+currency: USD
+rules:
+  - id: base_commission
+    type: flat_rate
+    rate: 0.05          # 5% of every deal</code></pre>
+    <h4>2 · reps.csv</h4>
+    <pre><code>id,name,quota,plan_id,effective_from
+R1,Alice,100000,starter,2026-01-01
+R2,Bob,100000,starter,2026-01-01</code></pre>
+    <h4>3 · deals.csv</h4>
+    <pre><code>id,payee_id,amount,period
+D1,R1,20000,2026-01
+D2,R2,12000,2026-01</code></pre>
+    <h4>4 · Run it</h4>
+    <pre><code>icm --plan plan.yaml --transactions deals.csv --payees reps.csv --output out/</code></pre>
+    <p>You'll get commission and summary files in <code>out/</code>. Alice earns <code>1,000.00</code> (5% of 20,000); Bob earns <code>600.00</code>. To produce per-rep statements and see the full explanation, read <a href="#outputs">Statements &amp; output</a> and <a href="#audit">Audit trail</a>.</p>
+    <div class="callout tip"><b>No plan yet?</b>Run <code>icm plan-from-text "reps get 5% on every deal, 8% above quota"</code> to draft a validated plan YAML from a plain-English description. <span class="muted">(Needs an LLM API key — set <code>ANTHROPIC_API_KEY</code>.)</span></div>
+
+    <h2 id="concepts">Core concepts</h2>
+    <table>
+      <tr><th>Term</th><th>Meaning</th></tr>
+      <tr><td><b>Plan</b></td><td>The set of rules that turn deals into commission, plus period type, currency, caps, draws, and rounding. One plan per payee (different payees can be on different plans in the same run).</td></tr>
+      <tr><td><b>Payee</b></td><td>A person who earns — rep, recruiter, manager. Has a quota (and optionally time-varying quotas, a ramp, a draw, a manager, a team).</td></tr>
+      <tr><td><b>Transaction</b></td><td>A deal/placement. Carries an amount (and, for margin plans, bill/pay rates or a margin). May be split across payees via credits.</td></tr>
+      <tr><td><b>Period</b></td><td>The payout window — <code>monthly</code>, <code>quarterly</code>, or <code>annual</code>. Transactions carry a <code>period</code> (<code>YYYY-MM</code>) or a <code>close_date</code> the period is derived from.</td></tr>
+      <tr><td><b>Attainment</b></td><td>Bookings ÷ quota for a payee in a window. Drives tiered rates, accelerators, and minimum-attainment gates.</td></tr>
+      <tr><td><b>Credit</b></td><td>How a deal is allocated: a <b>split</b> (shares that sum to 100%) or an <b>overlay</b> (additive, e.g. a manager override).</td></tr>
+      <tr><td><b>Audit ledger</b></td><td>An immutable record of every decision point — filter, tier crossing, cap, draw, adjustment — so any number can be explained without recomputation.</td></tr>
+    </table>
+
+    <h2 id="plan">The plan (YAML)</h2>
+    <p>A plan is a YAML document. Top-level fields:</p>
+    <table>
+      <tr><th>Field</th><th>Required</th><th>Description</th></tr>
+      <tr><td><code>plan_id</code></td><td>yes</td><td>Unique identifier. Payees reference it via their <code>plan_id</code>.</td></tr>
+      <tr><td><code>name</code></td><td>yes</td><td>Human-readable name (appears on statements).</td></tr>
+      <tr><td><code>period_type</code></td><td>yes</td><td><code>monthly</code> · <code>quarterly</code> · <code>annual</code>.</td></tr>
+      <tr><td><code>currency</code></td><td>yes</td><td>ISO code, e.g. <code>USD</code>. Internal calculation currency.</td></tr>
+      <tr><td><code>rules</code></td><td>yes</td><td>A list of rules (see <a href="#rules">Rule types</a>). Evaluated in order.</td></tr>
+      <tr><td><code>reporting_currency</code></td><td>no</td><td>If set and different from <code>currency</code>, output is converted for display only. Blank = no conversion.</td></tr>
+      <tr><td><code>payout_cap</code></td><td>no</td><td>Maximum total payout per payee per period (applied after rules).</td></tr>
+      <tr><td><code>draw</code></td><td>no</td><td>Plan-wide draw/guarantee (see <a href="#advanced">Draws</a>). Can also be set per payee.</td></tr>
+      <tr><td><code>pro_rating</code></td><td>no</td><td><code>full</code> (default) · <code>daily</code> · <code>zero</code> — how partial periods pro-rate quota.</td></tr>
+      <tr><td><code>rounding</code></td><td>no</td><td>Display rounding policy (see <a href="#rounding">Rounding</a>). Default: exact.</td></tr>
+    </table>
+
+    <h2 id="rules">Rule types</h2>
+    <p>Every rule has an <code>id</code>, a <code>type</code>, and these optional modifiers:</p>
+    <table>
+      <tr><th>Modifier</th><th>Description</th></tr>
+      <tr><td><code>filter</code></td><td>Only apply to matching transactions (see <a href="#filters">Filters</a>).</td></tr>
+      <tr><td><code>cap</code></td><td>Maximum commission this rule can pay per payee per period.</td></tr>
+      <tr><td><code>min_attainment_pct</code></td><td>Gate: skip a payee below this attainment (e.g. <code>0.5</code> = below 50% of quota earns nothing from this rule).</td></tr>
+      <tr><td><code>quota_category</code></td><td>Measure attainment against a category-specific quota (see <a href="#advanced">category quotas</a>).</td></tr>
+      <tr><td><code>base</code></td><td><code>amount</code> (default) or <code>margin</code> — what the rate applies to (see <a href="#margin">Margin</a>).</td></tr>
+    </table>
+
+    <h3>flat_rate</h3>
+    <p>A constant rate on the base.</p>
+    <pre><code>- id: perm_fee
+  type: flat_rate
+  rate: 0.10            # 10% of each placement fee</code></pre>
+
+    <h3>tiered</h3>
+    <p>Rates that change as cumulative attainment crosses thresholds. <b>Boundary-crossing</b>: a single deal that straddles a threshold is automatically split, each slice paid at its tier's rate. <code>threshold_pct</code> is expressed as a fraction of quota — <code>1.0</code> = 100%. Tiers must ascend by <code>threshold_pct</code>.</p>
+    <pre><code>- id: tiered_core
+  type: tiered
+  tiers:
+    - threshold_pct: 1.0    # 0–100% of quota
+      rate: 0.05
+    - threshold_pct: 1.5    # 100–150% of quota
+      rate: 0.08
+    - threshold_pct: 100.0  # everything above 150%
+      rate: 0.12</code></pre>
+    <div class="callout note"><b>Why "100.0" on the top tier?</b>It's just a threshold high enough that all remaining attainment falls into it. Any deal above the previous boundary is paid at the top rate.</div>
+
+    <h3>accelerator</h3>
+    <p>Pays <code>rate × multiplier</code> on the portion of bookings <i>above</i> a threshold (a fraction of quota). It pays on the excess only, so it's normally paired with a <code>flat_rate</code> rule that pays the base on everything.</p>
+    <pre><code>rules:
+  - id: base_flat
+    type: flat_rate
+    rate: 0.05             # base 5% on everything
+  - id: over_quota_kicker
+    type: accelerator
+    rate: 0.05
+    threshold_pct: 1.0     # above 100% of quota
+    multiplier: 2.0        # the excess pays 0.05 × 2.0 = 10%</code></pre>
+
+    <p>A plan can combine rules — e.g. a tiered core plus a product SPIF:</p>
+    <pre><code>rules:
+  - id: tiered_core
+    type: tiered
+    tiers: [{threshold_pct: 1.0, rate: 0.05}, {threshold_pct: 100.0, rate: 0.10}]
+  - id: enterprise_spif
+    type: flat_rate
+    rate: 0.02
+    filter: 'product == "Enterprise"'</code></pre>
+
+    <h2 id="crediting">Crediting &amp; splits</h2>
+    <p>By default a deal credits its <code>payee_id</code> at 100%. To split a deal across recruiters — the staffing "180/360 desk split" — add a <code>credits</code> column to the transaction. Four forms are accepted:</p>
+    <table>
+      <tr><th>Form</th><th>Example</th><th>Meaning</th></tr>
+      <tr><td>Compact</td><td><code>R1:0.6;R2:0.4</code></td><td>R1 gets 60%, R2 gets 40%.</td></tr>
+      <tr><td>Percent</td><td><code>R1:60%;R2:40%</code></td><td>Same as above.</td></tr>
+      <tr><td>Overlay</td><td><code>R1:1.0;M1:0.1@overlay</code></td><td>R1 gets 100%; M1 gets an additive 10% override.</td></tr>
+      <tr><td>JSON</td><td><code>[{"payee_id":"R1","split_pct":"0.6"},…]</code></td><td>Explicit form.</td></tr>
+    </table>
+    <div class="callout warn"><b>Splits must sum to 100%</b>The <code>split</code> credits on a deal must total exactly 1.0, or that row is reported as an error. Overlays are additive and don't count toward the 100%.</div>
+    <p><b>Manager overrides</b> can also be generated automatically: give a payee a <code>manager_id</code> and a <code>manager_override</code> rate, and the engine adds an overlay credit up the reporting chain — no per-deal markup needed.</p>
+
+    <h2 id="margin">Margin / gross profit <span class="tag">staffing</span></h2>
+    <p>Contract and temp desks pay recruiters on <b>gross profit (margin)</b>, not the full bill. Set <code>base: margin</code> on a rule and provide the margin on each transaction — either as per-unit rates or a direct figure:</p>
+    <pre><code># Plan
+- id: gp_commission
+  type: flat_rate
+  base: margin
+  rate: 0.10           # 10% of gross profit</code></pre>
+    <pre><code># deals.csv — margin from rates × hours
+id,payee_id,period,bill_rate,pay_rate,units
+D1,R1,2026-06,85,60,160      # GP = (85 − 60) × 160 = 4,000 → commission 400
+
+# …or a direct margin column
+id,payee_id,period,margin
+D2,R1,2026-06,4000</code></pre>
+    <p>Margin works with <b>all three rule types</b> — including tiered (intra-deal threshold splitting <i>on gross profit</i>) and accelerators. For tiered/accelerator margin plans, attainment is measured in margin, and the quota is read as a gross-profit target. A row that has no margin data is skipped and recorded in the ledger (it never aborts the run).</p>
+    <div class="callout note"><b>margin precedence</b>If a <code>margin</code> column is present it is used directly; otherwise margin is computed as <code>(bill_rate − pay_rate) × units</code>, where <code>units</code> defaults to 1.</div>
+
+    <h2 id="filters">Filters</h2>
+    <p>A rule's <code>filter</code> is a small expression that decides which transactions it applies to. It can reference canonical fields, margin fields, and any extra (metadata) column in your file.</p>
+    <pre><code>filter: 'product == "Enterprise"'
+filter: 'amount > 50000 and region == "EMEA"'
+filter: 'product in ["Pro", "Enterprise"] or deal_type != "Renewal"'
+filter: 'margin > 1000'
+filter: '`Deal Type` == "New"'    # back-ticks for column names with spaces</code></pre>
+    <table>
+      <tr><th>Operators</th><td><code>==</code> <code>!=</code> <code>&gt;</code> <code>&lt;</code> <code>&gt;=</code> <code>&lt;=</code> <code>in [ … ]</code></td></tr>
+      <tr><th>Logic</th><td><code>and</code>, <code>or</code>, parentheses</td></tr>
+      <tr><th>Values</th><td>Strings in quotes; numbers bare; dates as <code>"YYYY-MM-DD"</code></td></tr>
+      <tr><th>Fields</th><td><code>id</code>, <code>payee_id</code>, <code>deal_id</code>, <code>period</code>, <code>amount</code>, <code>product</code>, <code>close_date</code>, <code>margin</code>, <code>bill_rate</code>, <code>pay_rate</code>, <code>units</code>, plus any metadata column</td></tr>
+    </table>
+    <div class="callout note"><b>Missing fields</b>A field absent from a row is treated as "not equal" to any value: <code>!=</code> matches it; <code>==</code>, ordering, and <code>in</code> do not. A filter that fails to parse is reported with a clear message rather than silently matching nothing.</div>
+
+    <h2 id="advanced">Draws, ramps &amp; quotas</h2>
+    <h3>Draws / guarantees</h3>
+    <p>A draw guarantees a minimum payout per period. <b>Non-recoverable</b> is a simple floor; <b>recoverable</b> advances are recovered from future earnings (the balance is threaded across periods).</p>
+    <pre><code># In the plan (plan-wide) or per payee
+draw:
+  amount: 3000
+  recoverable: true</code></pre>
+    <p>In a payees CSV, set columns <code>draw_amount</code> and <code>draw_recoverable</code> (<code>true/yes/y/1/on</code>).</p>
+    <h3>Ramp schedules (new-hire quota relief)</h3>
+    <p>Give a new recruiter reduced effective quota for their first months. In the payees file: <code>ramp_months</code> and a space-separated <code>ramp_schedule</code> of multipliers.</p>
+    <pre><code>id,name,quota,plan_id,effective_from,ramp_months,ramp_schedule
+R9,New Recruiter,100000,starter,2026-06-01,3,0.50 0.75 1.0</code></pre>
+    <h3>Time-varying quotas</h3>
+    <p>Add a <code>period</code> column to the payees file and one row per period to set per-period quotas; the row without a period sets the default.</p>
+    <h3>Category quotas</h3>
+    <p>A payee can carry a JSON <code>category_quotas</code> map; a rule with a matching <code>quota_category</code> measures attainment against that category's quota instead of the overall one.</p>
+    <h3>Team / shared quotas</h3>
+    <p>Give payees the same <code>team_id</code> and their bookings and quotas pool — every member sees the team's combined attainment %.</p>
+
+    <h2 id="rounding">Rounding &amp; currency</h2>
+    <p>Calculation is always exact decimal. Rounding and currency conversion are applied <b>only at the display boundary</b> — they never feed back into the math.</p>
+    <pre><code>rounding:
+  mode: half-up      # half-up · half-even · floor · ceil · none
+  places: 2          # 0–6 decimal places</code></pre>
+    <p>With a policy set, statement and API line items are rounded, and totals equal the sum of the rounded lines (so a statement reconciles to the penny against its own rows). For multi-currency display, set <code>reporting_currency</code> on the plan and provide exchange rates; amounts are converted for output only.</p>
+
+    <h2 id="transactions">Transactions file</h2>
+    <p>CSV, XLSX, or Parquet. Column names are fuzzy-matched, so <code>Consultant</code>, <code>Sales Rep</code>, or <code>Owner</code> all map to <code>payee_id</code>. Canonical fields:</p>
+    <table>
+      <tr><th>Field</th><th>Notes</th></tr>
+      <tr><td><code>id</code></td><td>Transaction id. Auto-generated if absent.</td></tr>
+      <tr><td><code>payee_id</code></td><td>Who the deal credits (unless overridden by <code>credits</code>).</td></tr>
+      <tr><td><code>deal_id</code></td><td>Optional grouping id (defaults to <code>id</code>).</td></tr>
+      <tr><td><code>period</code></td><td><code>YYYY-MM</code>. If absent, derived from <code>close_date</code>.</td></tr>
+      <tr><td><code>amount</code></td><td>Deal value. May be negative (refunds / clawbacks).</td></tr>
+      <tr><td><code>product</code></td><td>Optional; usable in filters.</td></tr>
+      <tr><td><code>close_date</code></td><td>Optional; used to derive period.</td></tr>
+      <tr><td><code>bill_rate</code>,<code>pay_rate</code>,<code>units</code>,<code>margin</code></td><td>For margin plans (see <a href="#margin">Margin</a>).</td></tr>
+      <tr><td><code>credits</code></td><td>Split/overlay allocation (see <a href="#crediting">Crediting</a>).</td></tr>
+      <tr><td><i>any other column</i></td><td>Kept as metadata and usable in filters.</td></tr>
+    </table>
+    <div class="callout warn"><b>Clawbacks</b>Represent a fall-through or refund as a transaction with a negative <code>amount</code> (or negative margin) in the period you're recovering it. The audit trail labels it automatically on statements.</div>
+
+    <h2 id="payees">Payees file</h2>
+    <table>
+      <tr><th>Column</th><th>Notes</th></tr>
+      <tr><td><code>id</code>, <code>name</code></td><td>Required.</td></tr>
+      <tr><td><code>quota</code></td><td>Required (use <code>0</code> if the plan doesn't use quotas).</td></tr>
+      <tr><td><code>plan_id</code></td><td>Which plan this payee is on.</td></tr>
+      <tr><td><code>effective_from</code>,<code>effective_to</code></td><td>Employment window (drives pro-rating &amp; eligibility).</td></tr>
+      <tr><td><code>email</code></td><td>For statement distribution.</td></tr>
+      <tr><td><code>manager_id</code>,<code>manager_override</code></td><td>Auto-generated upline override credits.</td></tr>
+      <tr><td><code>team_id</code></td><td>Pools bookings/quota with teammates.</td></tr>
+      <tr><td><code>ramp_months</code>,<code>ramp_schedule</code></td><td>New-hire quota relief.</td></tr>
+      <tr><td><code>draw_amount</code>,<code>draw_recoverable</code></td><td>Per-payee draw/guarantee.</td></tr>
+      <tr><td><code>category_quotas</code></td><td>JSON map for category-specific attainment.</td></tr>
+      <tr><td><code>period</code></td><td>Optional; one row per period for time-varying quotas.</td></tr>
+    </table>
+
+    <h2 id="mapping">Column mapping</h2>
+    <p>Mapping is automatic, but you can inspect or pin it:</p>
+    <pre><code>icm map messy_deals.xlsx --target transactions   # show the inferred mapping
+icm --plan p.yaml --transactions messy.xlsx --payees r.csv \
+    --output out/ --save-mapping mapping.yaml      # save it
+icm --plan p.yaml --transactions next_month.xlsx --payees r.csv \
+    --output out/ --mapping mapping.yaml            # reuse it</code></pre>
+
+    <h2 id="staffing">Staffing recipes <span class="tag">staffing</span></h2>
+    <div class="cols">
+      <div class="card"><h4>Perm placement fee</h4><pre><code>rules:
+  - id: perm_fee
+    type: flat_rate
+    rate: 0.10</code></pre><p class="muted">10% of each placement fee (the deal <code>amount</code>).</p></div>
+      <div class="card"><h4>Contract margin (GP)</h4><pre><code>rules:
+  - id: gp
+    type: flat_rate
+    base: margin
+    rate: 0.15</code></pre><p class="muted">Deals carry <code>bill_rate/pay_rate/units</code> or <code>margin</code>.</p></div>
+      <div class="card"><h4>180 desk split</h4><pre><code># plan
+rules:
+  - id: fee
+    type: flat_rate
+    rate: 0.10
+# deal credits column:
+# Sales:0.6;Delivery:0.4</code></pre><p class="muted">Sales + delivery recruiters split one placement.</p></div>
+      <div class="card"><h4>New-recruiter ramp</h4><pre><code># payees.csv
+…,ramp_months,ramp_schedule
+…,3,0.5 0.75 1.0</code></pre><p class="muted">Reduced quota for the first three months.</p></div>
+    </div>
+    <p class="muted" style="margin-top:14px">Worked, end-to-end staffing examples (with input data and reconciled output) live in <code>icm-engine/examples/stress/</code>.</p>
+
+    <h2 id="worked">Worked example: a contract desk split <span class="tag">staffing</span></h2>
+    <p>One contract placement, paid on gross profit, split between a sales and a delivery recruiter — margin and splits together, end to end.</p>
+    <h4>plan.yaml</h4>
+    <pre><code>plan_id: contract_desk
+name: "Contract Desk - GP split"
+period_type: monthly
+currency: USD
+rounding: {mode: half-up, places: 2}
+rules:
+  - id: gp_commission
+    type: flat_rate
+    base: margin
+    rate: 0.15             # 15% of gross profit</code></pre>
+    <h4>reps.csv</h4>
+    <pre><code>id,name,quota,plan_id,effective_from
+S1,Sales Sam,0,contract_desk,2026-01-01
+D1,Delivery Dana,0,contract_desk,2026-01-01</code></pre>
+    <h4>deals.csv</h4>
+    <pre><code>id,payee_id,period,bill_rate,pay_rate,units,credits
+P100,S1,2026-06,100,70,160,"S1:0.6;D1:0.4"</code></pre>
+    <h4>Run</h4>
+    <pre><code>icm --plan plan.yaml --transactions deals.csv --payees reps.csv --output out/ --csv
+icm statements --plan plan.yaml --transactions deals.csv --payees reps.csv \
+    --output out/ --period 2026-06 --format html</code></pre>
+    <h4>The numbers</h4>
+    <p>Gross profit on the placement is <code>(100 − 70) × 160 = 4,800</code>. The <code>credits</code> split it 60/40, and each share is paid at 15%:</p>
+    <table>
+      <tr><th>Recruiter</th><th>Margin share</th><th>Rate</th><th>Commission</th></tr>
+      <tr><td>S1 (sales)</td><td>4,800 × 0.60 = 2,880.00</td><td>15%</td><td><b>432.00</b></td></tr>
+      <tr><td>D1 (delivery)</td><td>4,800 × 0.40 = 1,920.00</td><td>15%</td><td><b>288.00</b></td></tr>
+      <tr><td colspan="3" style="text-align:right">Total</td><td><b>720.00</b></td></tr>
+    </table>
+    <p>Open <code>out/statement_S1_2026-06.html</code> and click the line to see the same arithmetic spelled out — that's the explanation you hand a recruiter who asks "why 432?"</p>
+    <div class="callout tip"><b>Verified</b>Running these exact files produces S1 = 432.00, D1 = 288.00, total 720.00 — reconciled to the cent.</div>
+
+    <h2 id="cli">CLI reference</h2>
+    <p>The default command calculates commissions. Subcommands handle statements, distribution, tracing, and data management.</p>
+    <h4>Calculate (default)</h4>
+    <pre><code>icm --plan plan.yaml --transactions deals.csv --payees reps.csv --output out/</code></pre>
+    <table>
+      <tr><th>Option</th><th>Purpose</th></tr>
+      <tr><td><code>--plan</code> / <code>--plans</code></td><td>Single plan, or several for a multi-plan run.</td></tr>
+      <tr><td><code>--transactions</code></td><td>Deals file (CSV/XLSX/Parquet). Required.</td></tr>
+      <tr><td><code>--payees</code></td><td>Payees file. If omitted, the saved roster (DB) is used.</td></tr>
+      <tr><td><code>--output</code></td><td>Output directory. Required.</td></tr>
+      <tr><td><code>--csv</code></td><td>Write CSV instead of XLSX.</td></tr>
+      <tr><td><code>--mapping</code> / <code>--save-mapping</code></td><td>Reuse / save a column mapping.</td></tr>
+      <tr><td><code>--adjustments</code> / <code>--mbos</code></td><td>Manual adjustments / bonus payouts CSV.</td></tr>
+      <tr><td><code>--effective-period</code></td><td>Payout period for late transactions into locked periods.</td></tr>
+      <tr><td><code>--no-db</code></td><td>Skip database persistence (stateless run).</td></tr>
+    </table>
+    <h4>Other commands</h4>
+    <table>
+      <tr><td><code>icm statements …</code></td><td>Per-rep statements (XLSX/HTML/PDF), one file per payee.</td></tr>
+      <tr><td><code>icm trace --txn D1 --payee R1</code></td><td>How one deal flowed through the plan for a payee (from the audit ledger).</td></tr>
+      <tr><td><code>icm distribute …</code></td><td>Send/prepare statements (SMTP / .eml / mail-merge). Safe by default — nothing sends without <code>--send</code>.</td></tr>
+      <tr><td><code>icm register …</code></td><td>Finance payout register (XLSX) for a period.</td></tr>
+      <tr><td><code>icm plan-from-text "…"</code></td><td>Draft a validated plan from plain English.</td></tr>
+      <tr><td><code>icm map …</code></td><td>Show the inferred column mapping.</td></tr>
+      <tr><td><code>icm serve</code></td><td>Start the local HTTP API.</td></tr>
+    </table>
+
+    <h2 id="outputs">Statements &amp; output</h2>
+    <p>A calculate run writes a commissions file and a per-payee summary to <code>--output</code>. To produce client-ready statements:</p>
+    <pre><code>icm statements --plan plan.yaml --transactions deals.csv --payees reps.csv \
+    --output statements/ --format html,xlsx,pdf</code></pre>
+    <p>Each payee gets one file containing only their own data — every line item, the rule and rate that paid it, adjustments labelled (clawback, true-up, cap, draw, manual), and a reconciled total. HTML statements are interactive: click a line to expand the calculation. Statements honour the plan's <a href="#rounding">rounding policy</a> and, if set, the reporting currency.</p>
+    <div class="callout tip"><b>Period locking &amp; true-ups</b>Lock a period once it's paid; if late deals arrive, recalculating produces only the <i>deltas</i> (true-ups and clawbacks) against the locked baseline — not a full re-pay. Locking a period also generates a finance payout register.</div>
+
+    <h2 id="audit">Audit trail &amp; trace</h2>
+    <p>Every run records an immutable ledger of decision points: which filter matched, where a tiered deal crossed a threshold, why a row was skipped, when a cap or draw applied. This is what ends commission disputes — you can explain any number without recomputing anything.</p>
+    <pre><code>icm trace --txn D1 --payee R1</code></pre>
+    <p>The trace shows how one deal moved through each rule for that payee — matched or skipped, the events at each step, and the resulting commission — in plain language (a tiered slice reads like <span class="pill">$300,000 of this deal fell between 100% and 125% attainment → 11.148%</span>). The same ledger backs the interactive HTML statements, so a recruiter's "why did I earn this?" is answered before they ask. <span class="muted">(Trace reads the saved ledger, so it works after a normal run — not with <code>--no-db</code>.)</span></p>
+
+    <h2 id="api">HTTP API</h2>
+    <p>For programmatic use or the desktop UI, run a local API:</p>
+    <pre><code>icm serve        # FastAPI, local only by default</code></pre>
+    <p>The main endpoint, <code>POST /v1/calculate</code>, accepts the plan, transactions, and payees as multipart files and returns commissions, the per-payee summary, the audit ledger, attainment, and draw balances as JSON. Money values are returned as exact decimal strings (never floats). Rounding policy from the plan is applied to the response. Additional endpoints cover file preview/mapping, saved plans and rosters, and statement export.</p>
+
+    <h2 id="faq">FAQ &amp; troubleshooting</h2>
+    <h4>"Split credits must sum to 1.0"</h4>
+    <p>A deal's <code>credits</code> splits don't total 100%. Check the row named in the error. Overlays (<code>@overlay</code>) are additive and excluded from the 100%.</p>
+    <h4>A margin rule paid nothing for some deals</h4>
+    <p>Those rows had no margin data (<code>bill_rate/pay_rate/units</code> or <code>margin</code>). They're skipped and recorded in the ledger as <code>no_margin_data</code> rather than aborting the run — check your input columns.</p>
+    <h4>A rep earned nothing from a rule</h4>
+    <p>Likely a <code>min_attainment_pct</code> gate (below threshold), a <code>filter</code> that excluded their deals, or a zero quota. <code>icm trace</code> shows exactly which.</p>
+    <h4>"Invalid rule filter …"</h4>
+    <p>The filter expression didn't parse — check quotes around string values and back-ticks around column names with spaces. The message includes the offending expression.</p>
+    <h4>Are amounts exact?</h4>
+    <p>Yes — all calculation is decimal, no floating point. Rounding is display-only and configurable; a statement's lines always sum to its shown total.</p>
+    <h4>Does my data leave my machine?</h4>
+    <p>No. The engine runs locally; there's no cloud and no account. The database is a local SQLite file.</p>
+
+    <footer>
+      OpenIncent · AGPL-3.0 · runs locally, no cloud, no account ·
+      <a href="https://github.com/the-livster/OpenIncent">source</a> ·
+      <a href="trust.html">Trust &amp; data handling</a> ·
+      <a href="mailto:hello@openincent.com">hello@openincent.com</a>
+      <br><span class="muted">Documentation draft — generated locally. Verify command flags against <code>icm --help</code> for your installed version.</span>
+    </footer>
+  </article>
+  </main>
+</div>
+
+<script>
+(function(){
+  var btn=document.getElementById('menuBtn'), sb=document.getElementById('sidebar');
+  if(btn){btn.addEventListener('click',function(){sb.classList.toggle('open');});}
+  // close sidebar on nav click (mobile)
+  document.querySelectorAll('#nav a').forEach(function(a){
+    a.addEventListener('click',function(){sb.classList.remove('open');});
+  });
+  // scrollspy
+  var links=Array.prototype.slice.call(document.querySelectorAll('#nav a'));
+  var map={}; links.forEach(function(a){var id=a.getAttribute('href').slice(1);map[id]=a;});
+  var ids=Object.keys(map);
+  function onScroll(){
+    var pos=window.scrollY+120, current=null;
+    ids.forEach(function(id){var el=document.getElementById(id);
+      if(el&&el.offsetTop<=pos){current=id;}});
+    links.forEach(function(a){a.classList.remove('active');});
+    if(current&&map[current]){map[current].classList.add('active');}
+  }
+  window.addEventListener('scroll',onScroll,{passive:true});
+  onScroll();
+})();
+</script>
+</body>
+</html>

@@ -138,6 +138,7 @@ class _CreditUnit:
     close_date: date | None
     metadata: dict[str, Any]
     credited_margin: Decimal | None = None  # margin after splits; None if no margin data
+    credited_quota: Decimal | None = None   # attainment value after splits; None → use credited_amount
 
 
 def _resolve_credits(transactions: list[Transaction]) -> list[_CreditUnit]:
@@ -148,6 +149,7 @@ def _resolve_credits(transactions: list[Transaction]) -> list[_CreditUnit]:
         if not credits:
             credits = [Credit(payee_id=txn.payee_id, split_pct=Decimal("1"), kind="split")]
         mv = txn.margin_value
+        qv = txn.quota_value
         for c in credits:
             units.append(_CreditUnit(
                 transaction_id=txn.id,
@@ -160,6 +162,7 @@ def _resolve_credits(transactions: list[Transaction]) -> list[_CreditUnit]:
                 close_date=txn.close_date,
                 metadata=txn.metadata,
                 credited_margin=(mv * c.split_pct) if mv is not None else None,
+                credited_quota=qv * c.split_pct,
             ))
     return units
 
@@ -206,6 +209,7 @@ def _resolve_hierarchy_credits(
 
             manager_amount = cu.credited_amount * override
             manager_margin = (cu.credited_margin * override) if cu.credited_margin is not None else None
+            manager_quota = (cu.credited_quota * override) if cu.credited_quota is not None else None
             result.append(_CreditUnit(
                 transaction_id=cu.transaction_id,
                 payee_id=manager_id,
@@ -217,6 +221,7 @@ def _resolve_hierarchy_credits(
                 close_date=cu.close_date,
                 metadata={**cu.metadata, "_hierarchy_depth": str(depth + 1)},
                 credited_margin=manager_margin,
+                credited_quota=manager_quota,
             ))
 
             seen.add(manager_id)
@@ -231,6 +236,7 @@ def _compute_attainment(
     payee_map: dict[str, Payee],
     period_type: str,
     fractions: dict[tuple[str, str], Decimal] | None = None,
+    use_margin: bool = False,
 ) -> list[AttainmentSummary]:
     """Compute bookings vs quota per (payee, window).
 
@@ -238,6 +244,10 @@ def _compute_attainment(
     every team member sees the TEAM's combined bookings and quota, and
     all share the same attainment %. Solo payees (no team_id) use their
     own individual numbers.
+
+    When use_margin is True, bookings accumulate credited MARGIN (gross profit)
+    instead of credited amount — used to gate margin-based rules. The quota is
+    unchanged (a margin plan declares its quota in GP terms).
     """
     frac = fractions or {}
 
@@ -247,7 +257,11 @@ def _compute_attainment(
     for cu in credits:
         window = _window_key(cu.period, period_type)
         key = (cu.payee_id, window)
-        bookings[key] = bookings.get(key, Decimal("0")) + cu.credited_amount
+        if use_margin:
+            val = cu.credited_margin or Decimal("0")
+        else:
+            val = cu.credited_quota if cu.credited_quota is not None else cu.credited_amount
+        bookings[key] = bookings.get(key, Decimal("0")) + val
         if key not in quotas:
             p = payee_map.get(cu.payee_id)
             af = frac.get(key, Decimal("1"))
@@ -332,6 +346,34 @@ def _compute_attainment(
                     ))
 
     return summaries
+
+
+def _to_margin_basis(
+    rule: Any, synth_txns: list[Transaction], ledger: list[LedgerEntry],
+) -> list[Transaction]:
+    """Rebuild synthetic txns for a margin-based rule so `amount` is the credited
+    margin — the value tiered/accelerator rules slice and accumulate on.
+
+    Rows with no margin data are dropped and recorded in the ledger rather than
+    aborting the whole run.
+    """
+    out: list[Transaction] = []
+    for t in synth_txns:
+        if t.margin is None:
+            ledger.append(LedgerEntry(
+                transaction_id=t.id,
+                payee_id=t.payee_id,
+                rule_id=rule.id,
+                event_type="rule_skipped",
+                inputs={"reason": "no_margin_data"},
+                human_readable=(
+                    f"Transaction {t.id} skipped by rule {rule.id}: "
+                    f"base='margin' but no bill_rate/pay_rate/units or margin override"
+                ),
+            ))
+            continue
+        out.append(t.model_copy(update={"amount": t.margin}))
+    return out
 
 
 def _make_synthetic_transactions(credits: list[_CreditUnit]) -> list[Transaction]:
@@ -780,17 +822,32 @@ class CommissionEngine:
         for a in attainment:
             att_by_payee_window[(a.payee_id, a.period)] = a.attainment_pct
 
+        # Margin-based attainment lookup — only built when a margin rule gates on it.
+        margin_att_by_payee_window: dict[tuple[str, str], Decimal | None] = {}
+        if any(
+            getattr(r, "base", "amount") == "margin" and getattr(r, "min_attainment_pct", None)
+            for r in plan.rules
+        ):
+            for a in _compute_attainment(credits, payee_map, pt, fractions, use_margin=True):
+                margin_att_by_payee_window[(a.payee_id, a.period)] = a.attainment_pct
+
         for rule in plan.rules:
             # Build synthetic transactions for this rule's evaluation
             synth_txns = _make_synthetic_transactions(credits)
 
-            # Threshold gate: filter out payees below min_attainment_pct
+            # Threshold gate: filter out payees below min_attainment_pct.
+            # Margin-based rules gate on margin attainment.
             min_att = getattr(rule, "min_attainment_pct", None)
             if min_att is not None and min_att > 0:
+                _gate_att = (
+                    margin_att_by_payee_window
+                    if getattr(rule, "base", "amount") == "margin"
+                    else att_by_payee_window
+                )
                 gated_txns: list[Transaction] = []
                 for t in synth_txns:
                     key = (t.payee_id, _window_key(t.period, pt))
-                    att_pct = att_by_payee_window.get(key)
+                    att_pct = _gate_att.get(key)
                     if att_pct is None or att_pct >= min_att:
                         gated_txns.append(t)
                     else:
@@ -809,6 +866,13 @@ class CommissionEngine:
                             ),
                         ))
                 synth_txns = gated_txns
+
+            # Margin-based tiered/accelerator rules slice on credited margin:
+            # swap each synthetic txn's amount to its margin (dropping no-margin rows).
+            if getattr(rule, "base", "amount") == "margin" and isinstance(
+                rule, (TieredRule, AcceleratorRule)
+            ):
+                synth_txns = _to_margin_basis(rule, synth_txns, all_ledger)
 
             if isinstance(rule, FlatRateRule):
                 commissions, ledger = self._calc_flat_rate(
@@ -1273,12 +1337,6 @@ class CommissionEngine:
         fractions: dict[tuple[str, str], Decimal] | None = None,
         quota_overrides: dict[tuple[str, str], Decimal] | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
-        if rule.base == "margin":
-            raise NotImplementedError(
-                f"TieredRule {rule.id!r}: base='margin' is not yet supported for tiered rules. "
-                f"Margin-based tiered commission requires margin-attainment tracking, "
-                f"which is not implemented. Use a FlatRateRule with base='margin' instead."
-            )
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
         ledger: list[LedgerEntry] = []
@@ -1518,12 +1576,6 @@ class CommissionEngine:
         fractions: dict[tuple[str, str], Decimal] | None = None,
         quota_overrides: dict[tuple[str, str], Decimal] | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
-        if rule.base == "margin":
-            raise NotImplementedError(
-                f"AcceleratorRule {rule.id!r}: base='margin' is not yet supported for accelerator rules. "
-                f"Margin-based accelerator commission requires margin-attainment tracking, "
-                f"which is not implemented. Use a FlatRateRule with base='margin' instead."
-            )
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
         ledger: list[LedgerEntry] = []

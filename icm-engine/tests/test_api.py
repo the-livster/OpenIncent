@@ -487,3 +487,36 @@ class TestDrawBalances:
         # Fully recovered
         db.set_draw_balance("D001", "saas_ae", Decimal("0"))
         assert db.get_draw_balance("D001", "saas_ae") == Decimal("0")
+
+
+def test_calculate_applies_plan_rounding() -> None:
+    """A plan rounding policy rounds the API's commission lines and summary,
+    with the summary totalling the rounded lines."""
+    plan_yaml = b"""
+plan_id: round_test
+name: Round Test
+period_type: monthly
+currency: USD
+rounding:
+  mode: floor
+  places: 2
+rules:
+  - type: flat_rate
+    id: R1
+    rate: "0.05"
+"""
+    # 0.05 * 1291.99 = 64.5995 -> floor 2dp -> 64.59 (half-up would be 64.60)
+    txns = b"id,payee_id,amount,period\nT1,P1,1291.99,2026-01\n"
+    payees = b"id,name,quota,plan_id,effective_from\nP1,Alice,0,round_test,2026-01-01\n"
+    response = client.post(
+        f"{V}/calculate",
+        files={
+            "plan": ("plan.yaml", plan_yaml, "application/x-yaml"),
+            "transactions": ("transactions.csv", txns, "text/csv"),
+            "payees": ("payees.csv", payees, "text/csv"),
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["summary"]["P1"] == "64.59"
+    assert data["commissions"][0]["commission_amount"] == "64.59"

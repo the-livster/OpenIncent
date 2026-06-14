@@ -388,6 +388,38 @@ def plan_from_text(
     _run_sanity_check(plan_obj)
 
 
+@app.command("check-plan")
+def check_plan_command(
+    plan: str = typer.Argument(..., help="Path to plan YAML file"),
+) -> None:
+    """Run a plan's declared assertions (executable invariants) through the engine."""
+    from icm_engine.loader import load_plan
+    from icm_engine.plan_check import check_plan
+
+    plan_obj = load_plan(plan)
+    results = check_plan(plan_obj)
+    if not results:
+        console.print(
+            "[yellow]No assertions defined on this plan.[/yellow] "
+            "Add an `assertions:` list to catch payout mistranscriptions."
+        )
+        raise typer.Exit(code=0)
+
+    for r in results:
+        if r.passed:
+            console.print(f"[green]✓[/green] {r.name}: payout {r.actual} == {r.expected}")
+        else:
+            console.print(
+                f"[red]✗[/red] {r.name}: expected {r.expected}, got {r.actual}"
+                + (f" ({r.detail})" if r.detail else "")
+            )
+    failed = [r for r in results if not r.passed]
+    if failed:
+        console.print(f"\n[red]{len(failed)} of {len(results)} assertion(s) FAILED.[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"\n[green]All {len(results)} assertion(s) passed.[/green]")
+
+
 @app.command("map")
 def map_command(
     input_file: str = typer.Argument(..., help="Path to XLSX or CSV file"),
@@ -697,8 +729,9 @@ def statements_command(
     mbos_file: str = typer.Option(
         None, "--mbos", help="Path to MBOs/bonuses CSV"
     ),
-    rounding: str = typer.Option(
-        "half-up", "--rounding", help="Rounding mode: half-up (default), floor, ceil, none"
+    rounding: str | None = typer.Option(
+        None, "--rounding",
+        help="Rounding mode: half-up, half-even, floor, ceil, none. Defaults to the plan's policy.",
     ),
 ) -> None:
     """Generate per-rep commission statements in the requested formats."""
@@ -742,6 +775,18 @@ def statements_command(
     _src_cur = plan_obj.currency
     _rpt_cur = (plan_obj.reporting_currency or "").strip()
 
+    # Rounding precedence: explicit --rounding flag > plan policy > half-up/2dp.
+    _plan_round = plan_obj.rounding
+    if rounding is not None:
+        _rmode = parse_rounding_mode(rounding)
+        _rplaces = _plan_round.places if _plan_round else 2
+    elif _plan_round is not None:
+        _rmode = parse_rounding_mode(_plan_round.mode)
+        _rplaces = _plan_round.places
+    else:
+        _rmode = parse_rounding_mode("half-up")
+        _rplaces = 2
+
     files = generate_statements(
         result.commissions,
         payee_list,
@@ -749,7 +794,8 @@ def statements_command(
         period=period,
         formats=fmt_tuple,
         emit_zero=emit_zero,
-        rounding_mode=parse_rounding_mode(rounding),
+        rounding_mode=_rmode,
+        rounding_places=_rplaces,
         rates=_rates if _rates else None,
         reporting_currency=_rpt_cur,
         source_currency=_src_cur,

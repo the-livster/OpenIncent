@@ -9,6 +9,7 @@ Formats: xlsx, html (interactive), pdf (optional fpdf2 extra).
 from __future__ import annotations
 
 import html
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -45,6 +46,7 @@ def generate_statements(
     attainment: list[Any] | None = None,
     plan_name: str = "",
     rounding_mode: RoundingMode = _DEFAULT_ROUNDING,
+    rounding_places: int = 2,
     rates: dict[str, Decimal] | None = None,
     reporting_currency: str = "",
     source_currency: str = "",
@@ -91,13 +93,16 @@ def generate_statements(
     files: list[StatementFile] = []
     period_label = period or "all"
 
-    # Capture rounding mode as a closure so all _d() calls use it
+    # A single display formatter: convert (if a reporting currency is set)
+    # then round to the configured mode/places. Passed into every writer so
+    # statements honour the plan's rounding policy and reconcile line-to-total.
     _rm = rounding_mode
+    _places = rounding_places
     _rates = dict(rates or {})
     _rc = (reporting_currency or "").strip().upper()
     _sc = (source_currency or "").strip().upper()
 
-    def _d(amount: Decimal) -> str:
+    def _round_disp(amount: Decimal) -> Decimal:
         from icm_engine.currency import convert as _convert
         amt = amount
         if _rc and _sc and _sc != _rc:
@@ -105,7 +110,10 @@ def generate_statements(
                 amt = _convert(amount, _sc, _rc, _rates, rounding=_rm)
             except KeyError:
                 pass  # fall through — display in original currency
-        return str(round_money(amt, _rm))
+        return round_money(amt, _rm, _places)
+
+    def _fmt(amount: Decimal) -> str:
+        return str(_round_disp(amount))
 
     for pid in sorted(all_pids):
         lines = by_payee.get(pid, [])
@@ -114,11 +122,14 @@ def generate_statements(
 
         p = payee_map.get(pid)
         pname = _get(p, "name", pid) if p else pid
+        # Total = sum of the per-line DISPLAY amounts, so the statement
+        # reconciles to the penny against its own line items.
         total = sum(
-            (Decimal(_get_attr(c, "commission_amount", "0"))
+            (_round_disp(Decimal(_get_attr(c, "commission_amount", "0")))
             for c in lines),
             Decimal("0")
         )
+        total_str = str(total)
 
         # Find attainment for this payee
         payee_attainment: Any = None
@@ -130,29 +141,19 @@ def generate_statements(
 
         for fmt in formats:
             if fmt == "xlsx":
-                path = _write_xlsx(pid, pname, period_label, lines, total, out_dir,
-                                   plan_name=plan_name, attainment=payee_attainment)
+                path = _write_xlsx(pid, pname, period_label, lines, total_str, out_dir,
+                                   _d=_fmt, plan_name=plan_name, attainment=payee_attainment)
             elif fmt == "html":
-                path = _write_html(pid, pname, period_label, lines, total, generated_on, out_dir,
-                                   plan_name=plan_name, attainment=payee_attainment)
+                path = _write_html(pid, pname, period_label, lines, total_str, generated_on, out_dir,
+                                   _d=_fmt, plan_name=plan_name, attainment=payee_attainment)
             elif fmt == "pdf":
-                path = _write_pdf(pid, pname, period_label, lines, total, generated_on, out_dir,
-                                  plan_name=plan_name, attainment=payee_attainment)
+                path = _write_pdf(pid, pname, period_label, lines, total_str, generated_on, out_dir,
+                                  _d=_fmt, plan_name=plan_name, attainment=payee_attainment)
             else:
                 raise ValueError(f"Unknown format: {fmt}")
             files.append(StatementFile(payee_id=pid, period=period, path=path, fmt=fmt))
 
     return files
-
-
-# ------------------------------------------------------------------
-# Display rounding
-# ------------------------------------------------------------------
-
-
-def _d(amount: Decimal, mode: RoundingMode = _DEFAULT_ROUNDING) -> str:
-    """Round a Decimal to 2 decimal places for display."""
-    return str(round_money(amount, mode))
 
 
 # ------------------------------------------------------------------
@@ -193,8 +194,8 @@ def _adj_label(c: Any, pid: str) -> str:
 
 def _write_xlsx(
     pid: str, pname: str, period: str,
-    lines: list[Any], total: Decimal, out_dir: Path,
-    *, plan_name: str = "", attainment: Any = None,
+    lines: list[Any], total_str: str, out_dir: Path,
+    *, _d: Callable[[Decimal], str], plan_name: str = "", attainment: Any = None,
 ) -> Path:
     from icm_engine.excel import write_xlsx
 
@@ -238,7 +239,7 @@ def _write_xlsx(
         "rule_id": "",
         "base_amount": "",
         "rate": "",
-        "commission": _d(total),
+        "commission": total_str,
         "adjustment": "",
         "notes": "",
     })
@@ -255,8 +256,8 @@ def _write_xlsx(
 
 def _write_html(
     pid: str, pname: str, period: str,
-    lines: list[Any], total: Decimal, generated_on: date | None, out_dir: Path,
-    *, plan_name: str = "", attainment: Any = None,
+    lines: list[Any], total_str: str, generated_on: date | None, out_dir: Path,
+    *, _d: Callable[[Decimal], str], plan_name: str = "", attainment: Any = None,
 ) -> Path:
     esc = html.escape
     date_str = f"<p>Generated: {esc(str(generated_on))}</p>" if generated_on else ""
@@ -353,7 +354,7 @@ def _write_html(
     </tr></thead>
     <tbody>{''.join(rows_html_parts)}</tbody>
     <tfoot><tr class="total">
-      <td colspan="6">Total</td><td class="num">${_d(total)}</td><td></td>
+      <td colspan="6">Total</td><td class="num">${total_str}</td><td></td>
     </tr></tfoot>
   </table>
   <div class="footer">
@@ -412,8 +413,8 @@ def _write_html(
 
 def _write_pdf(
     pid: str, pname: str, period: str,
-    lines: list[Any], total: Decimal, generated_on: date | None, out_dir: Path,
-    *, plan_name: str = "", attainment: Any = None,
+    lines: list[Any], total_str: str, generated_on: date | None, out_dir: Path,
+    *, _d: Callable[[Decimal], str], plan_name: str = "", attainment: Any = None,
 ) -> Path:
     try:
         from fpdf import FPDF
@@ -471,7 +472,7 @@ def _write_pdf(
     # Sum width of first 4 columns for "Total" label
     label_w = sum(list(col_w.values())[:4])
     pdf.cell(label_w, 6, "Total", border=1)
-    pdf.cell(col_w["comm"], 6, f"${_d(total)}", border=1, align="R")
+    pdf.cell(col_w["comm"], 6, f"${total_str}", border=1, align="R")
     pdf.cell(col_w["adj"], 6, "", border=1)
     pdf.ln(6)
 

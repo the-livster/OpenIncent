@@ -301,3 +301,57 @@ class TestGenerateStatements:
                 assert "Enterprise Growth Plan" in all_text
             elif sf.fmt == "pdf":
                 assert sf.path.stat().st_size > 0
+
+
+class TestStatementRounding:
+    """Plan rounding policy reaches statement output and reconciles."""
+
+    def test_total_is_sum_of_rounded_lines(self) -> None:
+        """Total = sum of displayed line items, not the rounded sum.
+        0.005 x3 -> 0.01 x3 = 0.03, NOT round(0.015) = 0.02."""
+        from icm_engine.models import Commission
+        payees = [_payee(id="P1", name="Alice")]
+        commissions = [
+            Commission(transaction_id=f"T{i}", payee_id="P1", period="2026-01",
+                       rule_id="R1", base_amount=Decimal("0.10"), rate=Decimal("0.05"),
+                       commission_amount=Decimal("0.005"), notes="")
+            for i in range(3)
+        ]
+        out = Path("tests/fixtures/_stmt_recon")
+        out.mkdir(parents=True, exist_ok=True)
+        files = generate_statements(commissions, payees, out_dir=out, formats=("html",))
+        content = files[0].path.read_text(encoding="utf-8")
+        assert "$0.03" in content      # sum of rounded lines
+        assert "$0.02" not in content  # NOT the rounded sum
+
+    def test_floor_mode_flows_to_output(self) -> None:
+        """rounding_mode=FLOOR truncates display (proves mode now reaches writers)."""
+        from icm_engine.models import Commission
+        from icm_engine.rounding import RoundingMode
+        payees = [_payee(id="P1", name="Alice")]
+        commissions = [Commission(transaction_id="T1", payee_id="P1", period="2026-01",
+                       rule_id="R1", base_amount=Decimal("1000"), rate=Decimal("0.05"),
+                       commission_amount=Decimal("64.599"), notes="")]
+        out = Path("tests/fixtures/_stmt_floor")
+        out.mkdir(parents=True, exist_ok=True)
+        files = generate_statements(commissions, payees, out_dir=out, formats=("html",),
+                                    rounding_mode=RoundingMode.FLOOR)
+        content = files[0].path.read_text(encoding="utf-8")
+        assert "$64.59" in content
+        assert "$64.60" not in content
+
+    def test_places_zero_flows_to_output(self) -> None:
+        """rounding_places=0 renders whole units."""
+        from icm_engine.models import Commission
+        from icm_engine.rounding import RoundingMode
+        payees = [_payee(id="P1", name="Alice")]
+        commissions = [Commission(transaction_id="T1", payee_id="P1", period="2026-01",
+                       rule_id="R1", base_amount=Decimal("1000"), rate=Decimal("0.05"),
+                       commission_amount=Decimal("64.60"), notes="")]
+        out = Path("tests/fixtures/_stmt_places")
+        out.mkdir(parents=True, exist_ok=True)
+        files = generate_statements(commissions, payees, out_dir=out, formats=("html",),
+                                    rounding_mode=RoundingMode.HALF_UP, rounding_places=0)
+        content = files[0].path.read_text(encoding="utf-8")
+        assert "$65" in content
+        assert "$64.60" not in content

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 import yaml
 
-from icm_engine.models import Draw, Payee, Plan, RampSchedule, Transaction
+from icm_engine.models import Draw, Payee, Plan, RampSchedule, Transaction, parse_credits_spec
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def _load_transactions_csv(path: Path) -> list[Transaction]:
 
     transactions: list[Transaction] = []
     known = {"id", "payee_id", "deal_id", "period", "amount", "product", "close_date",
-             "bill_rate", "pay_rate", "units", "margin"}
+             "bill_rate", "pay_rate", "units", "margin", "credits", "quota_amount"}
     for i, row in enumerate(rows, start=2):
         meta = {k: v for k, v in row.items() if k and k not in known}
         try:
@@ -108,6 +108,8 @@ def _load_transactions_csv(path: Path) -> list[Transaction]:
             pay_raw = _get_field(row, "pay_rate")
             units_raw = _get_field(row, "units")
             margin_raw = _get_field(row, "margin")
+            credits_raw = _get_field(row, "credits")
+            quota_raw = _get_field(row, "quota_amount")
             t = Transaction(
                 id=txn_id,
                 payee_id=_get_field(row, "payee_id"),
@@ -121,6 +123,8 @@ def _load_transactions_csv(path: Path) -> list[Transaction]:
                 pay_rate=Decimal(pay_raw) if pay_raw else None,
                 units=Decimal(units_raw) if units_raw else Decimal("1"),
                 margin=Decimal(margin_raw) if margin_raw else None,
+                credits=parse_credits_spec(credits_raw) if credits_raw else None,
+                quota_amount=Decimal(quota_raw) if quota_raw else None,
             )
             transactions.append(t)
         except Exception as e:

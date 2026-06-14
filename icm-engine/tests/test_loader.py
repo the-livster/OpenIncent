@@ -126,3 +126,95 @@ class TestLoadParquet:
         assert payees[0].name == "Alice"
         assert payees[0].quota == Decimal("100000")
         assert payees[1].effective_to is None
+
+
+class TestCreditsColumn:
+    """G7: splits/credits ingestion from a CSV credits column."""
+
+    def _load(self, tmp_path: Path, credits_cell: str) -> list:
+        csv_path = tmp_path / "txns.csv"
+        csv_path.write_text(
+            "id,payee_id,amount,period,credits\n"
+            f'T1,R1,10000,2026-06,"{credits_cell}"\n',
+            encoding="utf-8",
+        )
+        txns, _ = load_transactions(csv_path)
+        return txns
+
+    def test_compact_form(self, tmp_path: Path) -> None:
+        txns = self._load(tmp_path, "R1:0.6;R2:0.4")
+        credits = txns[0].credits
+        assert credits is not None and len(credits) == 2
+        assert credits[0].payee_id == "R1"
+        assert credits[0].split_pct == Decimal("0.6")
+        assert credits[0].kind == "split"
+        assert credits[1].payee_id == "R2"
+        assert credits[1].split_pct == Decimal("0.4")
+
+    def test_percent_form(self, tmp_path: Path) -> None:
+        txns = self._load(tmp_path, "R1:60%;R2:40%")
+        credits = txns[0].credits
+        assert credits is not None
+        assert credits[0].split_pct == Decimal("0.6")
+        assert credits[1].split_pct == Decimal("0.4")
+
+    def test_overlay_suffix(self, tmp_path: Path) -> None:
+        txns = self._load(tmp_path, "R1:1.0;M1:0.1@overlay")
+        credits = txns[0].credits
+        assert credits is not None and len(credits) == 2
+        assert credits[1].payee_id == "M1"
+        assert credits[1].kind == "overlay"
+
+    def test_json_form(self, tmp_path: Path) -> None:
+        csv_path = tmp_path / "txns.csv"
+        csv_path.write_text(
+            "id,payee_id,amount,period,credits\n"
+            'T1,R1,10000,2026-06,"[{""payee_id"": ""R1"", ""split_pct"": ""0.5""},'
+            ' {""payee_id"": ""R2"", ""split_pct"": ""0.5""}]"\n',
+            encoding="utf-8",
+        )
+        txns, _ = load_transactions(csv_path)
+        credits = txns[0].credits
+        assert credits is not None and len(credits) == 2
+        assert credits[0].split_pct == Decimal("0.5")
+
+    def test_bad_split_sum_is_row_error(self, tmp_path: Path) -> None:
+        csv_path = tmp_path / "txns.csv"
+        csv_path.write_text(
+            "id,payee_id,amount,period,credits\n"
+            'T1,R1,10000,2026-06,"R1:0.6;R2:0.6"\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="Row 2"):
+            load_transactions(csv_path)
+
+    def test_malformed_entry_is_clear_row_error(self, tmp_path: Path) -> None:
+        csv_path = tmp_path / "txns.csv"
+        csv_path.write_text(
+            "id,payee_id,amount,period,credits\n"
+            'T1,R1,10000,2026-06,"R1=0.6"\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="Row 2"):
+            load_transactions(csv_path)
+
+    def test_absent_column_unchanged(self, tmp_path: Path) -> None:
+        csv_path = tmp_path / "txns.csv"
+        csv_path.write_text(
+            "id,payee_id,amount,period\nT1,R1,10000,2026-06\n",
+            encoding="utf-8",
+        )
+        txns, _ = load_transactions(csv_path)
+        assert txns[0].credits is None
+
+    def test_splits_alias_header(self, tmp_path: Path) -> None:
+        """A 'Deal Split' header maps to credits via aliases."""
+        csv_path = tmp_path / "txns.csv"
+        csv_path.write_text(
+            "id,payee_id,amount,period,Deal Split\n"
+            'T1,R1,10000,2026-06,"R1:0.5;R2:0.5"\n',
+            encoding="utf-8",
+        )
+        txns, _ = load_transactions(csv_path)
+        credits = txns[0].credits
+        assert credits is not None and len(credits) == 2

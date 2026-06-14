@@ -7,11 +7,12 @@ Rounding is a presentation concern: it never feeds back into the next run.
 from __future__ import annotations
 
 import enum
-from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 
 
 class RoundingMode(enum.Enum):
     HALF_UP = "half-up"
+    HALF_EVEN = "half-even"
     FLOOR = "floor"
     CEIL = "ceil"
     NONE = "none"
@@ -19,6 +20,7 @@ class RoundingMode(enum.Enum):
 
 _ROUNDING_MAP = {
     RoundingMode.HALF_UP: ROUND_HALF_UP,
+    RoundingMode.HALF_EVEN: ROUND_HALF_EVEN,
     RoundingMode.FLOOR: ROUND_FLOOR,
     RoundingMode.CEIL: ROUND_CEILING,
 }
@@ -26,23 +28,34 @@ _ROUNDING_MAP = {
 _CENTS = Decimal("0.01")
 
 
-def round_money(amount: Decimal, mode: RoundingMode = RoundingMode.HALF_UP) -> Decimal:
-    """Round a monetary amount to cents using the specified mode.
+def round_money(
+    amount: Decimal, mode: RoundingMode | str = RoundingMode.HALF_UP, places: int = 2,
+) -> Decimal:
+    """Round a monetary amount to `places` decimal places using the given mode.
 
-    HALF_UP: standard rounding (0.5 → 1)
-    FLOOR:   always round down
-    CEIL:    always round up
-    NONE:    return exact value (no rounding)
+    `mode` may be a RoundingMode or its string name (rounding policies are
+    string-configured in plans/CLI/API).
+
+    HALF_UP:   standard rounding (0.5 → 1)
+    HALF_EVEN: banker's rounding (0.5 → nearest even digit)
+    FLOOR:     always round down
+    CEIL:      always round up
+    NONE:      return exact value (no rounding)
     """
+    if isinstance(mode, str):
+        mode = parse_rounding_mode(mode)
     if mode == RoundingMode.NONE:
         return amount
     py_rounding = _ROUNDING_MAP[mode]
-    return amount.quantize(_CENTS, rounding=py_rounding)
+    quantum = _CENTS if places == 2 else Decimal(1).scaleb(-places)
+    return amount.quantize(quantum, rounding=py_rounding)
 
 
-def round_money_str(amount: Decimal, mode: RoundingMode = RoundingMode.HALF_UP) -> str:
+def round_money_str(
+    amount: Decimal, mode: RoundingMode = RoundingMode.HALF_UP, places: int = 2,
+) -> str:
     """Round and return as a string."""
-    return str(round_money(amount, mode))
+    return str(round_money(amount, mode, places))
 
 
 def parse_rounding_mode(value: str) -> RoundingMode:
@@ -55,7 +68,10 @@ def parse_rounding_mode(value: str) -> RoundingMode:
     aliases = {"round_half_up": RoundingMode.HALF_UP, "half_up": RoundingMode.HALF_UP,
                "round_floor": RoundingMode.FLOOR, "round_ceil": RoundingMode.CEIL,
                "none": RoundingMode.NONE, "off": RoundingMode.NONE,
-               "halfup": RoundingMode.HALF_UP, "half_up": RoundingMode.HALF_UP}
+               "halfup": RoundingMode.HALF_UP,
+               "round_half_even": RoundingMode.HALF_EVEN, "half_even": RoundingMode.HALF_EVEN,
+               "halfeven": RoundingMode.HALF_EVEN, "banker": RoundingMode.HALF_EVEN,
+               "bankers": RoundingMode.HALF_EVEN, "even": RoundingMode.HALF_EVEN}
     if v in aliases:
         return aliases[v]
     return RoundingMode.HALF_UP

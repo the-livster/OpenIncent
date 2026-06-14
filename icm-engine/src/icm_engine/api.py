@@ -23,6 +23,7 @@ from icm_engine.engine import CommissionEngine
 from icm_engine.ledger import LedgerEntry
 from icm_engine.loader import load_payees, load_plan, load_transactions
 from icm_engine.models import Commission, Payee, Plan
+from icm_engine.rounding import RoundingMode, parse_rounding_mode, round_money
 from icm_engine.run import LockedPeriodError, RunContext, execute, persist
 
 app = FastAPI(title="icm-engine")
@@ -309,12 +310,31 @@ async def calculate(
                 "traceback": _tb.format_exc(),
             }) from e
 
-        commissions = [c.model_dump() for c in result.commissions]
-        ledger_dicts = [e.to_dict() for e in result.ledger]
+        # Resolve each payee's display-rounding policy from their plan (if set).
+        # Rounding is display-only; the stored/calculated values stay exact.
+        _payee_policy: dict[str, tuple[RoundingMode, int]] = {}
+        for _pp in payee_list:
+            _plan = plan_library.get(_pp.plan_id)
+            if _plan is not None and _plan.rounding is not None:
+                _payee_policy[_pp.id] = (
+                    parse_rounding_mode(_plan.rounding.mode), _plan.rounding.places,
+                )
 
+        commissions = []
         summary: dict[str, Decimal] = {}
         for c in result.commissions:
-            summary[c.payee_id] = summary.get(c.payee_id, Decimal("0")) + c.commission_amount
+            d = c.model_dump()
+            amt = c.commission_amount
+            pol = _payee_policy.get(c.payee_id)
+            if pol is not None:
+                amt = round_money(amt, pol[0], pol[1])
+                d["commission_amount"] = amt
+                d["base_amount"] = round_money(c.base_amount, pol[0], pol[1])
+            commissions.append(d)
+            # Summary totals the ROUNDED lines so the UI reconciles to them.
+            summary[c.payee_id] = summary.get(c.payee_id, Decimal("0")) + amt
+
+        ledger_dicts = [e.to_dict() for e in result.ledger]
 
         return cast(dict[str, Any], _serialize({
             "calculation_ids": calc_ids,
@@ -1216,6 +1236,13 @@ async def export_statements(
 
         # --- Generate per-payee statements ---
         stmt_dir = root / "statements"
+        _r = plan_obj.rounding
+        _stmt_round: dict[str, Any] = {}
+        if _r is not None:
+            _stmt_round = {
+                "rounding_mode": parse_rounding_mode(_r.mode),
+                "rounding_places": _r.places,
+            }
         stmt_files = generate_statements(
             result.commissions,
             payee_list,
@@ -1224,6 +1251,7 @@ async def export_statements(
             formats=fmt_list,
             attainment=result.attainment,
             plan_name=plan_obj.name,
+            **_stmt_round,
         )
 
         # --- Internal summary ---

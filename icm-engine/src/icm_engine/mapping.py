@@ -69,6 +69,14 @@ _FIELD_ALIASES: dict[str, list[str]] = {
     "margin": [
         "margin", "gross profit", "gp", "gross margin", "spread",
     ],
+    "credits": [
+        "credits", "credit", "splits", "split", "deal split", "deal splits",
+        "split credits", "credit splits", "commission split",
+    ],
+    "quota_amount": [
+        "quota amount", "quota_amount", "quota credit", "quota value",
+        "attainment amount", "booking amount", "quota retired",
+    ],
 }
 
 
@@ -120,7 +128,7 @@ def infer_mapping(headers: list[str], file_pattern: str) -> ColumnMapping:
     """
     if file_pattern == "transactions":
         target_fields = ["id", "payee_id", "deal_id", "period", "amount", "product", "close_date",
-                         "bill_rate", "pay_rate", "units", "margin"]
+                         "bill_rate", "pay_rate", "units", "margin", "credits", "quota_amount"]
     elif file_pattern == "payees":
         target_fields = ["id", "name", "quota", "plan_id", "effective_from", "effective_to"]
     else:

@@ -338,3 +338,26 @@ class TestSaveLoadMapping:
         path.write_text("- just a list", encoding="utf-8")
         with pytest.raises(ValueError, match="must be a YAML mapping"):
             load_mapping(path)
+
+
+class TestCreditsMapping:
+    """G7: a Split header maps to credits and parses through apply_mapping."""
+
+    def test_infer_and_apply_credits(self) -> None:
+        from decimal import Decimal
+
+        from icm_engine.mapping import apply_mapping, infer_mapping
+        from icm_engine.models import Transaction
+
+        headers = ["ID", "Rep", "Amount", "Period", "Split"]
+        mapping = infer_mapping(headers, "transactions")
+        assert mapping.mappings.get("Split") == "credits"
+
+        rows = [{
+            "ID": "T1", "Rep": "R1", "Amount": "10000",
+            "Period": "2026-06", "Split": "R1:0.5;R2:0.5",
+        }]
+        txns = apply_mapping(rows, mapping, Transaction)
+        credits = txns[0].credits
+        assert credits is not None and len(credits) == 2
+        assert credits[0].split_pct == Decimal("0.5")

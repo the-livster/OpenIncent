@@ -85,6 +85,17 @@ class Transaction(BaseModel):
     pay_rate: Decimal | None = None
     units: Decimal = Decimal("1")
     margin: Decimal | None = None  # direct GP override
+    quota_amount: Decimal | None = None  # bookings value for attainment; defaults to amount
+
+    @property
+    def quota_value(self) -> Decimal:
+        """Amount this deal contributes to quota/attainment (defaults to `amount`).
+
+        Decouples 'counts toward quota' from 'pays commission': set `quota_amount`
+        to 0 for non-retiring deals (e.g. SPIF-only), or below `amount` for capped
+        quota retirement. Payment is unaffected — rules still pay on `amount`/margin.
+        """
+        return self.quota_amount if self.quota_amount is not None else self.amount
 
     @property
     def margin_value(self) -> Decimal | None:
@@ -98,6 +109,14 @@ class Transaction(BaseModel):
         if self.bill_rate is not None and self.pay_rate is not None:
             return (self.bill_rate - self.pay_rate) * self.units
         return None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_credits_str(cls, data: Any) -> Any:
+        # Accept a raw credits string (CSV cell / XLSX mapping) and parse it.
+        if isinstance(data, dict) and isinstance(data.get("credits"), str):
+            data["credits"] = parse_credits_spec(data["credits"])
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -283,6 +302,62 @@ class Credit(BaseModel):
     kind: Literal["split", "overlay"] = "split"
 
 
+def parse_credits_spec(spec: str) -> list[Credit] | None:
+    """Parse a credits cell from a CSV/XLSX file into Credit objects.
+
+    Two forms are accepted:
+    - JSON array:  [{"payee_id": "P1", "split_pct": "0.6"}, ...]
+    - Compact:     P1:0.6;P2:0.4   or   P1:60%;P2:40%
+      An entry may carry an '@overlay' suffix (P3:0.1@overlay) for overlay
+      credits; everything else is a split.
+
+    Returns None for blank input. Raises ValueError with a clear message on
+    malformed input (never a raw decimal/JSON error).
+    """
+    s = spec.strip()
+    if not s:
+        return None
+    if s.startswith("["):
+        import json
+
+        try:
+            raw = json.loads(s)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid credits JSON: {e}") from e
+        if not isinstance(raw, list):
+            raise ValueError("Credits JSON must be an array of credit objects")
+        return [Credit.model_validate(item) for item in raw]
+
+    out: list[Credit] = []
+    for part in s.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        kind: Literal["split", "overlay"] = "split"
+        if part.endswith("@overlay"):
+            kind = "overlay"
+            part = part[: -len("@overlay")].strip()
+        pid, sep, pct_raw = part.rpartition(":")
+        pid = pid.strip()
+        pct_s = pct_raw.strip()
+        if not sep or not pid or not pct_s:
+            raise ValueError(
+                f"Invalid credits entry {part!r}: expected 'payee_id:share' "
+                f"(e.g. 'P1:0.6;P2:0.4' or 'P1:60%;P2:40%')"
+            )
+        try:
+            if pct_s.endswith("%"):
+                pct = Decimal(pct_s[:-1].strip()) / Decimal("100")
+            else:
+                pct = Decimal(pct_s)
+        except ArithmeticError:
+            raise ValueError(
+                f"Invalid credits share {pct_s!r} for payee {pid!r}"
+            ) from None
+        out.append(Credit(payee_id=pid, split_pct=pct, kind=kind))
+    return out or None
+
+
 class Tier(BaseModel):
     """A tier boundary: rate applies from the previous threshold up to this one."""
 
@@ -342,6 +417,35 @@ Rule = Annotated[
 ]
 
 
+class RoundingPolicy(BaseModel):
+    """Display-boundary rounding for statements and API output.
+
+    Applied only when presenting amounts — it never feeds back into the
+    calculation, which always stays full-precision Decimal.
+    """
+
+    mode: Literal["half-up", "half-even", "floor", "ceil", "none"] = "half-up"
+    places: int = Field(default=2, ge=0, le=6)
+
+
+class PlanAssertion(BaseModel):
+    """An executable invariant on a plan: a tiny scenario + the payout it must produce.
+
+    Run via `icm check-plan` (or icm_engine.plan_check.check_plan) on every plan
+    change, so a mistranscribed rate that silently underpays at quota fails loudly
+    instead of at payroll time. The canonical OTE check is an assertion whose deals
+    sum to the reference quota (100% attainment) with `expect_total` = the stated OTE.
+    """
+
+    name: str = Field(min_length=1)
+    quota: Decimal = Field(gt=Decimal("0"))
+    deals: list[Decimal] = Field(min_length=1)    # deal values for one synthetic payee
+    expect_total: Decimal                          # expected total commission
+    base: Literal["amount", "margin"] = "amount"   # treat the deal values as amount or margin
+    period: str = Field(default="2026-01", pattern=r"^\d{4}-\d{2}$")
+    tolerance: Decimal = Field(default=Decimal("0.01"), ge=Decimal("0"))
+
+
 class Plan(BaseModel):
     plan_id: str
     name: str
@@ -352,6 +456,9 @@ class Plan(BaseModel):
     payout_cap: Decimal | None = Field(default=None, ge=Decimal("0"))
     draw: Draw | None = None
     pro_rating: str = Field(default="full", pattern=r"^(full|daily|zero)$")
+    rounding: RoundingPolicy | None = None  # None = exact (no display rounding)
+    ote: Decimal | None = Field(default=None, ge=Decimal("0"))  # stated on-target earnings (metadata)
+    assertions: list[PlanAssertion] = Field(default_factory=list)
 
 
 # --- Manual adjustments ---

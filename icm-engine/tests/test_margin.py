@@ -3,8 +3,6 @@
 from datetime import date
 from decimal import Decimal
 
-import pytest
-
 from icm_engine.engine import CommissionEngine
 from icm_engine.models import (
     FlatRateRule,
@@ -12,7 +10,6 @@ from icm_engine.models import (
     Plan,
     Transaction,
 )
-
 
 # ------------------------------------------------------------------
 # Transaction.margin_value
@@ -252,8 +249,10 @@ class TestBackwardCompat:
 # ------------------------------------------------------------------
 
 
-class TestMarginNotSupported:
-    def test_tiered_margin_raises(self) -> None:
+class TestMarginTieredAcceleratorCompute:
+    """Margin base now computes for tiered + accelerator (these previously raised)."""
+
+    def test_tiered_margin_computes(self) -> None:
         from icm_engine.models import Tier, TieredRule
 
         plan = Plan(
@@ -268,10 +267,11 @@ class TestMarginNotSupported:
             margin=Decimal("5000"),
         )]
         payees = [Payee(id="R1", name="R1", quota=Decimal("100000"), plan_id="test", effective_from=date.today())]
-        with pytest.raises(NotImplementedError, match="base='margin' is not yet supported for tiered rules"):
-            CommissionEngine().calculate(plan, txns, payees)
+        result = CommissionEngine().calculate(plan, txns, payees)
+        total = sum((c.commission_amount for c in result.commissions), Decimal("0"))
+        assert total == Decimal("500")  # 5,000 GP @ 10%
 
-    def test_accelerator_margin_raises(self) -> None:
+    def test_accelerator_margin_computes(self) -> None:
         from icm_engine.models import AcceleratorRule
 
         plan = Plan(
@@ -283,11 +283,13 @@ class TestMarginNotSupported:
         )
         txns = [Transaction(
             id="D1", payee_id="R1", amount=Decimal("0"), period="2026-06",
-            margin=Decimal("5000"),
+            margin=Decimal("150000"),
         )]
         payees = [Payee(id="R1", name="R1", quota=Decimal("100000"), plan_id="test", effective_from=date.today())]
-        with pytest.raises(NotImplementedError, match="base='margin' is not yet supported for accelerator rules"):
-            CommissionEngine().calculate(plan, txns, payees)
+        result = CommissionEngine().calculate(plan, txns, payees)
+        # GP above threshold = 150,000 - 100,000 = 50,000 ; 50,000 * 0.10 * 2 = 10,000
+        total = sum((c.commission_amount for c in result.commissions), Decimal("0"))
+        assert total == Decimal("10000")
 
 
 # ------------------------------------------------------------------
@@ -347,3 +349,99 @@ class TestCSVIngestion:
         assert txns[0].margin_value is None
         assert txns[0].bill_rate is None
         assert txns[0].pay_rate is None
+
+
+class TestMarginTieredAccelerator:
+    """Margin base for tiered + accelerator rules (intra-deal GP threshold splitting)."""
+
+    def _payee(self, pid: str, quota: str) -> Payee:
+        return Payee(id=pid, name=pid, quota=Decimal(quota),
+                     plan_id="contract", effective_from=date.today())
+
+    def test_tiered_slices_on_gp(self) -> None:
+        """A deal whose margin crosses a quota threshold is split across tier rates."""
+        from icm_engine.models import Tier, TieredRule
+        plan = Plan(
+            plan_id="contract", name="Contract Tiered", period_type="monthly", currency="USD",
+            rules=[TieredRule(type="tiered", id="t", base="margin", tiers=[
+                Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05")),
+                Tier(threshold_pct=Decimal("2.0"), rate=Decimal("0.10")),
+            ])],
+        )
+        payees = [self._payee("R1", "10000")]
+        txns = [Transaction(id="D1", payee_id="R1", amount=Decimal("0"),
+                            period="2026-06", margin=Decimal("15000"))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        # 10,000 GP @ 5% = 500 ; next 5,000 GP @ 10% = 500 → 1,000
+        total = sum((c.commission_amount for c in result.commissions), Decimal("0"))
+        assert total == Decimal("1000")
+        # base_amounts are margin slices that sum to the deal's GP
+        assert sum((c.base_amount for c in result.commissions), Decimal("0")) == Decimal("15000")
+        assert any(e.event_type == "tier_crossed" for e in result.ledger)
+
+    def test_accelerator_on_gp(self) -> None:
+        """Accelerator pays a multiplier on margin above the threshold."""
+        from icm_engine.models import AcceleratorRule
+        plan = Plan(
+            plan_id="contract", name="Contract Accel", period_type="monthly", currency="USD",
+            rules=[AcceleratorRule(type="accelerator", id="a", base="margin",
+                                   rate=Decimal("0.10"), threshold_pct=Decimal("1.0"),
+                                   multiplier=Decimal("2.0"))],
+        )
+        payees = [self._payee("R1", "10000")]
+        txns = [Transaction(id="D1", payee_id="R1", amount=Decimal("0"),
+                            period="2026-06", margin=Decimal("15000"))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        # threshold = 10,000 GP; above = 5,000 GP; 5,000 * 0.10 * 2.0 = 1,000
+        total = sum((c.commission_amount for c in result.commissions), Decimal("0"))
+        assert total == Decimal("1000")
+        assert result.commissions[0].base_amount == Decimal("5000")
+
+    def test_tiered_skips_no_margin_row(self) -> None:
+        """A no-margin row is skipped (ledger), not a crash, and others still pay."""
+        from icm_engine.models import Tier, TieredRule
+        plan = Plan(
+            plan_id="contract", name="C", period_type="monthly", currency="USD",
+            rules=[TieredRule(type="tiered", id="t", base="margin",
+                              tiers=[Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05"))])],
+        )
+        payees = [self._payee("R1", "10000")]
+        txns = [
+            Transaction(id="D1", payee_id="R1", amount=Decimal("0"),
+                        period="2026-06", margin=Decimal("5000")),
+            Transaction(id="D2", payee_id="R1", amount=Decimal("9999"), period="2026-06"),
+        ]
+        result = CommissionEngine().calculate(plan, txns, payees)  # must not raise
+        total = sum((c.commission_amount for c in result.commissions), Decimal("0"))
+        assert total == Decimal("250")  # 5,000 GP @ 5%
+        assert any(
+            e.event_type == "rule_skipped" and e.inputs.get("reason") == "no_margin_data"
+            for e in result.ledger
+        )
+
+    def test_min_attainment_gate_uses_margin(self) -> None:
+        """A margin rule's min_attainment gate is measured in margin, not amount.
+
+        Both deals have amount=0, so an amount-based gate would pay nobody."""
+        from icm_engine.models import Tier, TieredRule
+        plan = Plan(
+            plan_id="contract", name="C", period_type="monthly", currency="USD",
+            rules=[TieredRule(type="tiered", id="t", base="margin",
+                              min_attainment_pct=Decimal("0.5"),
+                              tiers=[Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.05"))])],
+        )
+        payees = [self._payee("A", "10000"), self._payee("B", "10000")]
+        txns = [
+            Transaction(id="D1", payee_id="A", amount=Decimal("0"),
+                        period="2026-06", margin=Decimal("6000")),  # 60% → passes
+            Transaction(id="D2", payee_id="B", amount=Decimal("0"),
+                        period="2026-06", margin=Decimal("4000")),  # 40% → gated
+        ]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        paid = {c.payee_id for c in result.commissions}
+        assert "A" in paid
+        assert "B" not in paid
+        assert any(
+            e.event_type == "rule_skipped" and e.inputs.get("reason") == "below_threshold_gate"
+            for e in result.ledger
+        )

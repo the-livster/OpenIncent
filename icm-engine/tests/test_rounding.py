@@ -84,3 +84,36 @@ class TestInternalPrecisionPreserved:
         assert displayed == "1.00"
         # The original total is still exact
         assert total == Decimal("1.000")
+
+
+class TestHalfEvenAndPlaces:
+    """HALF_EVEN mode and configurable places (added for plan rounding policy)."""
+
+    def test_half_even_rounds_to_even(self) -> None:
+        from icm_engine.rounding import RoundingMode, round_money
+        # 0.125 → 0.12 (2 is even); 0.135 → 0.14 (4 is even)
+        assert round_money(Decimal("0.125"), RoundingMode.HALF_EVEN) == Decimal("0.12")
+        assert round_money(Decimal("0.135"), RoundingMode.HALF_EVEN) == Decimal("0.14")
+
+    def test_half_up_vs_half_even_differ(self) -> None:
+        from icm_engine.rounding import RoundingMode, round_money
+        assert round_money(Decimal("0.125"), RoundingMode.HALF_UP) == Decimal("0.13")
+        assert round_money(Decimal("0.125"), RoundingMode.HALF_EVEN) == Decimal("0.12")
+
+    def test_places_zero(self) -> None:
+        from icm_engine.rounding import RoundingMode, round_money
+        assert round_money(Decimal("64.599"), RoundingMode.HALF_UP, 0) == Decimal("65")
+        assert round_money(Decimal("64.4"), RoundingMode.HALF_UP, 0) == Decimal("64")
+
+    def test_places_four(self) -> None:
+        from icm_engine.rounding import RoundingMode, round_money
+        assert round_money(Decimal("1.23456"), RoundingMode.HALF_UP, 4) == Decimal("1.2346")
+
+    def test_places_two_default_unchanged(self) -> None:
+        from icm_engine.rounding import RoundingMode, round_money
+        assert round_money(Decimal("64.595"), RoundingMode.HALF_UP) == Decimal("64.60")
+
+    def test_parse_half_even_aliases(self) -> None:
+        from icm_engine.rounding import RoundingMode, parse_rounding_mode
+        for s in ("half-even", "half_even", "bankers", "banker", "even"):
+            assert parse_rounding_mode(s) == RoundingMode.HALF_EVEN
