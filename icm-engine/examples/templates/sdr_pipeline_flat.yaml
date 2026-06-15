@@ -1,0 +1,21 @@
+plan_id: sdr_pipeline
+name: "SDR - Flat Rate on Sourced Pipeline (with a floor gate)"
+period_type: monthly
+currency: USD
+ote: "1500"
+# An SDR earns a flat percentage of the qualified pipeline they source, but only
+# once they clear a minimum-attainment gate (no commission below 50% of target).
+rules:
+  - id: pipeline_commission
+    type: flat_rate
+    rate: "0.02"
+    min_attainment_pct: "0.5"    # pays nothing until 50% of quota is reached
+assertions:
+  - name: "100% of quota pays the $1,500 OTE"
+    quota: "75000"
+    deals: ["75000"]
+    expect_total: "1500"          # 75000 * 0.02
+  - name: "below the 50% gate, nothing pays"
+    quota: "75000"
+    deals: ["30000"]              # 40% attainment, under the gate
+    expect_total: "0"

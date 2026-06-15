@@ -1,0 +1,28 @@
+plan_id: contract_gp
+name: "Contract Desk - Commission on Gross Profit"
+period_type: monthly
+currency: USD
+ote: "2000"
+# A contract/temp recruiter earns on gross profit (bill rate - pay rate, x hours),
+# not on revenue. Feed deals with bill_rate/pay_rate/units, or a direct `margin`
+# column; the engine slices GP across the tiers.
+rules:
+  - id: gp_commission
+    type: tiered
+    base: margin                 # commission base is gross profit, not amount
+    tiers:
+      - threshold_pct: "1.0"
+        rate: "0.20"
+      - threshold_pct: "100.0"
+        rate: "0.30"
+assertions:
+  - name: "100% of GP quota pays the $2,000 OTE"
+    base: margin
+    quota: "10000"
+    deals: ["10000"]
+    expect_total: "2000"          # 10000 * 0.20
+  - name: "GP above target accelerates to 30%"
+    base: margin
+    quota: "10000"
+    deals: ["14000"]
+    expect_total: "3200"          # 10000*0.20 + 4000*0.30

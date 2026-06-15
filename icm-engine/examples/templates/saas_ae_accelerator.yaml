@@ -1,0 +1,26 @@
+plan_id: saas_ae_accel
+name: "SaaS AE - Base Rate + Overachievement Accelerator"
+period_type: quarterly
+currency: USD
+ote: "12000"
+# Two rules stack: a flat base rate on all bookings, plus an accelerator that
+# adds an extra rate on the bookings ABOVE quota. (The accelerator pays
+# rate x multiplier on the excess only; the base rule covers the rest.)
+rules:
+  - id: base_rate
+    type: flat_rate
+    rate: "0.08"                 # 8% on all bookings
+  - id: overachievement
+    type: accelerator
+    rate: "0.04"                 # +4% ...
+    threshold_pct: "1.0"         # ... on bookings above 100% of quota
+    multiplier: "1.0"
+assertions:
+  - name: "at 100% attainment, payout == OTE (base only, no excess)"
+    quota: "150000"
+    deals: ["150000"]
+    expect_total: "12000"        # 150000 * 0.08
+  - name: "overachievement adds 4% on the excess above quota"
+    quota: "150000"
+    deals: ["200000"]
+    expect_total: "18000"        # 200000*0.08 + 50000*(0.04*1.0)

@@ -1,0 +1,24 @@
+plan_id: saas_ae
+name: "SaaS AE - Tiered Quota Attainment"
+period_type: quarterly
+currency: USD
+ote: "12000"
+# A quota-carrying AE: bookings up to quota pay the base rate, bookings above
+# quota pay an uplifted rate (boundary-crossing within a single deal).
+rules:
+  - id: quota_commission
+    type: tiered
+    tiers:
+      - threshold_pct: "1.0"
+        rate: "0.08"
+      - threshold_pct: "100.0"
+        rate: "0.12"
+assertions:
+  - name: "100% attainment pays the $12,000 quarterly OTE"
+    quota: "150000"
+    deals: ["150000"]
+    expect_total: "12000"         # 150000 * 0.08
+  - name: "a deal that crosses quota splits 8% / 12%"
+    quota: "150000"
+    deals: ["180000"]
+    expect_total: "15600"         # 150000*0.08 + 30000*0.12
