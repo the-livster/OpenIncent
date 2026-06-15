@@ -40,3 +40,6 @@ website/
 .dev.vars*
 !.dev.vars.example
 !.env.example
+
+# Private business/strategy docs — never commit
+_private/

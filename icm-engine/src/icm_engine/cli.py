@@ -407,10 +407,10 @@ def check_plan_command(
 
     for r in results:
         if r.passed:
-            console.print(f"[green]✓[/green] {r.name}: payout {r.actual} == {r.expected}")
+            console.print(f"[green]PASS[/green] {r.name}: payout {r.actual} == {r.expected}")
         else:
             console.print(
-                f"[red]✗[/red] {r.name}: expected {r.expected}, got {r.actual}"
+                f"[red]FAIL[/red] {r.name}: expected {r.expected}, got {r.actual}"
                 + (f" ({r.detail})" if r.detail else "")
             )
     failed = [r for r in results if not r.passed]

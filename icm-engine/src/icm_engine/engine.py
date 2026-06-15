@@ -348,6 +348,14 @@ def _compute_attainment(
     return summaries
 
 
+def _slice_note(piece: Decimal, from_pct: Decimal, to_pct: Decimal, rate: Decimal) -> str:
+    """Plain-English, rep-facing explanation of one tiered slice for statements."""
+    return (
+        f"{piece} of this deal fell between {from_pct:.0%} and "
+        f"{to_pct:.0%} of quota -> {rate:.2%}"
+    )
+
+
 def _to_margin_basis(
     rule: Any, synth_txns: list[Transaction], ledger: list[LedgerEntry],
 ) -> list[Transaction]:
@@ -1410,7 +1418,7 @@ class CommissionEngine:
                             base_amount=txn.amount,
                             rate=top_tier.rate,
                             commission_amount=commission,
-                            notes="Quota is zero — top tier applied",
+                            notes=f"No quota set — paid at top tier {top_tier.rate:.2%}",
                         )
                     )
                     ledger.append(
@@ -1452,6 +1460,8 @@ class CommissionEngine:
                         # Attainment at or above all tiers — remainder at highest rate
                         top = rule.tiers[-1]
                         commission = remainder * top.rate
+                        top_from = cumulative / quota
+                        top_to = (cumulative + remainder) / quota
                         results.append(
                             Commission(
                                 transaction_id=txn.id,
@@ -1461,7 +1471,7 @@ class CommissionEngine:
                                 base_amount=remainder,
                                 rate=top.rate,
                                 commission_amount=commission,
-                                notes=f"Tier {top.threshold_pct} (top): {remainder} @ {top.rate}",
+                                notes=_slice_note(remainder, top_from, top_to, top.rate),
                             )
                         )
                         ledger.append(
@@ -1505,7 +1515,7 @@ class CommissionEngine:
                             base_amount=piece,
                             rate=tier.rate,
                             commission_amount=commission,
-                            notes=f"Tier {tier.threshold_pct}: {piece} @ {tier.rate}",
+                            notes=_slice_note(piece, prev_cum_pct, new_cum_pct, tier.rate),
                         )
                     )
                     if prev_cum_pct < tier.threshold_pct <= new_cum_pct:

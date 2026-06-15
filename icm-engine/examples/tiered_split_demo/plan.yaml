@@ -1,0 +1,22 @@
+plan_id: tiered_split_demo
+name: "Tiered Plan — intra-deal split demo"
+period_type: monthly
+currency: USD
+ote: "5000"
+rules:
+  - id: tiered_core
+    type: tiered
+    tiers:
+      - threshold_pct: 1.0      # 0–100% of quota
+        rate: 0.05
+      - threshold_pct: 100.0    # everything above 100%
+        rate: 0.10
+assertions:
+  - name: ote_at_quota
+    quota: "100000"
+    deals: ["100000"]
+    expect_total: "5000"
+  - name: deal_crosses_quota
+    quota: "100000"
+    deals: ["120000"]
+    expect_total: "7000"
