@@ -420,6 +420,44 @@ def check_plan_command(
     console.print(f"\n[green]All {len(results)} assertion(s) passed.[/green]")
 
 
+@app.command("validate")
+def validate_command(
+    plan: str = typer.Option(..., "--plan", help="Path to plan YAML"),
+    transactions: str = typer.Option(..., "--transactions", help="Transactions CSV/XLSX"),
+    payees: str = typer.Option(..., "--payees", help="Payees CSV/XLSX"),
+) -> None:
+    """Check input data for duplicates, eligibility gaps, and missing FX rates."""
+    from icm_engine.loader import load_payees, load_plan, load_transactions
+    from icm_engine.validate import validate_run
+
+    plan_obj = load_plan(plan)
+    txns, _ = load_transactions(transactions)
+    payee_list, _ = load_payees(payees)
+
+    rates = None
+    try:
+        from icm_engine.currency import load_rates
+        from icm_engine.database import Database, default_db_path
+        rates = load_rates(Database(default_db_path()).get_setting("exchange_rates")) or None
+    except Exception:
+        rates = None
+
+    issues = validate_run(plan_obj, txns, payee_list, rates=rates)
+    if not issues:
+        console.print("[green]No validation issues found.[/green]")
+        raise typer.Exit(code=0)
+
+    for iss in issues:
+        color = "red" if iss.severity == "error" else "yellow"
+        console.print(f"[{color}]{iss.severity.upper()}[/{color}] [{iss.code}] {iss.message}")
+    errors = [i for i in issues if i.severity == "error"]
+    console.print(
+        f"\n{len(issues)} issue(s): {len(errors)} error(s), "
+        f"{len(issues) - len(errors)} warning(s)."
+    )
+    raise typer.Exit(code=1 if errors else 0)
+
+
 @app.command("map")
 def map_command(
     input_file: str = typer.Argument(..., help="Path to XLSX or CSV file"),
