@@ -476,7 +476,7 @@ def validate_command(
 
     for iss in issues:
         color = "red" if iss.severity == "error" else "yellow"
-        console.print(f"[{color}]{iss.severity.upper()}[/{color}] [{iss.code}] {iss.message}")
+        console.print(f"[{color}]{iss.severity.upper()}[/{color}] {iss.code}: {iss.message}")
     errors = [i for i in issues if i.severity == "error"]
     console.print(
         f"\n{len(issues)} issue(s): {len(errors)} error(s), "
