@@ -62,6 +62,7 @@ uv run icm --plan plan.yaml --transactions deals.csv --payees reps.csv --output 
 - **Per-rep statements:** XLSX, HTML, PDF — one file per payee
 - **Distribution:** SMTP / .eml / mail-merge; safe by default (no sending without `--send`)
 - **Audit ledger:** every decision point recorded — dispute resolution without recomputation
+- **Reconciliation:** diff a run against what was actually paid — surfaces underpaid, overpaid, and missed lines
 - **AI plan builder:** describe your comp plan in plain English, get validated YAML
 
 ## Architecture

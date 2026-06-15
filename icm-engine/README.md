@@ -55,6 +55,8 @@ Outputs:
 
 Per-rep statements (`icm statements`) and natural-language plan drafting (`icm plan-from-text`) are separate commands.
 
+For a complete, reconciled run — perm + contract desks, desk splits, a new-hire ramp, a manager override, and a reconciliation that surfaces underpaid and missed lines — see [`examples/staffing_reference/`](./examples/staffing_reference/).
+
 ## Define a plan in YAML
 
 ```yaml
@@ -123,7 +125,7 @@ Lock and unlock via the HTTP API or the CLI (`icm db` subcommands). Recalculatio
 
 ## Interfaces
 
-- **CLI** — `uv run icm …` (calculate, `statements`, `trace`, `distribute`, `plan-from-text`, `db` subcommands)
+- **CLI** — `uv run icm …` (calculate, `statements`, `trace`, `reconcile`, `validate`, `check-plan`, `distribute`, `plan-from-text`, `db` subcommands)
 - **HTTP API** — `icm serve`
 - **Desktop app** — a local native window (with auto-update; see [`RELEASING.md`](./RELEASING.md))
 
@@ -140,7 +142,7 @@ Optional extras: `excel` (xlsx + fuzzy mapping), `parquet` (warehouse exports), 
 
 ## Status
 
-Pre-1.0. The calculation core is well-tested (340+ tests, type-checked) and covers a full single-plan comp workflow. The plan format and API may still change. Use it, file issues, and tell us what your plans need — that's what shapes the roadmap.
+Pre-1.0. The calculation core is well-tested (520+ tests, type-checked) and covers a full single- and multi-plan comp workflow. The plan format and API may still change. Use it, file issues, and tell us what your plans need — that's what shapes the roadmap.
 
 ## Roadmap
 
@@ -152,10 +154,12 @@ Shipped:
 - ~~Multi-plan runs~~ ✅ — route each payee through their assigned plan in a single run
 - ~~Manager hierarchy~~ ✅ — auto-generate upline overrides from `manager_id` + `manager_override`
 - ~~Finance payout register~~ ✅ — rounded-to-cents XLSX auto-generated on period lock
+- ~~Commission on gross profit (margin)~~ ✅ · ~~Plan assertions (`check-plan`)~~ ✅ · ~~Ingestion validation (`validate`)~~ ✅ · ~~Reconciliation (`reconcile`)~~ ✅
 
 Next:
 - **Plan effective-dating**, what-if modeling, and org-level reporting
-- **Plan effective-dating**, what-if modeling, and org-level reporting
+
+See [`ROADMAP.md`](./ROADMAP.md) for the field-validated priorities and their current status.
 
 ## Develop
 
