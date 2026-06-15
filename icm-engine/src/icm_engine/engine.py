@@ -348,10 +348,13 @@ def _compute_attainment(
     return summaries
 
 
-def _slice_note(piece: Decimal, from_pct: Decimal, to_pct: Decimal, rate: Decimal) -> str:
+def _slice_note(
+    piece: Decimal, from_pct: Decimal, to_pct: Decimal, rate: Decimal, is_margin: bool = False,
+) -> str:
     """Plain-English, rep-facing explanation of one tiered slice for statements."""
+    what = "this deal's gross profit" if is_margin else "this deal"
     return (
-        f"{piece} of this deal fell between {from_pct:.0%} and "
+        f"{piece} of {what} fell between {from_pct:.0%} and "
         f"{to_pct:.0%} of quota -> {rate:.2%}"
     )
 
@@ -1471,7 +1474,10 @@ class CommissionEngine:
                                 base_amount=remainder,
                                 rate=top.rate,
                                 commission_amount=commission,
-                                notes=_slice_note(remainder, top_from, top_to, top.rate),
+                                notes=_slice_note(
+                                    remainder, top_from, top_to, top.rate,
+                                    rule.base == "margin",
+                                ),
                             )
                         )
                         ledger.append(
@@ -1515,7 +1521,10 @@ class CommissionEngine:
                             base_amount=piece,
                             rate=tier.rate,
                             commission_amount=commission,
-                            notes=_slice_note(piece, prev_cum_pct, new_cum_pct, tier.rate),
+                            notes=_slice_note(
+                                piece, prev_cum_pct, new_cum_pct, tier.rate,
+                                rule.base == "margin",
+                            ),
                         )
                     )
                     if prev_cum_pct < tier.threshold_pct <= new_cum_pct:
@@ -1665,6 +1674,7 @@ class CommissionEngine:
                             notes=(
                                 f"Accelerator {rule.multiplier}x on "
                                 f"{above_threshold} above {rule.threshold_pct}"
+                                + (" of quota (gross profit)" if rule.base == "margin" else "")
                             ),
                         )
                     )

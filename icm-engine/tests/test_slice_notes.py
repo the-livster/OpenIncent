@@ -42,3 +42,20 @@ class TestRepFacingSliceNotes:
         files = generate_statements(result.commissions, [_payee()], out_dir=tmp_path, formats=("html",))
         content = files[0].path.read_text(encoding="utf-8")
         assert "of quota" in content  # the plain-English band rendered onto the statement
+
+    def test_margin_tiered_slice_note_says_gross_profit(self) -> None:
+        # F4: margin tiered slices stamp "gross profit" so the rep knows the base.
+        plan = Plan(
+            plan_id="p", name="P", period_type="monthly", currency="USD",
+            rules=[TieredRule(type="tiered", id="t", base="margin", tiers=[
+                Tier(threshold_pct=Decimal("1.0"), rate=Decimal("0.10")),
+                Tier(threshold_pct=Decimal("2.0"), rate=Decimal("0.20")),
+            ])],
+        )
+        payees = [Payee(id="R1", name="Riley", quota=Decimal("10000"),
+                        plan_id="p", effective_from=date(2025, 1, 1))]
+        txns = [Transaction(id="D1", payee_id="R1", amount=Decimal("0"),
+                            period="2026-06", margin=Decimal("15000"))]
+        result = CommissionEngine().calculate(plan, txns, payees)
+        notes = " || ".join(c.notes for c in result.commissions)
+        assert "gross profit" in notes

@@ -731,7 +731,7 @@ def trace_command(
     # Steps
     for step in trace.steps:
         status_color = "green" if step.status == "matched" else "yellow"
-        status_icon = "\u2713" if step.status == "matched" else "\u2717"
+        status_icon = "+" if step.status == "matched" else "-"
         console.print(
             f"\n[bold {status_color}]{status_icon} Rule {step.rule_id}: "
             f"{step.status.upper()}[/bold {status_color}]"
