@@ -458,6 +458,125 @@ def validate_command(
     raise typer.Exit(code=1 if errors else 0)
 
 
+def _reconcile_compute(
+    plan: str | None,
+    plans: list[str] | None,
+    transactions: str,
+    payees: str,
+) -> dict[tuple[str, str], Decimal]:
+    """Recompute commissions (no DB) and aggregate per (payee, period)."""
+    from icm_engine.reconcile import commissions_to_totals
+
+    txns, _ = load_transactions(transactions)
+    payee_list, _ = load_payees(payees)
+    engine = CommissionEngine()
+    if plan:
+        result = engine.calculate(load_plan(plan), txns, payee_list)
+    else:
+        plan_library: dict[str, Plan] = {}
+        for pp in plans or []:
+            po = load_plan(pp)
+            plan_library[po.plan_id] = po
+        result = engine.calculate_run(plan_library, txns, payee_list)
+    return commissions_to_totals(result.commissions)
+
+
+@app.command("reconcile")
+def reconcile_command(
+    paid: str = typer.Option(
+        ..., "--paid", help="CSV of what was actually paid (payee, period, amount)"
+    ),
+    commissions: str = typer.Option(
+        None, "--commissions", help="Engine commissions.csv to reconcile (else recompute)"
+    ),
+    plan: str = typer.Option(None, "--plan", help="Plan YAML (single-plan recompute)"),
+    plans: list[str] = typer.Option(None, "--plans", help="Plan YAMLs (multi-plan recompute)"),
+    transactions: str = typer.Option(
+        None, "--transactions", help="Transactions CSV/XLSX (with --plan/--plans)"
+    ),
+    payees: str = typer.Option(
+        None, "--payees", help="Payees CSV/XLSX (with --plan/--plans)"
+    ),
+    period: str = typer.Option(
+        None, "--period", help="Default period for paid rows that lack one"
+    ),
+    tolerance: str = typer.Option("0.01", "--tolerance", help="Match tolerance (currency)"),
+    output: str = typer.Option(
+        None, "--output", "-o", help="Write the full reconciliation to this CSV"
+    ),
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero if any discrepancy is found"
+    ),
+) -> None:
+    """Reconcile computed commissions against what was actually paid.
+
+    Point at an existing run's output:
+      icm reconcile --commissions out/commissions.csv --paid payroll.csv
+    or recompute from a plan and diff in one step:
+      icm reconcile --plan plan.yaml --transactions deals.csv --payees reps.csv --paid payroll.csv
+    """
+    from icm_engine.reconcile import (
+        load_commission_totals_csv,
+        load_paid_csv,
+        reconcile_totals,
+        write_report_csv,
+    )
+
+    tol = Decimal(tolerance)
+
+    if commissions:
+        computed = load_commission_totals_csv(commissions)
+    elif (plan or plans) and transactions and payees:
+        computed = _reconcile_compute(plan, plans, transactions, payees)
+    else:
+        console.print(
+            "[red]Provide --commissions FILE, or --plan/--plans with "
+            "--transactions and --payees to recompute.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    paid_totals = load_paid_csv(paid, default_period=period)
+    report = reconcile_totals(computed, paid_totals, tolerance=tol)
+
+    if report.has_discrepancies:
+        style = {
+            "underpaid": "red", "missing": "red",
+            "overpaid": "yellow", "unexpected": "yellow", "match": "green",
+        }
+        table = Table(title="Commission reconciliation")
+        table.add_column("Payee", style="cyan")
+        table.add_column("Period")
+        table.add_column("Computed", justify="right")
+        table.add_column("Paid", justify="right")
+        table.add_column("Delta", justify="right")
+        table.add_column("Status")
+        for ln in report.discrepancies:
+            s = style.get(ln.status, "")
+            table.add_row(
+                ln.payee_id, ln.period, f"{ln.computed:,.2f}", f"{ln.paid:,.2f}",
+                f"{ln.delta:+,.2f}", f"[{s}]{ln.status}[/{s}]",
+            )
+        console.print(table)
+        parts = [f"{n} {s}" for s, n in sorted(report.counts().items()) if s != "match"]
+        console.print(f"\n[bold]{len(report.discrepancies)} discrepancy(ies):[/bold] " + ", ".join(parts))
+        console.print(
+            f"Owed to payees: [red]{report.total_owed_to_payees:,.2f}[/red]  |  "
+            f"Paid above plan: [yellow]{report.total_overpaid:,.2f}[/yellow]  |  "
+            f"Net: {report.net_delta:+,.2f}"
+        )
+    else:
+        console.print(
+            f"[green]All {len(report.lines)} payee-periods reconcile (+/-{tol}).[/green]"
+        )
+
+    if output:
+        write_report_csv(report, output)
+        console.print(f"[green]Wrote {output}[/green]")
+
+    if strict and report.has_discrepancies:
+        raise typer.Exit(code=1)
+
+
 @app.command("map")
 def map_command(
     input_file: str = typer.Argument(..., help="Path to XLSX or CSV file"),
