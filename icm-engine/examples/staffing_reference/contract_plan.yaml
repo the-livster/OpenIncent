@@ -1,0 +1,26 @@
+plan_id: contract_desk
+name: "Northwind - Contract Desk (margin / GP)"
+period_type: monthly
+currency: GBP
+ote: "1200"
+rules:
+  # Commission on gross profit (bill rate - pay rate, x hours), tiered on GP attainment.
+  - id: gp_commission
+    type: tiered
+    base: margin               # slice on gross profit, not on revenue
+    tiers:
+      - threshold_pct: "1.0"     # 0 -> 100% of GP quota
+        rate: "0.15"
+      - threshold_pct: "100.0"   # GP above 100%
+        rate: "0.225"
+assertions:
+  - name: "100% of GP quota pays £1,200"
+    base: margin
+    quota: "8000"
+    deals: ["8000"]
+    expect_total: "1200"
+  - name: "GP crossing 100% splits 15%/22.5%"
+    base: margin
+    quota: "8000"
+    deals: ["12000"]           # 8000 @ 15% = 1200, 4000 @ 22.5% = 900
+    expect_total: "2100"

@@ -1,0 +1,8 @@
+id,payee_id,deal_id,period,amount,product,close_date,bill_rate,pay_rate,units,credits
+NW-1042,P-101,PL-1042,2026-05,18000,Perm Placement,2026-05-06,,,,
+NW-1087,P-101,PL-1087,2026-05,12000,Perm Placement (60/40 desk split),2026-05-12,,,,P-101:0.6;P-102:0.4
+NW-1130,P-102,PL-1130,2026-05,13000,Perm Placement,2026-05-09,,,,
+NW-1205,P-103,PL-1205,2026-05,9500,Perm Placement,2026-05-15,,,,
+CT-3310,P-110,CT-3310,2026-05,9600,Contract GP,2026-05-08,60,40,480,
+CT-3402,P-111,CT-3402,2026-05,5100,Contract GP,2026-05-10,55,38,300,
+CT-3457,P-110,CT-3457,2026-05,3000,Contract GP (50/50 desk split),2026-05-14,50,35,200,P-110:0.5;P-111:0.5

@@ -1,0 +1,26 @@
+plan_id: perm_desk
+name: "Northwind - Permanent Desk"
+period_type: monthly
+currency: GBP
+ote: "2000"            # monthly on-target commission at 100% of quota
+rules:
+  # Placement-fee commission, tiered on quota attainment.
+  # Boundary-crossing: the part of a deal up to 100% pays 10%, the part above pays 15%.
+  - id: placement_fee
+    type: tiered
+    tiers:
+      - threshold_pct: "1.0"     # 0 -> 100% of quota
+        rate: "0.10"
+      - threshold_pct: "100.0"   # everything above 100% (sentinel for "the rest")
+        rate: "0.15"
+assertions:
+  # Executable invariant: a rep who bills exactly quota earns exactly OTE.
+  # Run with: icm check-plan perm_plan.yaml
+  - name: "100% of quota pays the £2,000 OTE"
+    quota: "20000"
+    deals: ["20000"]
+    expect_total: "2000"
+  - name: "a single deal that crosses 100% splits 10%/15%"
+    quota: "20000"
+    deals: ["24000"]            # 20000 @ 10% = 2000, 4000 @ 15% = 600
+    expect_total: "2600"

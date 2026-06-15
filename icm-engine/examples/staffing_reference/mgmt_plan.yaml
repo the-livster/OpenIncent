@@ -1,0 +1,16 @@
+plan_id: mgmt
+name: "Northwind - Desk Manager Override"
+period_type: monthly
+currency: GBP
+rules:
+  # Pass-through: the 2% override rate lives on each report (manager_override in
+  # payees.csv), so the manager's override credit is already 2% of the report's
+  # placement. A flat 100% rule pays that credit straight through.
+  - id: override_passthrough
+    type: flat_rate
+    rate: "1.0"
+assertions:
+  - name: "override credits pay straight through"
+    quota: "1"
+    deals: ["500"]
+    expect_total: "500"

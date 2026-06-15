@@ -1,0 +1,7 @@
+id,name,quota,plan_id,effective_from,effective_to,manager_id,manager_override,ramp_months,ramp_schedule,email
+P-101,Priya Shah,20000,perm_desk,2024-01-01,,P-201,0.02,,,priya@northwind.example
+P-102,Tom Reilly,20000,perm_desk,2024-06-01,,P-201,0.02,,,tom@northwind.example
+P-103,Jess Owens,20000,perm_desk,2026-05-01,,P-201,0.02,3,0.5 0.75 1.0,jess@northwind.example
+P-110,Aisha Khan,8000,contract_desk,2023-03-01,,,,,,aisha@northwind.example
+P-111,Marco Diaz,8000,contract_desk,2025-02-01,,,,,,marco@northwind.example
+P-201,Dana Lowe,0,mgmt,2022-01-01,,,,,,dana@northwind.example
