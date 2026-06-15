@@ -420,6 +420,33 @@ def check_plan_command(
     console.print(f"\n[green]All {len(results)} assertion(s) passed.[/green]")
 
 
+@app.command("lint")
+def lint_command(
+    plan: str = typer.Argument(..., help="Path to plan YAML file"),
+    strict: bool = typer.Option(False, "--strict", help="Exit non-zero on warnings too, not just errors"),
+) -> None:
+    """Statically check a plan for common comp-design mistakes (no data needed)."""
+    from icm_engine.loader import load_plan
+    from icm_engine.plan_lint import lint_plan
+
+    findings = lint_plan(load_plan(plan))
+    if not findings:
+        console.print("[green]No issues found.[/green]")
+        raise typer.Exit(code=0)
+
+    color = {"error": "red", "warning": "yellow", "info": "cyan"}
+    for f in findings:
+        c = color.get(f.severity, "")
+        console.print(f"[{c}]{f.severity.upper()}[/{c}] {f.code}: {f.message}")
+
+    errors = sum(1 for f in findings if f.severity == "error")
+    warnings = sum(1 for f in findings if f.severity == "warning")
+    info = len(findings) - errors - warnings
+    console.print(f"\n{len(findings)} finding(s): {errors} error(s), {warnings} warning(s), {info} info.")
+    if errors or (strict and warnings):
+        raise typer.Exit(code=1)
+
+
 @app.command("validate")
 def validate_command(
     plan: str = typer.Option(..., "--plan", help="Path to plan YAML"),
