@@ -1,6 +1,24 @@
 # OpenIncent
 
-Open-source incentive compensation engine. Turn your comp plan and deal data into per-payee commission payouts with a full, immutable audit trail explaining every number.
+A method for getting commission right — and free, open software that runs it.
+
+Commission rarely breaks because the math is hard. It breaks because **nobody can
+prove the number.** OpenIncent is a repeatable way of taking commission from a
+messy spreadsheet to **paid, reconciled, and explainable** — and proving it at
+every step. The method is the product; the engine is free software that runs it.
+
+- **The [method](METHOD.md)** — eight steps from messy spreadsheet to a run that
+  reconciles to reality and explains every line, with a four-level conformance
+  ladder (L0–L3) as your proof it worked.
+- **The engine** — a free, open implementation that runs the method: it validates
+  your data, checks your plan, calculates payouts, and reconciles the result to
+  what you actually paid.
+
+You can follow the method by hand, run the engine yourself, or
+[have someone run it for you](https://openincent.com/services). The method and the
+engine are both free.
+
+**Read the method:** [The OpenIncent Method](METHOD.md).
 
 **Desktop app for Windows.** The engine is also a Python library (`icm-engine`) with CLI and HTTP API.
 

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenIncent — How a commission is determined</title>
+<style>
+  :root{
+    --bg:#ffffff;--ink:#0f172a;--ink2:#475569;--ink3:#64748b;--line:#e2e8f0;
+    --accent:#1d4ed8;--accent-ink:#1e3a8a;--soft:#f1f5f9;--soft2:#eff4ff;
+    --teal:#0f766e;--teal-fill:#ecfdf5;--teal-line:#99f6e4;
+    --violet:#6d28d9;--violet-fill:#f5f3ff;--violet-line:#ddd6fe;
+    --amber-ink:#92400e;--amber-fill:#fffbeb;--amber-line:#fde68a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1160px;margin:0 auto;padding:48px 30px 90px}
+  h1{font-size:28px;letter-spacing:-.02em;margin:0 0 6px;font-weight:800}
+  .eyebrow{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;
+    color:var(--accent);margin:0 0 13px}
+  .sub{color:var(--ink2);font-size:16px;margin:0 0 4px;max-width:760px}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em;background:var(--soft);
+    padding:1px 5px;border-radius:5px;color:var(--accent-ink)}
+
+  .model{margin:26px 0 0;border:1px solid var(--line);border-radius:20px;padding:22px 22px 20px;
+    background:#fff;cursor:pointer;transition:border-color .25s,box-shadow .25s;outline:none}
+  .model:hover,.model:focus-within,.model.open{border-color:#cdd9f5;box-shadow:0 12px 34px rgba(29,78,216,.10)}
+  .model-hint{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;
+    color:var(--ink3);margin-bottom:18px;display:flex;align-items:center;gap:8px}
+  .model-hint .mh-c{display:none}
+  .model-hint b{color:var(--accent)}
+  .model:hover .mh-s,.model:focus-within .mh-s,.model.open .mh-s{display:none}
+  .model:hover .mh-c,.model:focus-within .mh-c,.model.open .mh-c{display:inline;color:var(--accent)}
+  .precond{font-size:13px;color:var(--ink2);margin:0 0 12px}
+  .precond b{color:var(--ink)}
+
+  .flow{display:flex;align-items:stretch;gap:6px}
+  .stage{flex:1 1 0;min-width:0;border:1px solid var(--line);border-radius:14px;padding:14px 13px;
+    background:#fbfdff;display:flex;flex-direction:column;transition:background .25s,border-color .25s}
+  .model:hover .stage,.model:focus-within .stage,.model.open .stage{background:#fff}
+  .stage .n{width:24px;height:24px;border-radius:50%;background:var(--teal-fill);color:var(--teal);
+    font-weight:800;font-size:12px;display:flex;align-items:center;justify-content:center;
+    border:1px solid var(--teal-line);margin-bottom:9px}
+  .stage.pay .n{background:var(--violet-fill);color:var(--violet);border-color:var(--violet-line)}
+  .stage h3{margin:0;font-size:15px;letter-spacing:-.01em}
+  .stage .q{font-size:12.5px;color:var(--ink2);margin-top:2px}
+  .stage .detail{max-height:0;opacity:0;overflow:hidden;
+    transition:max-height .45s ease,opacity .3s ease,margin-top .3s ease;margin-top:0}
+  .model:hover .detail,.model:focus-within .detail,.model.open .detail{max-height:340px;opacity:1;margin-top:12px}
+  .chips{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+  .chip{font-size:11.5px;font-weight:500;color:var(--teal);background:var(--teal-fill);
+    border:1px solid var(--teal-line);border-radius:8px;padding:4px 9px;line-height:1.25;
+    display:inline-block;max-width:100%}
+  .stage.pay .chip{color:var(--violet);background:var(--violet-fill);border-color:var(--violet-line)}
+  .chip.carry{color:var(--amber-ink);background:var(--amber-fill);border-color:var(--amber-line)}
+  .chip.minus{color:#9f1239;background:#fff1f2;border-color:#fecdd3}
+  .branch{display:flex;flex-direction:column;gap:5px}
+  .branch .root{font-size:11.5px;font-weight:600;color:var(--ink2)}
+  .branch .kids{display:flex;flex-direction:column;gap:5px;padding-left:12px;
+    border-left:2px solid var(--teal-line);margin-left:3px}
+
+  .arrow{flex:0 0 auto;display:flex;align-items:center;color:var(--accent);font-size:18px;font-weight:700;padding:0 1px}
+
+  .audit{margin-top:16px;border:1px dashed #cbd5e1;border-radius:12px;padding:11px 16px;
+    font-size:13px;color:var(--ink2);display:flex;align-items:center;gap:9px}
+  .audit b{color:var(--ink)}
+  .audit .tag{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--accent);background:var(--soft2);border:1px solid #bfd3ff;border-radius:999px;padding:2px 9px}
+
+  footer{margin-top:50px;padding-top:20px;border-top:1px solid var(--line);
+    color:var(--ink3);font-size:13px}
+  @media (max-width:880px){
+    .flow{flex-wrap:wrap}
+    .stage{flex:1 1 44%}
+    .arrow{display:none}
+    .model:hover .detail,.model:focus-within .detail,.model.open .detail{max-height:500px}
+  }
+  @media (prefers-reduced-motion:reduce){.detail{transition:opacity .15s}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">OpenIncent · the model</p>
+  <h1>How a commission is determined</h1>
+  <p class="sub">A deal moves left to right through six concepts, each deciding one thing about what it pays. The basic shape is a straight line; the real work is the detail and branching inside each step.</p>
+
+  <div class="model" tabindex="0" role="button" aria-label="Commission model — hover or tap to expand into full detail and branching">
+    <p class="precond">Starts from <b>your plan, payees &amp; deals</b>.</p>
+
+    <div class="flow">
+      <div class="stage">
+        <div class="n">1</div>
+        <h3>Eligibility</h3>
+        <div class="q">does this deal count?</div>
+        <div class="detail"><div class="chips">
+          <span class="chip">in employment window</span>
+          <span class="chip">assigned to this plan</span>
+          <span class="chip">matches rule filter</span>
+          <span class="chip">not a duplicate</span>
+        </div></div>
+      </div>
+      <div class="arrow" aria-hidden="true">&rarr;</div>
+
+      <div class="stage">
+        <div class="n">2</div>
+        <h3>Crediting</h3>
+        <div class="q">who earns it?</div>
+        <div class="detail"><div class="branch">
+          <span class="root">1 deal splits to&hellip;</span>
+          <div class="kids">
+            <span class="chip">Rep A · 60%</span>
+            <span class="chip">Rep B · 40%</span>
+            <span class="chip">Overlay · +10%</span>
+            <span class="chip">Manager override</span>
+          </div>
+        </div></div>
+      </div>
+      <div class="arrow" aria-hidden="true">&rarr;</div>
+
+      <div class="stage">
+        <div class="n">3</div>
+        <h3>Attainment</h3>
+        <div class="q">how far into quota?</div>
+        <div class="detail"><div class="chips">
+          <span class="chip">credited bookings ÷ quota</span>
+          <span class="chip">quota categories</span>
+          <span class="chip">new-hire ramp</span>
+          <span class="chip">team / shared pool</span>
+        </div></div>
+      </div>
+      <div class="arrow" aria-hidden="true">&rarr;</div>
+
+      <div class="stage">
+        <div class="n">4</div>
+        <h3>Earnings</h3>
+        <div class="q">what the rules pay</div>
+        <div class="detail"><div class="branch">
+          <span class="root">rate × base, by attainment</span>
+          <div class="kids">
+            <span class="chip">flat rate</span>
+            <span class="chip">tier 1 → 2 → 3 (slices)</span>
+            <span class="chip">accelerator ×</span>
+            <span class="chip">on revenue or margin</span>
+          </div>
+        </div></div>
+      </div>
+      <div class="arrow" aria-hidden="true">&rarr;</div>
+
+      <div class="stage">
+        <div class="n">5</div>
+        <h3>Adjustments</h3>
+        <div class="q">what bends the number</div>
+        <div class="detail"><div class="chips">
+          <span class="chip">per-rule &amp; payout caps</span>
+          <span class="chip carry">draw &rarr; carries forward</span>
+          <span class="chip minus">clawback (−)</span>
+          <span class="chip carry">true-up &larr; prior period</span>
+          <span class="chip">bonus / MBO</span>
+          <span class="chip">manual override</span>
+        </div></div>
+      </div>
+      <div class="arrow" aria-hidden="true">&rarr;</div>
+
+      <div class="stage pay">
+        <div class="n">6</div>
+        <h3>Payout</h3>
+        <div class="q">final, explained</div>
+        <div class="detail"><div class="chips">
+          <span class="chip">per-rep amount</span>
+          <span class="chip">statement · PDF / XLSX</span>
+          <span class="chip">finance register</span>
+          <span class="chip">reconciled to actuals</span>
+        </div></div>
+      </div>
+    </div>
+
+    <div class="audit">
+      <span class="tag">always on</span>
+      <span><b>Audit ledger</b> — every step above is recorded, so any number traces back to its exact rule and deal.</span>
+    </div>
+  </div>
+
+  <footer>
+    The OpenIncent commission model · companion to METHOD.md · AGPL-3.0 · openincent.com
+  </footer>
+
+</div>
+<script>
+  document.querySelectorAll('.model').forEach(function(m){
+    m.addEventListener('click', function(){ m.classList.toggle('open'); });
+    m.addEventListener('keydown', function(e){
+      if(e.key==='Enter'||e.key===' '){ e.preventDefault(); m.classList.toggle('open'); }
+    });
+  });
+</script>
+</body>
+</html>

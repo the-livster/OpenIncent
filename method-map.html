@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The OpenIncent Method — Map</title>
+<style>
+  :root{
+    --bg:#ffffff; --ink:#0f172a; --ink2:#475569; --ink3:#64748b; --line:#e2e8f0;
+    --accent:#1d4ed8; --accent-ink:#1e3a8a; --soft:#f1f5f9; --soft2:#eff4ff;
+    --blue-fill:#eff4ff; --blue-line:#bfd3ff; --blue-ink:#1e3a8a;
+    --teal-fill:#ecfdf5; --teal-line:#a7f3d0; --teal-ink:#065f46;
+    --violet-fill:#f5f3ff; --violet-line:#ddd6fe; --violet-ink:#5b21b6;
+    --amber-fill:#fffbeb; --amber-line:#fde68a; --amber-ink:#92400e;
+    --slate-fill:#f1f5f9; --slate-line:#cbd5e1; --slate-ink:#334155;
+    --red-fill:#fef2f2; --red-line:#fecaca; --red-ink:#991b1b;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1040px;margin:0 auto;padding:48px 32px 80px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;
+    background:var(--soft);padding:1px 5px;border-radius:5px;color:var(--accent-ink)}
+  h1{font-size:30px;letter-spacing:-.02em;margin:0 0 6px;font-weight:800}
+  h2{font-size:21px;letter-spacing:-.01em;margin:52px 0 6px;font-weight:750}
+  h2 .num{color:var(--accent);font-weight:800;margin-right:10px}
+  .sub{color:var(--ink2);font-size:16px;margin:0 0 4px;max-width:760px}
+  .eyebrow{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;
+    color:var(--accent);margin:0 0 14px}
+  .lede{color:var(--ink2);max-width:780px;margin:4px 0 0}
+  .meta{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 0}
+  .pill{font-size:12.5px;font-weight:600;color:var(--accent-ink);background:var(--soft2);
+    border:1px solid var(--blue-line);border-radius:999px;padding:4px 12px}
+  hr{border:0;border-top:1px solid var(--line);margin:40px 0 0}
+
+  .strip{display:flex;align-items:stretch;gap:0;margin:18px 0 0;flex-wrap:wrap}
+  .strip .b{flex:1;min-width:200px;border:1px solid var(--line);border-radius:14px;padding:16px 18px;background:#fff}
+  .strip .b.defines{border-color:var(--blue-line);background:var(--blue-fill)}
+  .strip .b.enforces{border-color:var(--teal-line);background:var(--teal-fill)}
+  .strip .arrow{display:flex;align-items:center;color:var(--ink3);font-size:24px;font-weight:700;padding:0 14px}
+  .strip h3{margin:0 0 4px;font-size:15px}
+  .strip p{margin:0;font-size:13.5px;color:var(--ink2)}
+  .strip .defines h3{color:var(--blue-ink)} .strip .enforces h3{color:var(--teal-ink)}
+
+  figure{margin:18px 0 0}
+  figure svg{width:100%;height:auto;display:block}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:14px 2px 0;font-size:12.5px;color:var(--ink2)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block;border:1px solid}
+  .d-blue{background:var(--blue-fill);border-color:var(--blue-line)}
+  .d-teal{background:var(--teal-fill);border-color:var(--teal-line)}
+  .d-violet{background:var(--violet-fill);border-color:var(--violet-line)}
+  .d-amber{background:var(--amber-fill);border-color:var(--amber-line)}
+  .d-slate{background:var(--slate-fill);border-color:var(--slate-line)}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:14px;margin:18px 0 0}
+  .ent{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}
+  .ent h4{margin:0;font-size:14.5px;padding:10px 14px;display:flex;justify-content:space-between;
+    align-items:baseline;gap:8px}
+  .ent h4 .tag{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;opacity:.8}
+  .ent ul{margin:0;padding:10px 14px 12px;list-style:none;font-size:12.8px;color:var(--ink2)}
+  .ent li{padding:2px 0;display:flex;gap:6px}
+  .ent li b{color:var(--ink);font-weight:600;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+  .ent li .k{font-size:10px;font-weight:700;color:var(--accent);align-self:center}
+  .c-blue h4{background:var(--blue-fill);color:var(--blue-ink);border-bottom:1px solid var(--blue-line)}
+  .c-teal h4{background:var(--teal-fill);color:var(--teal-ink);border-bottom:1px solid var(--teal-line)}
+  .c-violet h4{background:var(--violet-fill);color:var(--violet-ink);border-bottom:1px solid var(--violet-line)}
+  .c-amber h4{background:var(--amber-fill);color:var(--amber-ink);border-bottom:1px solid var(--amber-line)}
+  .c-slate h4{background:var(--slate-fill);color:var(--slate-ink);border-bottom:1px solid var(--slate-line)}
+  .grouphead{font-size:13px;font-weight:700;color:var(--ink2);margin:22px 0 0;text-transform:uppercase;letter-spacing:.07em}
+
+  table{width:100%;border-collapse:collapse;margin:16px 0 0;font-size:13.2px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink3);font-weight:700}
+  td code{font-size:12px}
+  .sev{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+    padding:2px 8px;border-radius:999px;white-space:nowrap}
+  .sev.error{background:var(--red-fill);color:var(--red-ink);border:1px solid var(--red-line)}
+  .sev.warning{background:var(--amber-fill);color:var(--amber-ink);border:1px solid var(--amber-line)}
+  .sev.info{background:var(--blue-fill);color:var(--blue-ink);border:1px solid var(--blue-line)}
+  .ctrlgroup{font-weight:700;color:var(--ink);background:var(--soft);font-size:12.5px}
+
+  .ladder{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 0}
+  .rung{border:1px solid var(--line);border-radius:12px;padding:16px;background:#fff;position:relative}
+  .rung .lv{font-size:12px;font-weight:800;color:var(--accent);letter-spacing:.04em}
+  .rung h4{margin:4px 0 6px;font-size:16px}
+  .rung p{margin:0 0 10px;font-size:13px;color:var(--ink2)}
+  .rung .by{font-size:12px;color:var(--ink3);border-top:1px solid var(--line);padding-top:9px}
+  .rung .by b{color:var(--ink);font-weight:600}
+  .rung:nth-child(1){background:#fbfdff}
+  .rung:nth-child(2){background:#f6faff}
+  .rung:nth-child(3){background:#eff6ff}
+  .rung:nth-child(4){background:var(--soft2);border-color:var(--blue-line)}
+  .rung:nth-child(4) .lv{color:var(--accent-ink)}
+  .gate{display:inline-block;margin-top:8px;font-size:11px;font-weight:700;color:var(--teal-ink);
+    background:var(--teal-fill);border:1px solid var(--teal-line);border-radius:999px;padding:2px 9px}
+
+  .steps{counter-reset:s;margin:18px 0 0;padding:0;list-style:none}
+  .steps li{position:relative;padding:12px 0 14px 52px;border-bottom:1px solid var(--line)}
+  .steps li:before{counter-increment:s;content:counter(s);position:absolute;left:0;top:11px;
+    width:34px;height:34px;border-radius:50%;background:var(--soft2);color:var(--accent);
+    font-weight:800;font-size:15px;display:flex;align-items:center;justify-content:center;
+    border:1px solid var(--blue-line)}
+  .steps h4{margin:2px 0 3px;font-size:15px}
+  .steps p{margin:0;font-size:13.5px;color:var(--ink2)}
+  .steps .lvl{float:right;font-size:11px;font-weight:700;color:var(--teal-ink);
+    background:var(--teal-fill);border:1px solid var(--teal-line);border-radius:999px;padding:2px 9px}
+  footer{margin-top:56px;padding-top:22px;border-top:1px solid var(--line);
+    color:var(--ink3);font-size:13px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  @media print{
+    body{font-size:12px} .wrap{padding:0}
+    h2{margin-top:30px} .cards{grid-template-columns:repeat(3,1fr)}
+    .ladder{grid-template-columns:repeat(4,1fr)}
+    a{color:var(--ink)}
+  }
+  @media(max-width:720px){
+    .ladder{grid-template-columns:1fr 1fr} .strip .arrow{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">OpenIncent</p>
+  <h1>The OpenIncent Method</h1>
+  <p class="sub">How to take commission from a messy spreadsheet to paid, reconciled, and explainable — the data it needs, the controls it must pass, and the eight steps that get there — mapped on one page.</p>
+  <div class="meta">
+    <span class="pill">Version 0.1</span>
+    <span class="pill">2026-06-28</span>
+    <span class="pill">Companion to METHOD.md</span>
+  </div>
+
+  <h2><span class="num">1</span>Method &amp; engine</h2>
+  <p class="lede">The method is the product — a repeatable way of working that ends in payouts you can prove. The engine is free software that runs it. You can follow the method by hand; the engine just makes it cheap and fast.</p>
+  <div class="strip">
+    <div class="b defines">
+      <h3>The method — defines</h3>
+      <p>The data it needs, a named control library, a conformance ladder, and eight repeatable steps. Versioned independently. This is the scarce, defensible asset.</p>
+    </div>
+    <div class="arrow">→</div>
+    <div class="b enforces">
+      <h3>The engine — runs it</h3>
+      <p><code>icm validate</code> · <code>lint</code> · <code>check-plan</code> · <code>reconcile</code>. Free and open (AGPL), cloneable — and that's the point.</p>
+    </div>
+  </div>
+
+  <h2><span class="num">2</span>Data model — relationships</h2>
+  <p class="lede">Three inputs feed a run: the plan, the payees, and the transactions. Owned value objects (draws, tiers, ramps, assertions) attach to their parent; side-inputs and the commission output reference payees.</p>
+  <figure>
+    <svg viewBox="0 0 960 440" role="img" aria-labelledby="erd-t erd-d" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif">
+      <title id="erd-t">OpenIncent comp-data entity relationships</title>
+      <desc id="erd-d">Payee references Plan; Transaction references Payee; Transaction contains Credits which reference Payee; Plan contains Rules which contain Tiers.</desc>
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M1 1L9 5L1 9" fill="none" stroke="#94a3b8" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </marker>
+      </defs>
+
+      <g stroke="#94a3b8" stroke-width="1.3" fill="none">
+        <line x1="405" y1="72" x2="200" y2="72" marker-end="url(#ar)"/>
+        <line x1="770" y1="72" x2="565" y2="72" marker-end="url(#ar)"/>
+        <line x1="115" y1="104" x2="115" y2="190" marker-end="url(#ar)"/>
+        <line x1="115" y1="254" x2="115" y2="330" marker-end="url(#ar)"/>
+        <line x1="845" y1="104" x2="845" y2="190" marker-end="url(#ar)"/>
+        <path d="M770 220 L480 220 L480 104" marker-end="url(#ar)"/>
+      </g>
+      <g font-size="11" fill="#64748b">
+        <text x="392" y="66" text-anchor="end">*</text><text x="213" y="66">1</text>
+        <text x="288" y="90" text-anchor="middle">plan_id</text>
+        <text x="757" y="66" text-anchor="end">*</text><text x="578" y="66">1</text>
+        <text x="662" y="90" text-anchor="middle">payee_id</text>
+        <text x="124" y="150">1..*</text>
+        <text x="124" y="296">1..*</text>
+        <text x="854" y="150">0..*</text>
+        <text x="492" y="214">payee_id</text><text x="500" y="236">*</text>
+      </g>
+
+      <g>
+        <rect x="40" y="40" width="160" height="64" rx="9" fill="#eff4ff" stroke="#bfd3ff"/>
+        <text x="120" y="68" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">Plan</text>
+        <text x="120" y="88" text-anchor="middle" font-size="11.5" fill="#3b5bb5">plan_id · rules · assertions</text>
+      </g>
+      <g>
+        <rect x="405" y="40" width="160" height="64" rx="9" fill="#ecfdf5" stroke="#a7f3d0"/>
+        <text x="485" y="68" text-anchor="middle" font-size="15" font-weight="700" fill="#065f46">Payee</text>
+        <text x="485" y="88" text-anchor="middle" font-size="11.5" fill="#0b7a5e">id · quota · plan_id</text>
+      </g>
+      <g>
+        <rect x="770" y="40" width="160" height="64" rx="9" fill="#f5f3ff" stroke="#ddd6fe"/>
+        <text x="850" y="68" text-anchor="middle" font-size="15" font-weight="700" fill="#5b21b6">Transaction</text>
+        <text x="850" y="88" text-anchor="middle" font-size="11.5" fill="#6d31c9">id · amount · payee_id</text>
+      </g>
+      <g>
+        <rect x="40" y="190" width="160" height="64" rx="9" fill="#eff4ff" stroke="#bfd3ff"/>
+        <text x="120" y="218" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">Rule</text>
+        <text x="120" y="238" text-anchor="middle" font-size="11.5" fill="#3b5bb5">flat · tiered · accelerator</text>
+      </g>
+      <g>
+        <rect x="40" y="330" width="160" height="64" rx="9" fill="#eff4ff" stroke="#bfd3ff"/>
+        <text x="120" y="358" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">Tier</text>
+        <text x="120" y="378" text-anchor="middle" font-size="11.5" fill="#3b5bb5">threshold_pct · rate</text>
+      </g>
+      <g>
+        <rect x="770" y="190" width="160" height="64" rx="9" fill="#f5f3ff" stroke="#ddd6fe"/>
+        <text x="850" y="218" text-anchor="middle" font-size="15" font-weight="700" fill="#5b21b6">Credit</text>
+        <text x="850" y="238" text-anchor="middle" font-size="11.5" fill="#6d31c9">split · overlay</text>
+      </g>
+    </svg>
+  </figure>
+  <div class="legend">
+    <span><i class="dot d-blue"></i> Plan config</span>
+    <span><i class="dot d-teal"></i> Roster</span>
+    <span><i class="dot d-violet"></i> Deal data</span>
+    <span><i class="dot d-amber"></i> Side-inputs</span>
+    <span><i class="dot d-slate"></i> Output</span>
+    <span>Arrow = references / contains · 1, *, 0..* = cardinality</span>
+  </div>
+
+  <h2><span class="num">3</span>Data model — entities</h2>
+  <p class="lede">Key fields per entity. <span style="color:var(--accent);font-weight:700">PK</span> primary key · <span style="color:var(--accent);font-weight:700">FK</span> foreign key · <span style="color:var(--accent);font-weight:700">REQ</span> required.</p>
+
+  <p class="grouphead">Plan config</p>
+  <div class="cards">
+    <div class="ent c-blue"><h4>Plan <span class="tag">YAML</span></h4><ul>
+      <li><span class="k">PK</span><b>plan_id</b></li>
+      <li><span class="k">REQ</span><b>name, period_type, currency</b></li>
+      <li><b>rules[]</b> one or more</li>
+      <li><b>payout_cap, draw, pro_rating</b></li>
+      <li><b>rounding, ote, assertions[]</b></li>
+    </ul></div>
+    <div class="ent c-blue"><h4>Rule <span class="tag">discriminated</span></h4><ul>
+      <li><span class="k">REQ</span><b>type, id, rate/tiers</b></li>
+      <li><b>filter</b> boolean expr</li>
+      <li><b>cap, min_attainment_pct</b></li>
+      <li><b>quota_category</b></li>
+      <li><b>base</b> amount | margin</li>
+    </ul></div>
+    <div class="ent c-blue"><h4>Tier</h4><ul>
+      <li><span class="k">REQ</span><b>threshold_pct</b> &gt; 0</li>
+      <li><span class="k">REQ</span><b>rate</b> ≥ 0</li>
+      <li>ascending by threshold</li>
+    </ul></div>
+    <div class="ent c-blue"><h4>PlanAssertion</h4><ul>
+      <li><span class="k">REQ</span><b>name, quota, deals[]</b></li>
+      <li><span class="k">REQ</span><b>expect_total</b></li>
+      <li><b>base, period, tolerance</b></li>
+    </ul></div>
+    <div class="ent c-blue"><h4>Draw</h4><ul>
+      <li><span class="k">REQ</span><b>amount</b> ≥ 0</li>
+      <li><b>recoverable</b> bool</li>
+      <li>plan- or payee-level</li>
+    </ul></div>
+    <div class="ent c-blue"><h4>RoundingPolicy</h4><ul>
+      <li><b>mode</b> half-up/even/floor/ceil/none</li>
+      <li><b>places</b> 0–6</li>
+      <li>display boundary only</li>
+    </ul></div>
+  </div>
+
+  <p class="grouphead">Roster</p>
+  <div class="cards">
+    <div class="ent c-teal"><h4>Payee <span class="tag">CSV / XLSX</span></h4><ul>
+      <li><span class="k">PK</span><b>id</b></li>
+      <li><span class="k">REQ</span><b>name, quota</b></li>
+      <li><span class="k">FK</span><b>plan_id</b> → Plan</li>
+      <li><b>effective_from / _to</b></li>
+      <li><b>quotas{} category_quotas{}</b></li>
+      <li><span class="k">FK</span><b>manager_id</b> → Payee</li>
+      <li><b>manager_override, team_id, email</b></li>
+    </ul></div>
+    <div class="ent c-teal"><h4>RampSchedule</h4><ul>
+      <li><span class="k">REQ</span><b>months</b> &gt; 0</li>
+      <li><span class="k">REQ</span><b>schedule[]</b> multipliers</li>
+      <li>length must equal months</li>
+    </ul></div>
+  </div>
+
+  <p class="grouphead">Deal data</p>
+  <div class="cards">
+    <div class="ent c-violet"><h4>Transaction <span class="tag">CSV/XLSX/Parquet</span></h4><ul>
+      <li><span class="k">PK</span><b>id</b></li>
+      <li><span class="k">FK</span><b>payee_id</b> → Payee</li>
+      <li><span class="k">REQ</span><b>period</b> or <b>close_date</b></li>
+      <li><b>amount</b> may be negative</li>
+      <li><b>product, deal_id</b></li>
+      <li><b>bill_rate / pay_rate / units / margin</b></li>
+      <li><b>credits, quota_amount</b></li>
+      <li><b>…metadata</b> passthrough</li>
+    </ul></div>
+    <div class="ent c-violet"><h4>Credit</h4><ul>
+      <li><span class="k">FK</span><b>payee_id</b> → Payee</li>
+      <li><span class="k">REQ</span><b>split_pct</b> in (0,1]</li>
+      <li><b>kind</b> split | overlay</li>
+      <li>splits sum to 1.0</li>
+    </ul></div>
+  </div>
+
+  <p class="grouphead">Side-inputs &amp; output</p>
+  <div class="cards">
+    <div class="ent c-amber"><h4>ManualAdjustment <span class="tag">CSV</span></h4><ul>
+      <li><span class="k">FK</span><b>payee_id, period</b></li>
+      <li><span class="k">REQ</span><b>amount, reason</b></li>
+      <li>applied last; ignores caps/draws</li>
+    </ul></div>
+    <div class="ent c-amber"><h4>MBO / bonus <span class="tag">CSV</span></h4><ul>
+      <li><span class="k">FK</span><b>payee_id, period</b></li>
+      <li><span class="k">REQ</span><b>amount</b> ≥ 0</li>
+      <li>does not affect attainment</li>
+    </ul></div>
+    <div class="ent c-slate"><h4>Commission <span class="tag">output</span></h4><ul>
+      <li><span class="k">FK</span><b>transaction_id, payee_id</b></li>
+      <li><span class="k">FK</span><b>rule_id</b></li>
+      <li><b>base_amount, rate, commission_amount</b></li>
+      <li><b>origin_period, split_pct, notes</b></li>
+    </ul></div>
+  </div>
+
+  <h2><span class="num">4</span>The control library</h2>
+  <p class="lede">Named, machine-checkable properties conforming data must satisfy. Codes are stable; each maps to the layer that enforces it.</p>
+  <table>
+    <thead><tr><th style="width:120px">Code</th><th>Property</th><th style="width:96px">Severity</th><th style="width:170px">Enforced by</th></tr></thead>
+    <tbody>
+      <tr class="ctrlgroup"><td colspan="4">Money &amp; precision</td></tr>
+      <tr><td><code>CTRL-MONEY-01</code></td><td>Exact decimals everywhere; no float. Rounding is display-only, never re-enters calc.</td><td><span class="sev error">error</span></td><td>engine-wide invariant</td></tr>
+
+      <tr class="ctrlgroup"><td colspan="4">Plan structure &amp; correctness</td></tr>
+      <tr><td><code>CTRL-PLAN-01</code></td><td>Plan has at least one rule.</td><td><span class="sev error">error</span></td><td><code>icm lint</code></td></tr>
+      <tr><td><code>CTRL-PLAN-02</code></td><td>Rule ids unique within the plan.</td><td><span class="sev error">error</span></td><td><code>icm lint</code></td></tr>
+      <tr><td><code>CTRL-PLAN-03</code></td><td>Valid period_type, pro_rating; periods match YYYY-MM.</td><td><span class="sev error">error</span></td><td>model validation</td></tr>
+      <tr><td><code>CTRL-PLAN-04</code></td><td>Tier thresholds strictly ascending.</td><td><span class="sev error">error</span></td><td>model validation</td></tr>
+      <tr><td><code>CTRL-PLAN-05</code></td><td>No rule or tier with rate 0 (pays nothing).</td><td><span class="sev warning">warning</span></td><td><code>icm lint</code></td></tr>
+      <tr><td><code>CTRL-PLAN-06</code></td><td>Tier marginal rates do not decrease.</td><td><span class="sev warning">warning</span></td><td><code>icm lint</code></td></tr>
+      <tr><td><code>CTRL-PLAN-07</code></td><td>Accelerator has a companion base rule.</td><td><span class="sev warning">warning</span></td><td><code>icm lint</code></td></tr>
+      <tr><td><code>CTRL-PLAN-08</code></td><td>payout_cap not below stated OTE.</td><td><span class="sev warning">warning</span></td><td><code>icm lint</code></td></tr>
+      <tr><td><code>CTRL-PLAN-09</code></td><td>Attainment gate not above 100% unless intended.</td><td><span class="sev warning">warning</span></td><td><code>icm lint</code></td></tr>
+      <tr><td><code>CTRL-PLAN-10</code></td><td>Plan declares assertions.</td><td><span class="sev info">info</span></td><td><code>icm lint</code></td></tr>
+      <tr><td><code>CTRL-ASSERT-01</code></td><td>Every assertion's payout matches expect_total within tolerance.</td><td><span class="sev error">error</span></td><td><code>icm check-plan</code></td></tr>
+      <tr><td><code>CTRL-ASSERT-02</code></td><td>At 100% attainment, payout equals stated OTE.</td><td><span class="sev error">error</span></td><td><code>icm check-plan</code></td></tr>
+
+      <tr class="ctrlgroup"><td colspan="4">Dedup &amp; integrity</td></tr>
+      <tr><td><code>CTRL-DUP-01</code></td><td>No two txns share (payee, period, amount).</td><td><span class="sev warning">warning</span></td><td><code>icm validate</code></td></tr>
+      <tr><td><code>CTRL-DUP-02</code></td><td>No two txn ids differ by a single character.</td><td><span class="sev warning">warning</span></td><td><code>icm validate</code></td></tr>
+      <tr><td><code>CTRL-CREDIT-01</code></td><td>Split credits on a deal sum to exactly 1.0.</td><td><span class="sev error">error</span></td><td>model validation</td></tr>
+      <tr><td><code>CTRL-CREDIT-02</code></td><td>Each credit share is in (0, 1].</td><td><span class="sev error">error</span></td><td>model validation</td></tr>
+
+      <tr class="ctrlgroup"><td colspan="4">Eligibility &amp; currency</td></tr>
+      <tr><td><code>CTRL-ELIG-01</code></td><td>No txn credited to a payee after their end date.</td><td><span class="sev warning">warning</span></td><td><code>icm validate</code></td></tr>
+      <tr><td><code>CTRL-FX-01</code></td><td>Reporting currency has rates for every currency involved.</td><td><span class="sev error">error</span></td><td><code>icm validate</code></td></tr>
+
+      <tr class="ctrlgroup"><td colspan="4">Reconciliation</td></tr>
+      <tr><td><code>CTRL-RECON-01</code></td><td>Every payout matches what was actually paid for one full cycle.</td><td><span class="sev error">error</span></td><td><code>icm reconcile</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="num">5</span>Conformance ladder</h2>
+  <p class="lede">Each level is the acceptance gate for the next. A managed engagement does not go live until L3.</p>
+  <div class="ladder">
+    <div class="rung">
+      <div class="lv">L0</div><h4>Parses</h4>
+      <p>All three inputs load against the data spec.</p>
+      <div class="by"><b>icm calculate</b> runs without a load error</div>
+    </div>
+    <div class="rung">
+      <div class="lv">L1</div><h4>Validated</h4>
+      <p>No error-severity findings; warnings reviewed and accepted.</p>
+      <div class="by"><b>icm validate</b> clean</div>
+    </div>
+    <div class="rung">
+      <div class="lv">L2</div><h4>Plan-verified</h4>
+      <p>Plan structurally clean; every assertion passes.</p>
+      <div class="by"><b>icm lint</b> + <b>icm check-plan</b></div>
+    </div>
+    <div class="rung">
+      <div class="lv">L3</div><h4>Reconciled</h4>
+      <p>Run matches the last real pay cycle, line for line.</p>
+      <div class="by"><b>icm reconcile</b> clean</div>
+      <span class="gate">engagement acceptance</span>
+    </div>
+  </div>
+
+  <h2><span class="num">6</span>The method — eight steps</h2>
+  <p class="lede">Messy spreadsheet → conformant, reconciled, paid. The same eight steps whether you run the engine yourself or have someone run it for you. Each step earns a rung on the ladder above.</p>
+  <ol class="steps">
+    <li><h4>Intake</h4><p>Collect the plan (any form), last period's deal extract, the payee roster, and what was actually paid (the reconciliation target).</p></li>
+    <li><span class="lvl">→ L0</span><h4>Map to the spec</h4><p>Map the client's columns onto canonical fields. <code>icm map</code> previews the inferred mapping; review and lock it.</p></li>
+    <li><span class="lvl">→ L1</span><h4>Validate the data</h4><p>Run <code>icm validate</code>. Resolve every error; review each warning with the client and record whether it's a defect or a conscious exception.</p></li>
+    <li><span class="lvl">→ L2</span><h4>Encode the plan as code</h4><p>Translate the plan into the spec. Where prose is ambiguous, get a written answer — never guess. Add assertions; run <code>icm lint</code> + <code>check-plan</code> until clean.</p></li>
+    <li><h4>Calculate</h4><p>Run <code>icm calculate</code>. Produce statements and the audit ledger. Spot-check payouts with <code>icm trace</code> — every number explains itself.</p></li>
+    <li><span class="lvl">→ L3</span><h4>Reconcile</h4><p>Run <code>icm reconcile</code> against what was actually paid. Investigate every discrepancy. Iterate steps 4–6 until clean or explained. Acceptance.</p></li>
+    <li><h4>Lock &amp; hand over</h4><p>Lock the period (pins the official run, generates the payout register). Distribute statements (safe by default). The client owns the plan, config, and data — no lock-in.</p></li>
+    <li><h4>Run the cadence</h4><p>Each period repeats steps 2–7 on new data against the fixed plan. Late deals flow through as period-locked true-ups. Setup-only clients run this loop themselves.</p></li>
+  </ol>
+  <p class="lede" style="margin-top:16px;font-size:13.5px;color:var(--ink3)">Throughout: non-identifying payee IDs where possible, confidentiality of all client data, deletion of working copies within the contracted retention window — flowing down unchanged to any partner or contractor.</p>
+
+  <footer>
+    <span>The OpenIncent Method · v0.1 · companion map to METHOD.md</span>
+    <span>AGPL-3.0 engine · openincent.com</span>
+  </footer>
+
+</div>
+</body>
+</html>
