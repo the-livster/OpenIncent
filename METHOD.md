@@ -118,8 +118,10 @@ every exception is signed off, you are at **L1: validated.**
 
 ### Step 4 — Encode the plan as code → reaches **L2**
 
-Translate the plan into the [plan spec](#61-the-plan). Where the prose is
-ambiguous, **do not guess** — get a written answer and encode that. Add
+Translate the plan into the [plan spec](#61-the-plan) — or start from a
+[template](icm-engine/examples/templates/) for a common pattern (perm placement,
+contract margin, SaaS AE, SDR pipeline) and change the rates to yours. Where the
+prose is ambiguous, **do not guess** — get a written answer and encode that. Add
 [assertions](#612-assertions): tiny "at 100% of quota this rep earns exactly their
 OTE" scenarios that turn the annual plan rebuild from *pray* into *compile*. Run
 `icm lint` (static health checks) and `icm check-plan` (runs each assertion
