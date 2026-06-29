@@ -82,6 +82,15 @@
   .sev.info{background:var(--blue-fill);color:var(--blue-ink);border:1px solid var(--blue-line)}
   .ctrlgroup{font-weight:700;color:var(--ink);background:var(--soft);font-size:12.5px}
 
+  .cmp{width:100%;border-collapse:collapse;margin:18px 0 0;font-size:13px;table-layout:fixed}
+  .cmp th,.cmp td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  .cmp thead th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink3);font-weight:700}
+  .cmp tbody th{font-weight:600;color:var(--ink);text-transform:none;letter-spacing:0;font-size:13px}
+  .cmp .oi{background:var(--soft2)}
+  .cmp thead .oi{color:var(--accent-ink)}
+  .cmp .yes{color:#15803d;font-weight:700}
+  .cmp .no{color:#b91c1c}
+
   .ladder{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 0}
   .rung{border:1px solid var(--line);border-radius:12px;padding:16px;background:#fff;position:relative}
   .rung .lv{font-size:12px;font-weight:800;color:var(--accent);letter-spacing:.04em}
@@ -393,6 +402,24 @@
     <li><h4>Run the cadence</h4><p>Each period repeats steps 2–7 on new data against the fixed plan. Late deals flow through as period-locked true-ups. Setup-only clients run this loop themselves.</p></li>
   </ol>
   <p class="lede" style="margin-top:16px;font-size:13.5px;color:var(--ink3)">Throughout: non-identifying payee IDs where possible, confidentiality of all client data, deletion of working copies within the contracted retention window — flowing down unchanged to any partner or contractor.</p>
+
+  <h2><span class="num">7</span>Why this beats the alternatives</h2>
+  <p class="lede">Two things pay commission today — a spreadsheet, or a black-box ICM platform. Both leave the same gap from opposite directions: you can't <em>prove</em> the number. The method's unique claim is that conformance is provable.</p>
+  <table class="cmp">
+    <thead>
+      <tr><th style="width:25%"></th><th>The spreadsheet</th><th>Black-box platform</th><th class="oi">The method</th></tr>
+    </thead>
+    <tbody>
+      <tr><th>Explains a payout?</th><td>Only by re-reading formulas</td><td>&ldquo;The system calculated it&rdquo;</td><td class="oi"><span class="yes">Yes</span> — traces to the exact rule &amp; deal</td></tr>
+      <tr><th>Plan versioned?</th><td class="no">No — it <em>is</em> the sheet</td><td>Locked inside the vendor</td><td class="oi"><span class="yes">Yes</span> — plain text in version control</td></tr>
+      <tr><th>Self-checks before payday?</th><td class="no">No — silent errors</td><td>Some, but opaque</td><td class="oi"><span class="yes">Yes</span> — named controls + assertions</td></tr>
+      <tr><th>&ldquo;Is it right?&rdquo; provable?</th><td class="no">No</td><td class="no">No reconciliation gate</td><td class="oi"><span class="yes">Yes</span> — L3 reconciles line-for-line</td></tr>
+      <tr><th>Who can run it?</th><td>The one person who built it</td><td>A full-time admin or the vendor</td><td class="oi">Anyone who follows the method</td></tr>
+      <tr><th>Your data lives&hellip;</th><td>Your machine</td><td>The vendor's cloud</td><td class="oi">Your machine — it never has to leave</td></tr>
+      <tr><th>Cost</th><td>&ldquo;Free&rdquo; + hidden risk + evenings</td><td>Per-seat, forever, climbing</td><td class="oi">Free engine; pay only for a run</td></tr>
+    </tbody>
+  </table>
+  <p class="lede" style="margin-top:14px;font-size:13.5px;color:var(--ink3)">The defensible thing was never the code — it's the discipline, written down, and the proof at the end.</p>
 
   <footer>
     <span>The OpenIncent Method · v0.1 · companion map to METHOD.md</span>
