@@ -31,7 +31,7 @@ A run takes your **plans**, **payees**, and **deals** and produces audited payou
 - **MBOs / bonuses** — non-commission period payouts (KPI bonuses, SPIFs).
 - **Manual adjustments** — audited one-off corrections and discretionary amounts, each with a required reason.
 - **Period locking, versioning & true-ups** — lock a closed period; late deals and clawbacks become delta true-ups attributed to the payout period, with origin tracking, while the locked statement stays intact.
-- **Per-rep statements** — one privacy-isolated file per payee, in PDF, XLSX, or HTML, rounded to cents.
+- **Per-rep statements** — one privacy-isolated file per payee, in PDF, XLSX, or HTML, rounded to cents; brandable via `icm statements --theme theme.yaml` (company name, logo, accent colour, currency symbol, white-label switch).
 - **Audit ledger & order trace** — every figure backed by a readable ledger entry; trace one deal through the whole plan.
 
 Money is exact `Decimal` throughout, and every run is deterministic.

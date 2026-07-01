@@ -1,0 +1,21 @@
+# Statement theme — branding for per-rep statements (HTML / XLSX / PDF).
+#
+#   icm statements --plan plan.yaml --transactions deals.csv --payees reps.csv \
+#       --output statements/ --format html,pdf --theme examples/theme.yaml
+#
+# Every field is optional. An empty file (or no --theme at all) renders the
+# plain built-in style, with the currency symbol inferred from the plan.
+
+company_name: Meridian Search Group
+logo_url: logo.png              # URL, relative path, or data URI
+accent_color: "#0e7490"         # any CSS hex (#rgb or #rrggbb)
+currency_symbol: "$"            # e.g. "£", "€", "¥"
+
+title: Commission statement     # the document label, top right
+earned_label: Total commission  # caption above the headline figure
+contact_line: "Questions? Contact your manager."
+footer_note: ""                 # optional extra footer line, e.g. payroll ref
+
+show_attainment: true           # quota progress bar
+show_line_explanations: true    # plain-English math under each deal
+show_powered_by: true           # set false to white-label the statement
