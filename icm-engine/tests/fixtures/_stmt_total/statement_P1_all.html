@@ -1,90 +1,75 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Commission Statement — Alice</title>
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-         max-width: 760px; margin: 2rem auto; padding: 0 1rem; color: #1a1a2e; }
-  h1 { font-size: 1.25rem; margin-bottom: 0.25rem; }
-  .meta { color: #666; font-size: 0.85rem; margin-bottom: 0.5rem; }
-  .attainment { color: #2d6a4f; font-weight: 600; font-size: 0.95rem; margin-bottom: 1.5rem; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-  th, td { padding: 0.5rem 0.6rem; text-align: left; border-bottom: 1px solid #e8e8e8; }
-  th { background: #f7f7f7; font-weight: 600; position: sticky; top: 0; }
-  .num { text-align: right; font-variant-numeric: tabular-nums; }
-  .total td { font-weight: 700; border-top: 2px solid #333; }
-  .footer { margin-top: 2rem; color: #999; font-size: 0.75rem; }
-  .adj-badge { display:inline-block; background:#fff3cd; color:#856404; font-size:0.72rem;
-                padding:0.1rem 0.4rem; border-radius:3px; }
-  .expand-icon { cursor:pointer; color:#376; font-weight:bold; font-size:1.1rem;
-                  user-select:none; text-align:center; }
-  .expand-icon:hover { color:#298; }
-  .detail-row { display:none; }
-  .detail-row.show { display:table-row; }
-  .detail-cell { background:#fafafa; padding:0.75rem 1rem; font-size:0.82rem; color:#444; }
-  .detail-cell strong { color:#1a1a2e; }
-  .detail-grid { display:grid; grid-template-columns:auto 1fr; gap:0.25rem 1.5rem; }
-</style></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Commission statement — Alice</title>
+<style>:root{--accent:#1d4ed8;--ink:#0f172a;--ink2:#5b6472;--line:#e6e8ee;--soft:#f7f8fa}
+
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  color:var(--ink);margin:0;background:#f4f5f7;line-height:1.55;-webkit-font-smoothing:antialiased}
+.sheet{max-width:720px;margin:28px auto;background:#fff;border:1px solid var(--line);border-radius:16px;
+  overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,.06)}
+.top{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  border-top:5px solid var(--accent);padding:22px 32px 18px}
+.brand{display:flex;align-items:center;gap:12px;font-weight:800;font-size:18px;letter-spacing:-.01em;color:var(--ink)}
+.brand img{height:32px;width:auto;display:block}
+.doctype{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--accent)}
+.body{padding:6px 32px 0}
+.who{margin:16px 0 2px;font-size:26px;font-weight:800;letter-spacing:-.02em}
+.sub{color:var(--ink2);font-size:14px;margin:0 0 20px}
+.hero{background:var(--soft);border:1px solid var(--line);border-radius:14px;padding:20px 24px;
+  display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.hero .lbl{font-size:13px;color:var(--ink2);font-weight:600}
+.hero .amt{font-size:38px;font-weight:800;letter-spacing:-.02em;color:var(--accent);line-height:1.04;margin-top:3px}
+.hero .who-id{font-size:12.5px;color:var(--ink2);text-align:right}
+.att{margin:24px 0 2px}
+.att .row{display:flex;justify-content:space-between;font-size:13px;color:var(--ink2);margin-bottom:7px}
+.att .row b{color:var(--ink);font-weight:700}
+.att .bar{height:10px;background:var(--line);border-radius:999px;overflow:hidden}
+.att .fill{height:100%;background:var(--accent);border-radius:999px}
+h2.sec{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink2);
+  margin:30px 0 4px;font-weight:700}
+.line{border-bottom:1px solid var(--line);padding:13px 0}
+.line:last-child{border-bottom:0}
+.line-h{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.line-deal{font-weight:650;font-size:15px}
+.line-deal .prod{color:var(--ink2);font-weight:400}
+.line-amt{font-weight:700;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.line-amt.neg{color:#b91c1c}
+.line-note{color:var(--ink2);font-size:12.5px;margin-top:3px}
+.badge{display:inline-block;background:#fff3cd;color:#856404;font-size:11px;font-weight:700;
+  padding:1px 8px;border-radius:999px;margin-left:2px;vertical-align:1px}
+.tot{display:flex;justify-content:space-between;align-items:baseline;border-top:2px solid var(--ink);
+  margin-top:2px;padding:15px 0 4px;font-size:17px;font-weight:800}
+.tot .amt{color:var(--accent)}
+.foot{margin-top:30px;padding:18px 32px 26px;border-top:1px solid var(--line);color:var(--ink2);font-size:12.5px}
+.foot p{margin:0 0 4px}
+.foot .pb{margin-top:8px;font-size:11.5px;color:#9aa1ad}
+@media print{
+  body{background:#fff}
+  .sheet{border:0;box-shadow:none;margin:0;max-width:none}
+  .hero,.line{break-inside:avoid}
+}
+</style>
+</head>
 <body>
-  <h1>Commission Statement</h1>
-  <div class="meta">
-    <p><strong>Alice</strong> (P1)</p>
-    <p>Plan: - &middot; Period: all</p>
+<div class="sheet">
+  <div class="top"><div class="brand">Commission statement</div><div class="doctype">Commission statement</div></div>
+  <div class="body">
+    <div class="who">Alice</div>
+    <div class="sub">All periods</div>
+    <div class="hero">
+      <div><div class="lbl">Total commission</div><div class="amt">$750.00</div></div>
+      <div class="who-id">P1</div>
+    </div>
     
-    
+    <h2 class="sec">Your deals</h2>
+    <div class="line"><div class="line-h"><span class="line-deal">T1</span><span class="line-amt">$500.00</span></div><div class="line-note">Flat rate 0.05 on 10000 </div></div><div class="line"><div class="line-h"><span class="line-deal">T2</span><span class="line-amt">$250.00</span></div><div class="line-note">Flat rate 0.05 on 5000 </div></div>
+    <div class="tot"><span>Total</span><span class="amt">$750.00</span></div>
   </div>
-  <table>
-    <thead><tr>
-      <th>Txn</th><th>Rule</th><th>Deal</th>
-      <th class="num">Base</th><th class="num">Rate</th><th class="num">Comm</th>
-      <th>Adj</th><th></th>
-    </tr></thead>
-    <tbody><tr class='deal-row' data-tid='T1' data-rid='R1' data-base='10000.00' data-rate='0.05' data-comm='500.00' data-notes='Flat rate 0.05 on 10000' data-deal='' data-product='' data-origin='' data-adj=''><td>T1</td><td>R1</td><td></td><td class='num'>$10000.00</td><td class='num'>0.05</td><td class='num'>$500.00</td><td></td><td class='expand-icon'>+</td></tr>
-<tr class='deal-row' data-tid='T2' data-rid='R1' data-base='5000.00' data-rate='0.05' data-comm='250.00' data-notes='Flat rate 0.05 on 5000' data-deal='' data-product='' data-origin='' data-adj=''><td>T2</td><td>R1</td><td></td><td class='num'>$5000.00</td><td class='num'>0.05</td><td class='num'>$250.00</td><td></td><td class='expand-icon'>+</td></tr>
-</tbody>
-    <tfoot><tr class="total">
-      <td colspan="6">Total</td><td class="num">$750.00</td><td></td>
-    </tr></tfoot>
-  </table>
-  <div class="footer">
-    <p>This statement is confidential and intended only for Alice.</p>
-    <p>Questions? Contact your manager. &middot; Generated by OpenIncent</p>
-  </div>
-<script>
-(function() {
-  var rows = document.querySelectorAll('.deal-row');
-  rows.forEach(function(row) {
-    row.addEventListener('click', function() {
-      var next = row.nextElementSibling;
-      if (next && next.classList.contains('detail-row')) {
-        next.classList.toggle('show');
-        var icon = row.querySelector('.expand-icon');
-        if (icon) icon.textContent = next.classList.contains('show') ? '−' : '+';
-        return;
-      }
-      // Create detail row
-      var detail = document.createElement('tr');
-      detail.className = 'detail-row show';
-      var base = row.dataset.base;
-      var rate = row.dataset.rate;
-      var comm = row.dataset.comm;
-      var notes = row.dataset.notes;
-      var deal = row.dataset.deal;
-      var product = row.dataset.product;
-      var origin = row.dataset.origin;
-      var adj = row.dataset.adj;
-      detail.innerHTML = '<td colspan="8"><div class="detail-cell"><div class="detail-grid">'
-        + (deal ? '<span>Deal:</span><strong>' + deal + '</strong>' : '')
-        + (product ? '<span>Product:</span><strong>' + product + '</strong>' : '')
-        + '<span>Calculation:</span><span>$' + base + ' &times; ' + rate + ' = <strong>$' + comm + '</strong></span>'
-        + (notes ? '<span>Note:</span><span>' + notes + '</span>' : '')
-        + (adj ? '<span>Adjustment:</span><span class="adj-badge">' + adj + '</span>' : '')
-        + (origin ? '<span>Origin:</span><span>' + origin + '</span>' : '')
-        + '</div></div></td>';
-      row.parentNode.insertBefore(detail, row.nextSibling);
-      row.querySelector('.expand-icon').textContent = '−';
-    });
-  });
-})();
-</script>
+  <div class="foot"><p>This statement is confidential and intended only for Alice.</p><p>Questions? Contact your manager.</p><p class="pb">Generated by OpenIncent</p></div>
+</div>
 </body>
 </html>

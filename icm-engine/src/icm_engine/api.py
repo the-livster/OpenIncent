@@ -533,8 +533,9 @@ async def import_payees(
     org: str = Depends(get_org),
 ) -> dict[str, Any]:
     """Bulk import payees from a CSV or XLSX file. Merges by default; set replace=true to wipe first."""
-    from icm_engine.loader import load_payees
     import tempfile as _tf
+
+    from icm_engine.loader import load_payees
 
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
@@ -574,9 +575,9 @@ async def import_payees(
         })
 
     if replace:
-        count = db.replace_all_payees(rows)
+        db.replace_all_payees(rows)
     else:
-        count = db.save_payees_batch(rows)
+        db.save_payees_batch(rows)
 
     return {"imported": len(payee_list), "total_in_roster": len(db.list_payees()), "replace": replace}
 

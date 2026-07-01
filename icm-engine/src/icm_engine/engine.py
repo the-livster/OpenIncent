@@ -328,7 +328,7 @@ def _compute_attainment(
         ))
 
     # Also emit attainment for payees who had no bookings but have a quota
-    for pid, p in payee_map.items():
+    for pid, _p in payee_map.items():
         tid = team_by_payee.get(pid)
         if tid:
             for window in {w for (_, w) in bookings}:

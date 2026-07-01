@@ -169,13 +169,14 @@ def _load_payees_csv(path: Path) -> list[Payee]:
                     quota_val = Decimal(row["quota"].strip())
                     if pid not in by_id:
                         effective_to_raw = (row.get("effective_to") or "").strip()
+                        ef_from = row["effective_from"].strip()
                         by_id[pid] = {
                             "id": pid,
                             "name": row["name"].strip(),
                             "quota": Decimal("0"),
                             "quotas": {},
                             "plan_id": row["plan_id"].strip(),
-                            "effective_from": _parse_date(ef_from) if (ef_from := row["effective_from"].strip()) else None,
+                            "effective_from": _parse_date(ef_from) if ef_from else None,
                             "effective_to": _parse_date(effective_to_raw) if effective_to_raw else None,
                             "email": (row.get("email") or "").strip() or None,
                             "ramp": _parse_ramp(row),
@@ -328,7 +329,7 @@ def _parse_optional_decimal(raw: object) -> Decimal | None:
 
 def _parse_date(s: str) -> date:
     if not s or not s.strip():
-        raise ValueError(f"Cannot parse empty date")
+        raise ValueError("Cannot parse empty date")
     s = s.strip()
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y"):
         try:

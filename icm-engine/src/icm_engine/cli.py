@@ -917,12 +917,16 @@ def statements_command(
         None, "--rounding",
         help="Rounding mode: half-up, half-even, floor, ceil, none. Defaults to the plan's policy.",
     ),
+    theme_file: str = typer.Option(
+        None, "--theme",
+        help="Statement theme YAML (branding: company, logo, accent colour, currency, footer)",
+    ),
 ) -> None:
     """Generate per-rep commission statements in the requested formats."""
     from icm_engine.engine import CommissionEngine
     from icm_engine.loader import load_payees, load_plan, load_transactions
     from icm_engine.rounding import parse_rounding_mode
-    from icm_engine.statements import generate_statements
+    from icm_engine.statements import StatementTheme, generate_statements, load_statement_theme
 
     plan_obj = load_plan(plan)
     txn_list, _ = load_transactions(transactions)
@@ -971,6 +975,14 @@ def statements_command(
         _rmode = parse_rounding_mode("half-up")
         _rplaces = 2
 
+    # Theme: load from --theme, else a default themed to the plan's currency.
+    _sym = {"USD": "$", "CAD": "$", "AUD": "$", "NZD": "$",
+            "GBP": "£", "EUR": "€", "JPY": "¥", "INR": "₹"}
+    if theme_file:
+        theme = load_statement_theme(theme_file)
+    else:
+        theme = StatementTheme(currency_symbol=_sym.get(plan_obj.currency.upper(), "$"))
+
     files = generate_statements(
         result.commissions,
         payee_list,
@@ -978,11 +990,14 @@ def statements_command(
         period=period,
         formats=fmt_tuple,
         emit_zero=emit_zero,
+        attainment=result.attainment,
+        plan_name=plan_obj.name,
         rounding_mode=_rmode,
         rounding_places=_rplaces,
         rates=_rates if _rates else None,
         reporting_currency=_rpt_cur,
         source_currency=_src_cur,
+        theme=theme,
     )
 
     console.print(f"[green]Generated {len(files)} statement file(s) in {out_dir}[/green]")
@@ -1357,8 +1372,9 @@ def _write_commissions_xlsx(commissions: list[Commission], path: Path,
                             rates: dict[str, Decimal] | None = None,
                             source_currency: str = "",
                             reporting_currency: str = "") -> None:
+    from icm_engine.currency import convert as _convert
+    from icm_engine.currency import needs_conversion
     from icm_engine.excel import write_xlsx
-    from icm_engine.currency import convert as _convert, needs_conversion
     from icm_engine.rounding import parse_rounding_mode, round_money
 
     rm = parse_rounding_mode(rounding_mode)
@@ -1395,8 +1411,9 @@ def _write_summary_xlsx(commissions: list[Commission], path: Path,
                         rates: dict[str, Decimal] | None = None,
                         source_currency: str = "",
                         reporting_currency: str = "") -> None:
+    from icm_engine.currency import convert as _convert
+    from icm_engine.currency import needs_conversion
     from icm_engine.excel import write_xlsx
-    from icm_engine.currency import convert as _convert, needs_conversion
     from icm_engine.rounding import parse_rounding_mode, round_money
 
     rm = parse_rounding_mode(rounding_mode)
@@ -1428,7 +1445,8 @@ def _write_commissions_csv(commissions: list[Commission], path: Path,
                            rates: dict[str, Decimal] | None = None,
                            source_currency: str = "",
                            reporting_currency: str = "") -> None:
-    from icm_engine.currency import convert as _convert, needs_conversion
+    from icm_engine.currency import convert as _convert
+    from icm_engine.currency import needs_conversion
     from icm_engine.rounding import parse_rounding_mode, round_money
 
     rm = parse_rounding_mode(rounding_mode)
@@ -1478,7 +1496,8 @@ def _write_summary_csv(commissions: list[Commission], path: Path,
                        rates: dict[str, Decimal] | None = None,
                        source_currency: str = "",
                        reporting_currency: str = "") -> None:
-    from icm_engine.currency import convert as _convert, needs_conversion
+    from icm_engine.currency import convert as _convert
+    from icm_engine.currency import needs_conversion
     from icm_engine.rounding import parse_rounding_mode, round_money
 
     rm = parse_rounding_mode(rounding_mode)

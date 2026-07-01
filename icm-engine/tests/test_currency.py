@@ -97,7 +97,10 @@ class TestIntegration:
 
         from icm_engine.engine import CommissionEngine
         from icm_engine.models import (
-            Commission, FlatRateRule, Payee, Plan, Transaction,
+            FlatRateRule,
+            Payee,
+            Plan,
+            Transaction,
         )
         from icm_engine.statements import generate_statements
 
@@ -143,7 +146,10 @@ class TestIntegration:
 
         from icm_engine.engine import CommissionEngine
         from icm_engine.models import (
-            Commission, FlatRateRule, Payee, Plan, Transaction,
+            FlatRateRule,
+            Payee,
+            Plan,
+            Transaction,
         )
         from icm_engine.statements import generate_statements
 
