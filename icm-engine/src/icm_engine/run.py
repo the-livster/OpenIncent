@@ -89,10 +89,20 @@ class RunContext:
                     self.prior_commissions.extend(plan_priors)
 
         # --- Load prior draw balances ---
+        # The prior balance must be the balance BEFORE this run's first period,
+        # not the latest row — the latest already includes any recovery from a
+        # previous run of these same periods, so using it would double-recover
+        # on every re-run. Fall back to the legacy single-row balance only when
+        # no period-stamped history exists (pre-upgrade databases).
+        first_period = min(txn_periods) if txn_periods else None
         for p in self.payees:
             plan_id = p.plan_id
             if plan_id:
-                bal = self.db.get_draw_balance(p.id, plan_id)
+                bal = None
+                if first_period:
+                    bal = self.db.get_draw_balance_before(p.id, plan_id, first_period)
+                if bal is None:
+                    bal = self.db.get_draw_balance(p.id, plan_id)
                 if bal != Decimal("0"):
                     self.prior_draw_balances[p.id] = bal
 
@@ -190,10 +200,15 @@ def persist(
     # Persist draw balances. Skip when this run recalculates over locked periods
     # (a draft / what-if): draft recalcs must not overwrite the official
     # recoverable-draw state that finalized runs depend on.
+    # The legacy single row keeps the latest balance (display/API); the
+    # period-stamped history rows are what make re-runs idempotent.
     if not ctx.locked_relevant:
+        by_period = result.draw_balances_by_period
         for payee_id, balance in result.draw_balances.items():
             plan_id = payee_plan.get(payee_id, "")
             if plan_id:
                 ctx.db.set_draw_balance(payee_id, plan_id, balance)
+                for period, bal in sorted(by_period.get(payee_id, {}).items()):
+                    ctx.db.set_draw_balance_asof(payee_id, plan_id, period, bal)
 
     return calc_ids

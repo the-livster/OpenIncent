@@ -437,6 +437,10 @@ class CalculationResult:
     ledger: list[LedgerEntry] = field(default_factory=list)
     attainment: list[AttainmentSummary] = field(default_factory=list)
     draw_balances: dict[str, Decimal] = field(default_factory=dict)
+    # payee_id -> period -> recoverable-draw balance AFTER that period. Lets
+    # persistence stamp balances per period, so re-running a period starts
+    # from the pre-period balance instead of double-recovering.
+    draw_balances_by_period: dict[str, dict[str, Decimal]] = field(default_factory=dict)
 
 
 @dataclass
@@ -717,6 +721,7 @@ class CommissionEngine:
         all_ledger: list[LedgerEntry] = []
         all_attainment: list[AttainmentSummary] = []
         all_draw_balances: dict[str, Decimal] = {}
+        all_draw_by_period: dict[str, dict[str, Decimal]] = {}
 
         for plan_id in sorted(plans.keys()):
             plan = plans[plan_id]
@@ -735,6 +740,7 @@ class CommissionEngine:
             all_ledger.extend(plan_result.ledger)
             all_attainment.extend(plan_result.attainment)
             all_draw_balances.update(plan_result.draw_balances)
+            all_draw_by_period.update(plan_result.draw_balances_by_period)
 
         # Merge results in deterministic order
         all_commissions.sort(key=lambda c: (c.payee_id, c.rule_id, c.transaction_id))
@@ -745,6 +751,7 @@ class CommissionEngine:
             ledger=all_ledger,
             attainment=all_attainment,
             draw_balances=all_draw_balances,
+            draw_balances_by_period=all_draw_by_period,
         )
 
     def _run_plan_pipeline(
@@ -956,6 +963,7 @@ class CommissionEngine:
 
         # --- Draws / guarantees ---
         draw_balances: dict[str, Decimal] = {}
+        draw_by_period: dict[str, dict[str, Decimal]] = {}
         for pid in {c.payee_id for c in all_commissions}:
             p = payee_map.get(pid)
             draw = None
@@ -1019,6 +1027,7 @@ class CommissionEngine:
                         ),
                     ))
                     draw_balances[pid] = new_balance
+                    draw_by_period.setdefault(pid, {})[period] = new_balance
                     prior_bal = new_balance  # carry forward for next period
                 else:
                     # Non-recoverable: simple floor
@@ -1141,6 +1150,7 @@ class CommissionEngine:
         return CalculationResult(
             commissions=all_commissions, ledger=all_ledger,
             attainment=attainment, draw_balances=draw_balances,
+            draw_balances_by_period=draw_by_period,
         )
 
     def true_up(

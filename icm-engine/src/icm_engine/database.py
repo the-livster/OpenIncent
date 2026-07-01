@@ -96,6 +96,16 @@ CREATE TABLE IF NOT EXISTS draw_balances (
     PRIMARY KEY (org_id, payee_id, plan_id)
 );
 
+CREATE TABLE IF NOT EXISTS draw_balance_history (
+    org_id TEXT NOT NULL DEFAULT 'default',
+    payee_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    period TEXT NOT NULL,
+    balance TEXT NOT NULL DEFAULT '0',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (org_id, payee_id, plan_id, period)
+);
+
 CREATE TABLE IF NOT EXISTS calculations (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL DEFAULT 'default',
@@ -232,6 +242,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
             balance TEXT NOT NULL DEFAULT '0',
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (org_id, payee_id, plan_id)
+        )""",
+        # period-stamped draw history (re-run idempotency)
+        """CREATE TABLE IF NOT EXISTS draw_balance_history (
+            org_id TEXT NOT NULL DEFAULT 'default',
+            payee_id TEXT NOT NULL,
+            plan_id TEXT NOT NULL,
+            period TEXT NOT NULL,
+            balance TEXT NOT NULL DEFAULT '0',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (org_id, payee_id, plan_id, period)
         )""",
     ]
     for m in migrations:
@@ -527,6 +547,49 @@ class Database:
                        balance=excluded.balance, updated_at=datetime('now')""",
                 (self.org_id, payee_id, plan_id, str(balance)),
             )
+
+    def set_draw_balance_asof(
+        self, payee_id: str, plan_id: str, period: str, balance: Decimal,
+    ) -> None:
+        """Record the recoverable-draw balance as of the END of `period`.
+
+        Upserted per period, so re-running a period overwrites its own row
+        instead of compounding on top of it.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO draw_balance_history
+                       (org_id, payee_id, plan_id, period, balance, updated_at)
+                   VALUES (?, ?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT(org_id, payee_id, plan_id, period) DO UPDATE SET
+                       balance=excluded.balance, updated_at=datetime('now')""",
+                (self.org_id, payee_id, plan_id, period, str(balance)),
+            )
+
+    def get_draw_balance_before(
+        self, payee_id: str, plan_id: str, period: str,
+    ) -> Decimal | None:
+        """Balance as of the latest recorded period strictly BEFORE `period`.
+
+        Returns Decimal("0") when history exists but nothing precedes `period`
+        (a fresh start), and None when the payee/plan has no history at all —
+        callers then fall back to the legacy single-row balance.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT balance FROM draw_balance_history
+                   WHERE org_id=? AND payee_id=? AND plan_id=? AND period<?
+                   ORDER BY period DESC LIMIT 1""",
+                (self.org_id, payee_id, plan_id, period),
+            ).fetchone()
+            if row is not None:
+                return Decimal(row["balance"])
+            any_row = conn.execute(
+                """SELECT 1 FROM draw_balance_history
+                   WHERE org_id=? AND payee_id=? AND plan_id=? LIMIT 1""",
+                (self.org_id, payee_id, plan_id),
+            ).fetchone()
+        return Decimal("0") if any_row is not None else None
 
     # ------------------------------------------------------------------
     # Settings
