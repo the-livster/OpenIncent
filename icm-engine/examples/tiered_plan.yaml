@@ -12,3 +12,14 @@ rules:
         rate: 0.08
       - threshold_pct: 100.0
         rate: 0.12
+
+# Self-checking: `icm check-plan examples/tiered_plan.yaml`
+assertions:
+  - name: "100% of quota pays 5,000 (all in tier 1)"
+    quota: "100000"
+    deals: ["100000"]
+    expect_total: "5000"          # 100000 * 0.05
+  - name: "a deal crossing quota splits 5% / 8%"
+    quota: "100000"
+    deals: ["120000"]
+    expect_total: "6600"          # 100000*0.05 + 20000*0.08

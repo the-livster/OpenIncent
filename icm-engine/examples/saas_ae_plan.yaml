@@ -16,3 +16,16 @@ rules:
     type: flat_rate
     rate: 0.02
     filter: 'product == "Enterprise"'
+
+# Self-checking: `icm check-plan examples/saas_ae_plan.yaml`
+# (the Enterprise SPIF needs a product field, so plain assertion deals
+#  exercise the core tiers only)
+assertions:
+  - name: "100% of quota pays 5,000 on the core tiers"
+    quota: "100000"
+    deals: ["100000"]
+    expect_total: "5000"          # 100000 * 0.05
+  - name: "a deal crossing quota splits 5% / 8%"
+    quota: "100000"
+    deals: ["120000"]
+    expect_total: "6600"          # 100000*0.05 + 20000*0.08

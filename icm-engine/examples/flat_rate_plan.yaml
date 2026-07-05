@@ -6,3 +6,14 @@ rules:
   - id: flat_5pct
     type: flat_rate
     rate: 0.05
+
+# Self-checking: `icm check-plan examples/flat_rate_plan.yaml`
+assertions:
+  - name: "any volume pays a flat 5%"
+    quota: "100000"
+    deals: ["40000"]
+    expect_total: "2000"          # 40000 * 0.05
+  - name: "100% of quota pays 5,000"
+    quota: "100000"
+    deals: ["100000"]
+    expect_total: "5000"

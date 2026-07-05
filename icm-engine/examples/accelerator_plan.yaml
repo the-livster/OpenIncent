@@ -11,3 +11,14 @@ rules:
     rate: 0.05
     threshold_pct: 1.0
     multiplier: 1.5
+
+# Self-checking: `icm check-plan examples/accelerator_plan.yaml`
+assertions:
+  - name: "at 100% of quota only the base rate pays"
+    quota: "100000"
+    deals: ["100000"]
+    expect_total: "5000"          # 100000 * 0.05, no excess
+  - name: "the excess above quota accelerates at 1.5x"
+    quota: "100000"
+    deals: ["120000"]
+    expect_total: "7500"          # 120000*0.05 + 20000*(0.05*1.5)
