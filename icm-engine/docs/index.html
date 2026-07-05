@@ -453,7 +453,7 @@ icm statements --plan plan.yaml --transactions deals.csv --payees reps.csv \
     <p>A calculate run writes a commissions file and a per-payee summary to <code>--output</code>. To produce client-ready statements:</p>
     <pre><code>icm statements --plan plan.yaml --transactions deals.csv --payees reps.csv \
     --output statements/ --format html,xlsx,pdf</code></pre>
-    <p>Each payee gets one file containing only their own data — every line item, the rule and rate that paid it, adjustments labelled (clawback, true-up, cap, draw, manual), and a reconciled total. HTML statements are interactive: click a line to expand the calculation. Statements honour the plan's <a href="#rounding">rounding policy</a> and, if set, the reporting currency.</p>
+    <p>Each payee gets one file containing only their own data — every line item, the rule and rate that paid it, adjustments labelled (clawback, true-up, cap, draw, manual), and a reconciled total. HTML statements are interactive: click a line to expand the calculation. Statements honour the plan's <a href="#rounding">rounding policy</a> and, if set, the reporting currency. For a multi-plan run, pass <code>--plans</code> (repeatable) instead of <code>--plan</code> — each payee is paid under their own plan, exactly like the calculate command.</p>
     <h4>Branding (<code>--theme</code>)</h4>
     <p>Statements can carry your company's look: name, logo, accent colour, currency symbol, labels, and footer lines. Keep a <code>theme.yaml</code> next to your plan and pass it on the command line — with no theme, statements use the plain built-in style (currency symbol inferred from the plan's currency).</p>
     <pre><code># theme.yaml — every field optional

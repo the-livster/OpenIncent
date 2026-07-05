@@ -47,10 +47,28 @@ uv run icm validate --plan examples/staffing_reference/perm_plan.yaml \
 uv run icm reconcile \
   --commissions examples/staffing_reference/output/commissions.csv \
   --paid examples/staffing_reference/paid.csv
+
+# 4. The part you hand to a recruiter: one branded statement per person.
+uv run icm statements \
+  --plans examples/staffing_reference/perm_plan.yaml \
+  --plans examples/staffing_reference/contract_plan.yaml \
+  --plans examples/staffing_reference/mgmt_plan.yaml \
+  --transactions examples/staffing_reference/transactions.csv \
+  --payees examples/staffing_reference/payees.csv \
+  --adjustments examples/staffing_reference/adjustments.csv \
+  --output examples/staffing_reference/output/statements \
+  --period 2026-05 --format html \
+  --theme examples/staffing_reference/theme.yaml
 ```
 
 Outputs land in [`output/`](output/): `commissions.csv` (every line, with the rule behind it),
-`summary.csv` (per-rep totals), `ledger.jsonl` (the full audit trail), and `reconciliation.csv`.
+`summary.csv` (per-rep totals), `ledger.jsonl` (the full audit trail), and `reconciliation.csv` —
+plus [`output/statements/`](output/statements/), one **branded HTML statement per person**
+(Northwind colours and footer via [`theme.yaml`](theme.yaml); each payee is routed to their own
+plan, and each statement shows the tier-slice math in plain English). Open
+[Priya's](output/statements/statement_P-101_2026-05.html) to see the boundary-crossing split and
+the clawback exactly as a recruiter would. Add `show_powered_by: false` to the theme to
+white-label it.
 
 ---
 

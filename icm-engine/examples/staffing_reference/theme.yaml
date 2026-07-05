@@ -1,0 +1,11 @@
+# Northwind Recruitment — statement branding for the worked example.
+# Used by the statements step in README.md:
+#   icm statements --plans ... --theme examples/staffing_reference/theme.yaml
+# Every field is optional; see examples/theme.yaml for the full reference.
+
+company_name: Northwind Recruitment
+accent_color: "#0f766e"
+currency_symbol: "£"
+earned_label: Total commission
+contact_line: "Questions? Email comp@northwind.example — every line below is explained."
+footer_note: "May 2026 cycle · paid with June payroll"

@@ -900,7 +900,12 @@ def trace_command(
 
 @app.command("statements")
 def statements_command(
-    plan: str = typer.Option(..., "--plan", help="Path to plan YAML file"),
+    plan: str = typer.Option(None, "--plan", help="Path to plan YAML file (single-plan mode)"),
+    plans: list[str] = typer.Option(
+        None, "--plans",
+        help="Paths to plan YAML files for a multi-plan run (payees are routed to "
+             "their own plan; currency/rounding defaults come from the first plan)",
+    ),
     transactions: str = typer.Option(..., "--transactions", help="Path to transactions CSV/XLSX"),
     payees: str = typer.Option(..., "--payees", help="Path to payees CSV/XLSX"),
     output: str = typer.Option(..., "--output", help="Output directory for statements"),
@@ -928,7 +933,16 @@ def statements_command(
     from icm_engine.rounding import parse_rounding_mode
     from icm_engine.statements import StatementTheme, generate_statements, load_statement_theme
 
-    plan_obj = load_plan(plan)
+    plan_paths = list(plans or [])
+    if plan:
+        plan_paths.insert(0, plan)
+    if not plan_paths:
+        console.print("[red]Error: provide --plan or --plans[/red]")
+        raise typer.Exit(code=1)
+
+    plan_objs = [load_plan(p) for p in plan_paths]
+    plan_library = {p.plan_id: p for p in plan_objs}
+    plan_obj = plan_objs[0]  # currency/rounding/theme defaults come from here
     txn_list, _ = load_transactions(transactions)
     payee_list, _ = load_payees(payees)
 
@@ -942,10 +956,16 @@ def statements_command(
         from icm_engine.loader import load_mbos
         mbos_list = load_mbos(mbos_file)
 
-    result = CommissionEngine().calculate(
-        plan_obj, txn_list, payee_list,
-        adjustments=adjustments_list, mbos=mbos_list,
-    )
+    if len(plan_library) > 1:
+        result = CommissionEngine().calculate_run(
+            plan_library, txn_list, payee_list,
+            adjustments=adjustments_list, mbos=mbos_list,
+        )
+    else:
+        result = CommissionEngine().calculate(
+            plan_obj, txn_list, payee_list,
+            adjustments=adjustments_list, mbos=mbos_list,
+        )
 
     fmt_tuple = tuple(f.strip() for f in formats.split(","))
     out_dir = Path(output)
@@ -991,7 +1011,7 @@ def statements_command(
         formats=fmt_tuple,
         emit_zero=emit_zero,
         attainment=result.attainment,
-        plan_name=plan_obj.name,
+        plan_name=plan_obj.name if len(plan_library) == 1 else "",
         rounding_mode=_rmode,
         rounding_places=_rplaces,
         rates=_rates if _rates else None,
@@ -1002,7 +1022,8 @@ def statements_command(
 
     console.print(f"[green]Generated {len(files)} statement file(s) in {out_dir}[/green]")
     for f in files:
-        console.print(f"  [dim]{f.payee_id}[/dim] → {f.path.name}")
+        # ASCII arrow: Windows consoles (cp1252) can't encode U+2192
+        console.print(f"  [dim]{f.payee_id}[/dim] -> {f.path.name}")
 
 
 # ------------------------------------------------------------------
