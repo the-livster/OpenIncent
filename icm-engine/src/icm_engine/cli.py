@@ -191,6 +191,21 @@ def main(
                         f"nor present in any transaction's metadata. It will never match."
                     )
 
+    # Formula-variable typo guard
+    from icm_engine.formula import check_formula_fields
+    for p in plan_library.values():
+        for rule in p.rules:
+            formula_source: str | None = getattr(rule, "formula", None)
+            if formula_source:
+                for field in check_formula_fields(formula_source, txns):
+                    console.print(
+                        f"[yellow]Warning:[/yellow] formula on rule [bold]{rule.id}[/bold] "
+                        f"(plan [bold]{p.plan_id}[/bold]) references variable "
+                        f"[bold]{field!r}[/bold] which is neither a built-in variable "
+                        f"nor present in any transaction's metadata. Every row will be "
+                        f"skipped with a formula_eval_error in the ledger."
+                    )
+
     if txn_mapping:
         _print_mapping(txn_mapping)
     if payee_mapping:

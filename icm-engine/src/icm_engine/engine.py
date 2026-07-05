@@ -7,12 +7,14 @@ from decimal import Decimal
 from typing import Any
 
 from icm_engine.filter_parser import compile_filter
+from icm_engine.formula import FormulaEvalError, compile_formula
 from icm_engine.ledger import LedgerEntry
 from icm_engine.models import (
     AcceleratorRule,
     Commission,
     Credit,
     FlatRateRule,
+    FormulaRule,
     Payee,
     Plan,
     Tier,
@@ -911,6 +913,14 @@ class CommissionEngine:
                     fractions=fractions,
                     quota_overrides=quota_overrides,
                 )
+            elif isinstance(rule, FormulaRule):
+                commissions, ledger = self._calc_formula(
+                    rule, synth_txns, payee_map, pt,
+                    quota_category=getattr(rule, "quota_category", None),
+                    fractions=fractions,
+                    quota_overrides=quota_overrides,
+                    attainment=attainment,
+                )
             else:
                 continue
 
@@ -1710,6 +1720,118 @@ class CommissionEngine:
                     )
 
                 cumulative += txn.amount
+
+        return results, ledger
+
+    # -- formula (flexible calc layer) ----------------------------------------
+
+    def _calc_formula(
+        self,
+        rule: FormulaRule,
+        transactions: list[Transaction],
+        payee_map: dict[str, Payee],
+        period_type: str = "monthly",
+        quota_category: str | None = None,
+        fractions: dict[tuple[str, str], Decimal] | None = None,
+        quota_overrides: dict[tuple[str, str], Decimal] | None = None,
+        attainment: list[AttainmentSummary] | None = None,
+    ) -> tuple[list[Commission], list[LedgerEntry]]:
+        predicate = compile_filter(rule.filter)
+        formula = compile_formula(rule.formula)
+        results: list[Commission] = []
+        ledger: list[LedgerEntry] = []
+
+        # Attainment context per (payee, window). Zero-quota payees get
+        # attainment_pct 0 so gating formulas still evaluate.
+        att_pct: dict[tuple[str, str], Decimal] = {}
+        att_bookings: dict[tuple[str, str], Decimal] = {}
+        for a in attainment or []:
+            key = (a.payee_id, a.period)
+            att_pct[key] = a.attainment_pct if a.attainment_pct is not None else Decimal("0")
+            att_bookings[key] = a.bookings
+
+        for txn in transactions:
+            if not predicate(txn):
+                ledger.append(LedgerEntry(
+                    transaction_id=txn.id,
+                    payee_id=txn.payee_id,
+                    rule_id=rule.id,
+                    event_type="rule_skipped",
+                    inputs={"filter": rule.filter or "(none)", "reason": "filter_excluded"},
+                    human_readable=f"Transaction {txn.id} skipped by rule {rule.id} (filter excluded)",
+                ))
+                continue
+
+            window = _window_key(txn.period, period_type)
+            key = (txn.payee_id, window)
+            payee = payee_map.get(txn.payee_id)
+            qo = (quota_overrides or {}).get(key)
+            if qo is not None:
+                quota = qo
+            elif payee is not None:
+                af = (fractions or {}).get(key, Decimal("1"))
+                quota = payee.quota_for(window, category=quota_category, activity_fraction=af)
+            else:
+                quota = Decimal("0")
+
+            # Metadata first so canonical fields can't be shadowed by a column
+            # of the same name.
+            context: dict[str, Any] = dict(txn.metadata or {})
+            context.update({
+                "amount": txn.amount,
+                "margin": txn.margin,  # None when absent — referencing it then skips the row
+                "product": txn.product,
+                "quota": quota,
+                "attainment_pct": att_pct.get(key, Decimal("0")),
+                "bookings": att_bookings.get(key, Decimal("0")),
+            })
+
+            try:
+                commission_amount = formula.evaluate(context)
+            except FormulaEvalError as e:
+                ledger.append(LedgerEntry(
+                    transaction_id=txn.id,
+                    payee_id=txn.payee_id,
+                    rule_id=rule.id,
+                    event_type="rule_skipped",
+                    inputs={"formula": rule.formula, "reason": "formula_eval_error",
+                            "detail": str(e)},
+                    human_readable=(
+                        f"Transaction {txn.id} skipped by rule {rule.id}: {e}"
+                    ),
+                ))
+                continue
+
+            ledger.append(LedgerEntry(
+                transaction_id=txn.id,
+                payee_id=txn.payee_id,
+                rule_id=rule.id,
+                event_type="commission_computed",
+                inputs={
+                    "formula": rule.formula,
+                    "amount": str(txn.amount),
+                    "quota": str(quota),
+                    "attainment_pct": str(att_pct.get(key, Decimal("0"))),
+                },
+                outputs={"commission_amount": str(commission_amount)},
+                human_readable=(
+                    f"Formula: {rule.formula} = {commission_amount}"
+                ),
+            ))
+
+            if commission_amount == 0:
+                continue  # ledger shows the evaluation; no zero line on statements
+
+            results.append(Commission(
+                transaction_id=txn.id,
+                payee_id=txn.payee_id,
+                period=window,
+                rule_id=rule.id,
+                base_amount=commission_amount,
+                rate=Decimal("1"),
+                commission_amount=commission_amount,
+                notes=f"Custom formula: {rule.formula}",
+            ))
 
         return results, ledger
 

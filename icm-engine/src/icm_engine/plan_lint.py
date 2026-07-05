@@ -12,7 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from icm_engine.models import AcceleratorRule, FlatRateRule, Plan, TieredRule
+from icm_engine.formula import compile_formula
+from icm_engine.models import AcceleratorRule, FlatRateRule, FormulaRule, Plan, TieredRule
 
 
 @dataclass
@@ -35,7 +36,7 @@ def lint_plan(plan: Plan) -> list[LintFinding]:
             out.append(LintFinding("error", "duplicate_rule_id", f"Duplicate rule id {r.id!r}."))
         seen.add(r.id)
 
-    has_base = any(isinstance(r, FlatRateRule | TieredRule) for r in plan.rules)
+    has_base = any(isinstance(r, FlatRateRule | TieredRule | FormulaRule) for r in plan.rules)
 
     for r in plan.rules:
         rate = getattr(r, "rate", None)
@@ -65,6 +66,15 @@ def lint_plan(plan: Plan) -> list[LintFinding]:
                         "warning", "zero_tier_rate",
                         f"Rule {r.id!r} has a tier (threshold {t.threshold_pct}) with rate 0.",
                     ))
+
+        if isinstance(r, FormulaRule):
+            compiled = compile_formula(r.formula)
+            if not compiled.variables:
+                out.append(LintFinding(
+                    "warning", "constant_formula",
+                    f"Rule {r.id!r} formula uses no variables - it pays the same fixed "
+                    f"amount on every matching deal. Intended?",
+                ))
 
         if isinstance(r, AcceleratorRule) and not has_base:
             out.append(LintFinding(

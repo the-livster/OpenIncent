@@ -23,7 +23,7 @@ Most commission tools are closed SaaS: you upload sensitive pay data to someone 
 
 A run takes your **plans**, **payees**, and **deals** and produces audited payouts. It handles:
 
-- **Rule types** — flat-rate, tiered (marginal / boundary-crossing attainment), and accelerator. Each rule can carry a **cap** and a **minimum-attainment gate**.
+- **Rule types** — flat-rate, tiered (marginal / boundary-crossing attainment), and accelerator. Each rule can carry a **cap** and a **minimum-attainment gate**. When those can't express a plan, a **formula** rule evaluates a custom arithmetic expression per deal (safe DSL — variables like `amount`, `margin`, `attainment_pct`, any data column; `min`/`max`/`round`/`if(...)`).
 - **Crediting** — splits (carve up a deal; must total 100%) and overlays (additive double-credit).
 - **Quotas** — per-payee, with per-period overrides, **quota categories**, and new-hire **ramp** schedules.
 - **Draws & guarantees** — recoverable draws (advances recovered from future earnings, balance carried across periods) and non-recoverable guarantees (a per-period floor).
@@ -81,7 +81,7 @@ rules:
     min_attainment_pct: "0.5" # optional: pays nothing until 50% of quota
 ```
 
-Rule types: **flat-rate**, **tiered** (boundary-crossing attainment), and **accelerator** — each optionally capped and/or gated by minimum attainment. Plans may also carry a per-period **payout cap** and a **draw**; payees may carry a draw, ramp, and quota categories.
+Rule types: **flat-rate**, **tiered** (boundary-crossing attainment), **accelerator**, and **formula** (a custom per-deal expression, the escape hatch for everything else) — each optionally capped and/or gated by minimum attainment. Plans may also carry a per-period **payout cap** and a **draw**; payees may carry a draw, ramp, and quota categories.
 
 Filters support `==`, `!=`, `<`, `>`, `<=`, `>=`, and `in`, combined with `and` / `or` — on **any input column** (canonical fields like `amount` and `product`, plus any extra/metadata column like `region` or `tier`). Values are auto-coerced: numeric strings compare as numbers, date strings as dates. Use backticks for field names with spaces: `` `Deal Type` == "Perm" ``.
 

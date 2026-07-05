@@ -38,6 +38,15 @@ rule type, and constraint shown here MUST be satisfied by your output.
 - **accelerator**: Higher multiplier on above-threshold portion. Has
   `type: accelerator`, `id`, optional `filter`, `rate`, `threshold_pct`, and
   `multiplier`. The rate above threshold is `rate * multiplier`.
+- **formula**: Escape hatch for plans the other rule types can't express. Has
+  `type: formula`, `id`, optional `filter`, and `formula` — an arithmetic
+  expression evaluated per credited deal. Variables: `amount`, `margin`,
+  `quota`, `attainment_pct`, `bookings`, `product`, plus any metadata column.
+  Operators: `+ - * /`, comparisons, `and`/`or`. Functions: `min`, `max`,
+  `abs`, `round`, `floor`, `ceil`, `if(condition, then, else)`.
+  Example: `formula: "0.05 * amount + if(attainment_pct >= 1.0, 0.02 * amount, 0)"`.
+  ONLY use formula when flat_rate/tiered/accelerator genuinely cannot express
+  the plan — prefer the structured types, they produce better statements.
 
 ## Hard requirements
 

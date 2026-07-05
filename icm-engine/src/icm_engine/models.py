@@ -411,8 +411,36 @@ class AcceleratorRule(BaseModel):
     base: Literal["amount", "margin"] = "amount"
 
 
+class FormulaRule(BaseModel):
+    """Escape-hatch rule: an arbitrary arithmetic formula evaluated per credited
+    transaction, for plans the built-in rule vocabulary can't express.
+
+    The formula sees `amount`, `margin`, `quota`, `attainment_pct`, `bookings`,
+    `product`, and any metadata column, plus min/max/abs/round/floor/ceil and
+    if(cond, then, else). Syntax is validated at plan-load time; per-row
+    evaluation failures (e.g. missing margin) skip that row with a ledger entry.
+    """
+
+    type: Literal["formula"]
+    id: str
+    filter: str | None = None
+    formula: str = Field(min_length=1)
+    cap: Decimal | None = Field(default=None, ge=Decimal("0"))
+    min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
+    quota_category: str | None = None
+    # Chooses which attainment (revenue or gross profit) gates min_attainment_pct.
+    base: Literal["amount", "margin"] = "amount"
+
+    @model_validator(mode="after")
+    def _check_formula_parses(self) -> FormulaRule:
+        from icm_engine.formula import compile_formula
+
+        compile_formula(self.formula)  # raises ValueError with position info
+        return self
+
+
 Rule = Annotated[
-    FlatRateRule | TieredRule | AcceleratorRule,
+    FlatRateRule | TieredRule | AcceleratorRule | FormulaRule,
     Discriminator("type"),
 ]
 
