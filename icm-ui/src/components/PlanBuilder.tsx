@@ -415,7 +415,7 @@ function toYaml(obj: unknown, indent = 0): string {
 
 function yamlString(s: string): string {
   // If the string is simple (no special chars), return unquoted
-  if (/^[a-zA-Z0-9_\-.\/ ]+$/.test(s) && s.length > 0 && !s.startsWith(" ")) {
+  if (/^[a-zA-Z0-9_\-./ ]+$/.test(s) && s.length > 0 && !s.startsWith(" ")) {
     return s;
   }
   // Escape backslashes and double quotes, wrap in double quotes
