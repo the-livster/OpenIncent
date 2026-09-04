@@ -340,10 +340,16 @@ def relaunch() -> None:
     if not exe.exists():
         logger.error("Cannot relaunch: %s not found", exe)
         return
-    # Launch detached so the current process can exit
+    # Launch detached so the current process can exit. The platform check has
+    # to be a statement, not a ternary in the argument: DETACHED_PROCESS only
+    # exists on Windows, and mypy narrows sys.platform at statement level only.
+    if sys.platform == "win32":
+        creationflags = subprocess.DETACHED_PROCESS
+    else:
+        creationflags = 0
     subprocess.Popen(
         [str(exe)],
-        creationflags=subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0,
+        creationflags=creationflags,
         close_fds=True,
     )
     sys.exit(0)
