@@ -60,6 +60,64 @@ def _window_key(period: str, period_type: str) -> str:
     return period  # unknown period_type — pass through unchanged
 
 
+def _window_year(window_key: str) -> str:
+    """Fiscal year a window belongs to. Calendar-year based: '2026-03',
+    '2026-Q1' and '2026' all resolve to '2026'."""
+    return window_key.split("-")[0]
+
+
+def _expand_year_windows(windows: set[str], period_type: str) -> set[str]:
+    """Every window from each year's start through the latest one seen.
+
+    A month with no bookings still accrues quota. Leaving it out of the
+    sequence would make the year-to-date quota too small and overstate
+    attainment — a rep with a quiet February would look better for it.
+    Windows after the latest one seen are not added: quota for a period
+    that has not happened yet should not count against anyone.
+    """
+    if period_type == "annual":
+        return set(windows)
+
+    out = set(windows)
+    by_year: dict[str, list[str]] = {}
+    for w in windows:
+        by_year.setdefault(_window_year(w), []).append(w)
+
+    for year, seen in by_year.items():
+        latest = max(seen)
+        if period_type == "monthly":
+            last_month = int(latest.split("-")[1])
+            out |= {f"{year}-{m:02d}" for m in range(1, last_month + 1)}
+        elif period_type == "quarterly":
+            last_q = int(latest.split("-Q")[1])
+            out |= {f"{year}-Q{q}" for q in range(1, last_q + 1)}
+    return out
+
+
+def _accumulate_ytd(
+    values: dict[tuple[str, str], Decimal],
+    windows: set[str],
+    payees: set[str],
+) -> dict[tuple[str, str], Decimal]:
+    """Roll per-window values forward within each fiscal year.
+
+    A window with no entry counts as zero but still advances the running
+    total, so a quiet month does not break the sequence.
+    """
+    out: dict[tuple[str, str], Decimal] = dict(values)
+    by_year: dict[str, list[str]] = {}
+    for w in windows:
+        by_year.setdefault(_window_year(w), []).append(w)
+
+    for year_windows in by_year.values():
+        for pid in payees:
+            running = Decimal("0")
+            for w in sorted(year_windows):
+                running += values.get((pid, w), Decimal("0"))
+                out[(pid, w)] = running
+    return out
+
+
 def _window_date_range(window_key: str, period_type: str) -> tuple[date, date]:
     """Return (start_date, end_date_inclusive) for a window key."""
     if period_type == "monthly":
@@ -240,8 +298,12 @@ def _compute_attainment(
     period_type: str,
     fractions: dict[tuple[str, str], Decimal] | None = None,
     use_margin: bool = False,
+    cumulative: bool = False,
 ) -> list[AttainmentSummary]:
     """Compute bookings vs quota per (payee, window).
+
+    With cumulative=True, both sides accumulate across the fiscal year: the
+    window's attainment is year-to-date bookings over year-to-date quota.
 
     When payees share a team_id, their bookings and quotas are pooled:
     every team member sees the TEAM's combined bookings and quota, and
@@ -282,6 +344,11 @@ def _compute_attainment(
     for _, w in bookings:
         all_windows.add(w)
 
+    if cumulative:
+        # Fill the gaps before quotas are computed, so a skipped window's
+        # quota is included in the running total.
+        all_windows = _expand_year_windows(all_windows, period_type)
+
     # Compute quotas for ALL payees across all windows (even those with no bookings)
     for pid, p in payee_map.items():
         for w in all_windows:
@@ -289,6 +356,11 @@ def _compute_attainment(
             if k not in quotas:
                 af = frac.get(k, Decimal("1"))
                 quotas[k] = p.quota_for(w, activity_fraction=af)
+
+    if cumulative:
+        every_payee = set(payee_map) | {k[0] for k in bookings}
+        bookings = _accumulate_ytd(bookings, all_windows, every_payee)
+        quotas = _accumulate_ytd(quotas, all_windows, every_payee)
 
     # Compute team-level aggregates
     # Build team membership: (team_id, window) → list of payee_ids
@@ -792,7 +864,21 @@ class CommissionEngine:
                         fractions[key] = _compute_activity_fraction(p, w, pt, pro_rating)
 
         # Compute attainment: bookings per (payee, window) vs quota
-        attainment = _compute_attainment(credits, payee_map, pt, fractions)
+        ytd = getattr(plan, "attainment_basis", "period") == "cumulative"
+        attainment = _compute_attainment(credits, payee_map, pt, fractions, cumulative=ytd)
+
+        # Under YTD, a window's tier slicing must start where the previous
+        # window ended, not at zero, or every month re-enters at tier 1.
+        opening_bookings: dict[tuple[str, str], Decimal] = {}
+        if ytd:
+            by_payee_year: dict[tuple[str, str], list[AttainmentSummary]] = {}
+            for a in attainment:
+                by_payee_year.setdefault((a.payee_id, _window_year(a.period)), []).append(a)
+            for group in by_payee_year.values():
+                prior = Decimal("0")
+                for a in sorted(group, key=lambda x: x.period):
+                    opening_bookings[(a.payee_id, a.period)] = prior
+                    prior = a.bookings
         for a in attainment:
             all_ledger.append(LedgerEntry(
                 transaction_id="*",
@@ -906,6 +992,7 @@ class CommissionEngine:
                     quota_category=getattr(rule, "quota_category", None),
                     fractions=fractions,
                     quota_overrides=quota_overrides,
+                    opening_bookings=opening_bookings,
                 )
             elif isinstance(rule, AcceleratorRule):
                 commissions, ledger = self._calc_accelerator(
@@ -913,6 +1000,7 @@ class CommissionEngine:
                     quota_category=getattr(rule, "quota_category", None),
                     fractions=fractions,
                     quota_overrides=quota_overrides,
+                    opening_bookings=opening_bookings,
                 )
             elif isinstance(rule, FormulaRule):
                 commissions, ledger = self._calc_formula(
@@ -1368,6 +1456,7 @@ class CommissionEngine:
         quota_category: str | None = None,
         fractions: dict[tuple[str, str], Decimal] | None = None,
         quota_overrides: dict[tuple[str, str], Decimal] | None = None,
+        opening_bookings: dict[tuple[str, str], Decimal] | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1466,7 +1555,8 @@ class CommissionEngine:
                 continue
 
             sorted_txns = sorted(txn_group, key=_sort_key)
-            cumulative = Decimal("0")
+            # YTD carries the prior windows' bookings in; period-basis starts at 0.
+            cumulative = (opening_bookings or {}).get((payee_id, window), Decimal("0"))
 
             for txn in sorted_txns:
                 remainder = txn.amount
@@ -1615,6 +1705,7 @@ class CommissionEngine:
         quota_category: str | None = None,
         fractions: dict[tuple[str, str], Decimal] | None = None,
         quota_overrides: dict[tuple[str, str], Decimal] | None = None,
+        opening_bookings: dict[tuple[str, str], Decimal] | None = None,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1674,7 +1765,8 @@ class CommissionEngine:
                 continue
 
             sorted_txns = sorted(txn_group, key=_sort_key)
-            cumulative = Decimal("0")
+            # YTD carries the prior windows' bookings in; period-basis starts at 0.
+            cumulative = (opening_bookings or {}).get((payee_id, window), Decimal("0"))
 
             for txn in sorted_txns:
                 threshold_amount = rule.threshold_pct * quota

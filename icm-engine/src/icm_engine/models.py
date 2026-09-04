@@ -478,6 +478,12 @@ class Plan(BaseModel):
     plan_id: str
     name: str
     period_type: str = Field(pattern=r"^(monthly|quarterly|annual)$")
+    # "period": attainment resets every window (the default, and v1 behaviour).
+    # "cumulative": bookings and quota accumulate across the fiscal year, so a
+    # rep who passes quota in August stays above it for the rest of the year.
+    # Only affects rules that read attainment - tiered, accelerator, and any
+    # min_attainment_pct gate. Flat-rate rules are unchanged.
+    attainment_basis: Literal["period", "cumulative"] = "period"
     currency: str
     reporting_currency: str = ""  # blank = display in plan's currency (no conversion)
     rules: list[Rule] = Field(default_factory=list)

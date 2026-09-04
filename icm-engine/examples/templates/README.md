@@ -13,6 +13,7 @@ pays what you intend before it ever touches a payee.
 | [`saas_ae_accelerator.yaml`](saas_ae_accelerator.yaml) | AE with an overachievement kicker on bookings above quota | flat_rate + accelerator |
 | [`sdr_pipeline_flat.yaml`](sdr_pipeline_flat.yaml) | SDR — flat % of sourced pipeline, with a minimum-attainment floor | flat_rate + `min_attainment_pct` |
 | [`custom_formula_deal_cap.yaml`](custom_formula_deal_cap.yaml) | Anything the built-in types can't express — here, a per-deal cap | formula (escape hatch) |
+| [`annual_quota_ytd.yaml`](annual_quota_ytd.yaml) | One annual quota, paid monthly — tier position carries across periods | tiered + `attainment_basis: cumulative` |
 
 ## Use one
 

@@ -52,6 +52,11 @@ rule type, and constraint shown here MUST be satisfied by your output.
 
 1. All Decimal values MUST be quoted strings: `rate: "0.05"` NOT `rate: 0.05`.
 2. `period_type` MUST be one of: `monthly`, `quarterly`.
+2a. `attainment_basis` is optional: `period` (default — attainment resets each
+   period) or `cumulative` (year-to-date; bookings and quota accumulate across
+   the fiscal year, so tier position carries forward). Use `cumulative` when the
+   plan describes an ANNUAL quota paid out monthly or quarterly, or says
+   "year-to-date", "cumulative", or "annual attainment".
 3. `currency` MUST be a 3-letter ISO 4217 code (e.g. `USD`, `EUR`).
 4. Rule `id` values MUST follow the pattern `R-NNN` (e.g. `R-001`, `R-002`).
 5. Filter expressions MUST use only these operators: `==`, `!=`, `>`, `<`,

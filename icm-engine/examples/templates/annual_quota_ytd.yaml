@@ -1,0 +1,30 @@
+# Annual quota, monthly payout, year-to-date attainment.
+#
+# The case attainment_basis exists for: the rep carries one annual number, but
+# gets paid every month. Under the default `period` basis a rep who clears quota
+# in August would drop back to tier 1 in September, because attainment resets.
+# `cumulative` accumulates bookings AND quota across the fiscal year, so tier
+# position carries forward and only resets in January.
+plan_id: annual_quota_ytd
+name: "Annual quota, paid monthly (YTD attainment)"
+currency: USD
+period_type: monthly
+attainment_basis: cumulative
+
+rules:
+  - id: R1
+    type: tiered
+    tiers:
+      - threshold_pct: "1.0"
+        rate: "0.05"      # up to 100% of year-to-date quota
+      - threshold_pct: "1.5"
+        rate: "0.10"      # 100%-150% of year-to-date quota
+
+assertions:
+  # One window, so YTD and period agree: 12,000 against a 10,000 quota is
+  # 10,000 @ 5% = 500, plus 2,000 in the 100-150% band @ 10% = 200.
+  - name: "120% in a single month pays 700"
+    quota: "10000"
+    deals: ["12000"]
+    expect_total: "700"
+    period: "2026-01"

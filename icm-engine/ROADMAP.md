@@ -71,9 +71,18 @@ walkthrough is pre-written. **Shipped:** each statement renders the slice math i
 "40,000 of this deal fell between 100% and 125% of quota → 12%" — backed by the same audit ledger that
 `icm trace` reads.
 
+### 7. Year-to-date attainment ✅
+
+Attainment resetting every window is wrong for any plan whose quota is annual but
+whose payout is monthly: a rep who clears quota in August drops back to tier 1 in
+September. **Shipped:** `attainment_basis: cumulative` on the plan accumulates
+bookings *and* quota across the fiscal year, so tier position carries forward.
+Tier slicing opens each window where the last one closed rather than at zero, a
+window with no deals still accrues its quota, and the year boundary resets.
+Default stays `period`, so existing plans are untouched.
+
 ## On the radar (built on demand / on customer pull)
 
-- YTD / cumulative attainment mode (tiers against fiscal-year-cumulative bookings).
 - Plan effective-date versioning (Plan A Jan–Mar, Plan B from Apr) without manual partitioning.
 - What-if / sensitivity modeling and org-level reporting.
 
