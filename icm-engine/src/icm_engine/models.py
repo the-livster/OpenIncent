@@ -374,6 +374,10 @@ class FlatRateRule(BaseModel):
     min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
     quota_category: str | None = None
     base: Literal["amount", "margin"] = "amount"
+    # Composition: take this rule's base from what an earlier rule paid on the
+    # same credited deal, instead of from the deal's own amount. "A kicker worth
+    # 20% of base commission" is a flat_rate with on_rule set and rate 0.20.
+    on_rule: str | None = None
 
 
 class TieredRule(BaseModel):
@@ -385,6 +389,10 @@ class TieredRule(BaseModel):
     min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
     quota_category: str | None = None
     base: Literal["amount", "margin"] = "amount"
+    # Composition: take this rule's base from what an earlier rule paid on the
+    # same credited deal, instead of from the deal's own amount. "A kicker worth
+    # 20% of base commission" is a flat_rate with on_rule set and rate 0.20.
+    on_rule: str | None = None
 
     @model_validator(mode="after")
     def _check_tiers_ascending(self) -> TieredRule:
@@ -409,6 +417,10 @@ class AcceleratorRule(BaseModel):
     min_attainment_pct: Decimal | None = Field(default=None, ge=Decimal("0"))
     quota_category: str | None = None
     base: Literal["amount", "margin"] = "amount"
+    # Composition: take this rule's base from what an earlier rule paid on the
+    # same credited deal, instead of from the deal's own amount. "A kicker worth
+    # 20% of base commission" is a flat_rate with on_rule set and rate 0.20.
+    on_rule: str | None = None
 
 
 class FormulaRule(BaseModel):
@@ -430,6 +442,10 @@ class FormulaRule(BaseModel):
     quota_category: str | None = None
     # Chooses which attainment (revenue or gross profit) gates min_attainment_pct.
     base: Literal["amount", "margin"] = "amount"
+    # Composition: take this rule's base from what an earlier rule paid on the
+    # same credited deal, instead of from the deal's own amount. "A kicker worth
+    # 20% of base commission" is a flat_rate with on_rule set and rate 0.20.
+    on_rule: str | None = None
 
     @model_validator(mode="after")
     def _check_formula_parses(self) -> FormulaRule:
@@ -493,6 +509,36 @@ class Plan(BaseModel):
     rounding: RoundingPolicy | None = None  # None = exact (no display rounding)
     ote: Decimal | None = Field(default=None, ge=Decimal("0"))  # stated on-target earnings (metadata)
     assertions: list[PlanAssertion] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_rule_composition(self) -> Plan:
+        """A composed rule must name an EARLIER rule.
+
+        Evaluation is a single pass in plan order, so a rule can only read a
+        payout that has already been produced. Requiring the reference to point
+        backwards makes cycles impossible and keeps the plan readable top to
+        bottom, which is the whole point of the format.
+        """
+        seen: set[str] = set()
+        for rule in self.rules:
+            ref = getattr(rule, "on_rule", None)
+            if ref is not None:
+                if ref == rule.id:
+                    raise ValueError(f"rule '{rule.id}' has on_rule pointing at itself")
+                if ref not in seen:
+                    known = ", ".join(seen) or "(none)"
+                    raise ValueError(
+                        f"rule '{rule.id}' has on_rule: '{ref}', which is not a rule "
+                        f"defined before it. Rules defined earlier: {known}"
+                    )
+                if getattr(rule, "base", "amount") == "margin":
+                    raise ValueError(
+                        f"rule '{rule.id}' sets both on_rule and base: margin. A "
+                        f"composed rule's base is the referenced rule's payout, so "
+                        f"the two cannot both apply."
+                    )
+            seen.add(rule.id)
+        return self
 
 
 # --- Manual adjustments ---

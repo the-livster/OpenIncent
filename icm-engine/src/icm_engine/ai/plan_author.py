@@ -52,6 +52,10 @@ rule type, and constraint shown here MUST be satisfied by your output.
 
 1. All Decimal values MUST be quoted strings: `rate: "0.05"` NOT `rate: 0.05`.
 2. `period_type` MUST be one of: `monthly`, `quarterly`.
+1b. `on_rule: <rule_id>` on any rule makes its base the payout of an EARLIER
+   rule on the same deal, rather than the deal's amount. Use it for "an extra
+   X% of commission" / "a kicker on top of base" wording. The referenced rule
+   must appear earlier in `rules`. Do not also set `base: margin` on it.
 2a. `attainment_basis` is optional: `period` (default — attainment resets each
    period) or `cumulative` (year-to-date; bookings and quota accumulate across
    the fiscal year, so tier position carries forward). Use `cumulative` when the

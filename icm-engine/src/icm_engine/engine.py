@@ -462,6 +462,47 @@ def _to_margin_basis(
     return out
 
 
+def _to_rule_basis(
+    rule: Any,
+    synth_txns: list[Transaction],
+    produced: dict[tuple[str, str], Decimal],
+    ledger: list[LedgerEntry],
+) -> list[Transaction]:
+    """Rebuild synthetic txns so `amount` is what the referenced rule paid.
+
+    One row per (transaction, payee). A payee can hold more than one credit on
+    the same deal - a split plus a manager overlay - and the referenced rule's
+    payouts are already summed across those, so emitting a row per credit would
+    charge the composed rule for the same money twice.
+
+    A deal the base rule did not pay on is skipped and recorded, matching how a
+    margin rule treats a row with no margin.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[Transaction] = []
+    for t in synth_txns:
+        key = (t.id, t.payee_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        base = produced.get(key)
+        if base is None:
+            ledger.append(LedgerEntry(
+                transaction_id=t.id,
+                payee_id=t.payee_id,
+                rule_id=rule.id,
+                event_type="rule_skipped",
+                inputs={"reason": "no_base_commission", "on_rule": rule.on_rule},
+                human_readable=(
+                    f"Transaction {t.id} skipped by rule {rule.id}: "
+                    f"rule {rule.on_rule} paid nothing on it"
+                ),
+            ))
+            continue
+        out.append(t.model_copy(update={"amount": base, "margin": None}))
+    return out
+
+
 def _make_synthetic_transactions(credits: list[_CreditUnit]) -> list[Transaction]:
     """Convert credit units into synthetic Transactions for rule evaluation.
 
@@ -938,6 +979,11 @@ class CommissionEngine:
             for a in _compute_attainment(credits, payee_map, pt, fractions, use_margin=True):
                 margin_att_by_payee_window[(a.payee_id, a.period)] = a.attainment_pct
 
+        # What each rule paid, per (transaction, payee), for composed rules to
+        # read. Recorded after the per-rule cap, so a composed rule pays a share
+        # of what was actually paid rather than of an uncapped figure.
+        rule_outputs: dict[str, dict[tuple[str, str], Decimal]] = {}
+
         for rule in plan.rules:
             # Build synthetic transactions for this rule's evaluation
             synth_txns = _make_synthetic_transactions(credits)
@@ -981,6 +1027,13 @@ class CommissionEngine:
             ):
                 synth_txns = _to_margin_basis(rule, synth_txns, all_ledger)
 
+            # Composed rule: its base is the referenced rule's payout.
+            on_rule = getattr(rule, "on_rule", None)
+            if on_rule:
+                synth_txns = _to_rule_basis(
+                    rule, synth_txns, rule_outputs.get(on_rule, {}), all_ledger,
+                )
+
             if isinstance(rule, FlatRateRule):
                 commissions, ledger = self._calc_flat_rate(
                     rule, synth_txns, payee_map, pt,
@@ -1017,6 +1070,33 @@ class CommissionEngine:
             rule_cap = getattr(rule, "cap", None)
             if rule_cap is not None and rule_cap >= 0:
                 commissions = _apply_cap(commissions, rule_cap, rule.id)
+
+            # What this rule paid, per (transaction, payee), for composed rules.
+            # A per-rule cap does not reduce the transaction's line; it adds a
+            # separate negative "*" adjustment for the payee-period. Apportion
+            # that back across the lines, so a composed rule reads a share of
+            # what was actually paid rather than of the uncapped figure.
+            produced: dict[tuple[str, str], Decimal] = {}
+            period_of: dict[tuple[str, str], str] = {}
+            gross: dict[tuple[str, str], Decimal] = {}
+            cap_delta: dict[tuple[str, str], Decimal] = {}
+            for c in commissions:
+                pp = (c.payee_id, c.period)
+                if c.transaction_id == "*":
+                    cap_delta[pp] = cap_delta.get(pp, Decimal("0")) + c.commission_amount
+                    continue
+                k = (c.transaction_id, c.payee_id)
+                produced[k] = produced.get(k, Decimal("0")) + c.commission_amount
+                period_of[k] = c.period
+                gross[pp] = gross.get(pp, Decimal("0")) + c.commission_amount
+
+            for k, amount in list(produced.items()):
+                pp = (k[1], period_of[k])
+                delta, total = cap_delta.get(pp), gross.get(pp)
+                if delta and total:
+                    produced[k] = amount + (delta * amount / total)
+
+            rule_outputs[rule.id] = produced
 
             # Stamp credit metadata onto commissions
             _stamp_credits(commissions, credits)

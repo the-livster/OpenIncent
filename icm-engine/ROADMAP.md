@@ -81,6 +81,15 @@ Tier slicing opens each window where the last one closed rather than at zero, a
 window with no deals still accrues its quota, and the year boundary resets.
 Default stays `period`, so existing plans are untouched.
 
+### 8. Rule composition ✅
+
+Real plans layer: a base rate, then a kicker worth a share of *that commission*.
+Restating the base rate inside a formula keeps the two in sync by hand, and a
+change to one silently breaks the other. **Shipped:** `on_rule: <rule_id>` makes
+a rule's base the referenced rule's payout on the same credited deal, after that
+rule's cap. References must point at an earlier rule, which makes cycles
+impossible and keeps the plan readable top to bottom.
+
 ## On the radar (built on demand / on customer pull)
 
 - Plan effective-date versioning (Plan A Jan–Mar, Plan B from Apr) without manual partitioning.

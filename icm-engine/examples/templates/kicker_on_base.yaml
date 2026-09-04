@@ -1,0 +1,34 @@
+# A kicker layered on top of base commission.
+#
+# The plan says "5% on everything, plus another 20% of that commission on
+# Enterprise deals". Without rule composition the only way to write the kicker
+# is to restate the base rate inside a formula (0.05 * 0.20 * amount) and keep
+# the two in sync by hand — change the base rate and the kicker quietly wrong.
+#
+# `on_rule` makes the second rule's base the FIRST rule's payout, so there is
+# one rate to maintain. The reference must point at a rule defined earlier:
+# evaluation is a single pass in plan order.
+plan_id: kicker_on_base
+name: "Base commission with an Enterprise kicker"
+currency: USD
+period_type: monthly
+
+rules:
+  - id: BASE
+    type: flat_rate
+    rate: "0.05"
+
+  - id: ENTERPRISE_KICKER
+    type: flat_rate
+    on_rule: BASE
+    rate: "0.20"
+    filter: 'product == "Enterprise"'
+
+assertions:
+  # check-plan's synthetic deals carry no product, so the filtered kicker does
+  # not fire here: 20,000 at 5% is 1,000. The kicker is exercised by tests.
+  - name: "base rate alone pays 5%"
+    quota: "10000"
+    deals: ["20000"]
+    expect_total: "1000"
+    period: "2026-01"

@@ -14,6 +14,7 @@ pays what you intend before it ever touches a payee.
 | [`sdr_pipeline_flat.yaml`](sdr_pipeline_flat.yaml) | SDR — flat % of sourced pipeline, with a minimum-attainment floor | flat_rate + `min_attainment_pct` |
 | [`custom_formula_deal_cap.yaml`](custom_formula_deal_cap.yaml) | Anything the built-in types can't express — here, a per-deal cap | formula (escape hatch) |
 | [`annual_quota_ytd.yaml`](annual_quota_ytd.yaml) | One annual quota, paid monthly — tier position carries across periods | tiered + `attainment_basis: cumulative` |
+| [`kicker_on_base.yaml`](kicker_on_base.yaml) | A kicker paying a share of another rule's commission | flat_rate + `on_rule` |
 
 ## Use one
 
