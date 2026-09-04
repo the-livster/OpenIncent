@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import logging
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -183,7 +183,8 @@ def _load_payees_csv(path: Path) -> list[Payee]:
                             "draw": _parse_draw(row),
                             "category_quotas": _parse_category_quotas(row),
                             "manager_id": (row.get("manager_id") or "").strip(),
-                            "manager_override": _parse_optional_decimal(row.get("manager_override")),
+                            "manager_override": _parse_optional_decimal(
+                                row.get("manager_override"), "manager_override"),
                             "team_id": (row.get("team_id") or "").strip(),
                         }
                     if period:
@@ -211,7 +212,8 @@ def _load_payees_csv(path: Path) -> list[Payee]:
                             draw=_parse_draw(row),
                             category_quotas=_parse_category_quotas(row),
                             manager_id=(row.get("manager_id") or "").strip(),
-                            manager_override=_parse_optional_decimal(row.get("manager_override")),
+                            manager_override=_parse_optional_decimal(
+                                row.get("manager_override"), "manager_override"),
                             team_id=(row.get("team_id") or "").strip(),
                         )
                     )
@@ -249,6 +251,12 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return raw
 
 
+def _pq_str(row: dict[str, Any], key: str) -> str:
+    """Read one Parquet cell as a trimmed string; missing and null both give ""."""
+    v = row.get(key)
+    return "" if v is None else str(v).strip()
+
+
 def _load_transactions_parquet(path: Path) -> list[Transaction]:
     """Load transactions from a Parquet file. Column names must match canonical
     field names exactly (no fuzzy mapping)."""
@@ -259,21 +267,33 @@ def _load_transactions_parquet(path: Path) -> list[Transaction]:
     for i in range(table.num_rows):
         row = {col: table.column(col)[i].as_py() for col in table.column_names}
         try:
-            product_raw = row.get("product")
-            product = str(product_raw).strip() if product_raw is not None else None
-            close_date_raw = row.get("close_date")
-            close_date_str = str(close_date_raw) if close_date_raw is not None else ""
-            known_txn = {"id", "payee_id", "deal_id", "period", "amount", "product", "close_date"}
+            # Every field the model understands must be named here, or it silently
+            # lands in metadata instead: a `credits` column falling through means
+            # a split deal pays one person 100%.
+            known_txn = {
+                "id", "payee_id", "deal_id", "period", "amount", "product", "close_date",
+                "bill_rate", "pay_rate", "units", "margin", "credits", "quota_amount",
+            }
             meta = {k: v for k, v in row.items() if k and k not in known_txn}
+            close_date_str = _pq_str(row, "close_date")
+            bill_raw, pay_raw = _pq_str(row, "bill_rate"), _pq_str(row, "pay_rate")
+            units_raw, margin_raw = _pq_str(row, "units"), _pq_str(row, "margin")
+            credits_raw, quota_raw = _pq_str(row, "credits"), _pq_str(row, "quota_amount")
             t = Transaction(
                 id=str(row["id"]),
                 payee_id=str(row["payee_id"]),
-                deal_id=str(row["deal_id"]),
-                period=str(row["period"]),
+                deal_id=_pq_str(row, "deal_id"),
+                period=_pq_str(row, "period"),
                 amount=Decimal(str(row["amount"])),
-                product=product or None,
-                close_date=_parse_date(close_date_str) if close_date_str else date.today(),
+                product=_pq_str(row, "product") or None,
+                close_date=_parse_date(close_date_str) if close_date_str else None,
                 metadata=meta,
+                bill_rate=Decimal(bill_raw) if bill_raw else None,
+                pay_rate=Decimal(pay_raw) if pay_raw else None,
+                units=Decimal(units_raw) if units_raw else Decimal("1"),
+                margin=Decimal(margin_raw) if margin_raw else None,
+                credits=parse_credits_spec(credits_raw) if credits_raw else None,
+                quota_amount=Decimal(quota_raw) if quota_raw else None,
             )
             transactions.append(t)
         except Exception as e:
@@ -289,24 +309,30 @@ def _load_payees_parquet(path: Path) -> list[Payee]:
     table = pq.read_table(path)  # type: ignore[no-untyped-call]
     payees: list[Payee] = []
     for i in range(table.num_rows):
-        row = {col: table.column(col)[i].as_py() for col in table.column_names}
+        raw = {col: table.column(col)[i].as_py() for col in table.column_names}
+        # Normalise to the string dict the shared helper parsers expect, so this
+        # path stays field-for-field identical to the CSV one. It previously
+        # dropped draw, manager hierarchy, team and category quotas outright.
+        row = {k: ("" if v is None else str(v)) for k, v in raw.items()}
         try:
-            effective_from_raw = row.get("effective_from")
-            effective_from_str = str(effective_from_raw) if effective_from_raw is not None else ""
-            effective_to_raw = row.get("effective_to")
-            effective_to_str = str(effective_to_raw) if effective_to_raw is not None else ""
-            ramp = _parse_ramp({k: str(v) if v is not None else "" for k, v in row.items()})
+            effective_from_str = row.get("effective_from", "").strip()
+            effective_to_str = row.get("effective_to", "").strip()
             payees.append(
                 Payee(
-                    id=str(row["id"]),
-                    name=str(row["name"]),
-                    quota=Decimal(str(row["quota"])),
-                    plan_id=str(row["plan_id"]),
-                    effective_from=(
-                        _parse_date(effective_from_str) if effective_from_str else date.today()
-                    ),
+                    id=row["id"].strip(),
+                    name=row["name"].strip(),
+                    quota=Decimal(row["quota"].strip()),
+                    plan_id=row["plan_id"].strip(),
+                    effective_from=_parse_date(effective_from_str) if effective_from_str else None,
                     effective_to=_parse_date(effective_to_str) if effective_to_str else None,
-                    ramp=ramp,
+                    email=row.get("email", "").strip() or None,
+                    ramp=_parse_ramp(row),
+                    draw=_parse_draw(row),
+                    category_quotas=_parse_category_quotas(row),
+                    manager_id=row.get("manager_id", "").strip(),
+                    manager_override=_parse_optional_decimal(
+                        row.get("manager_override"), "manager_override"),
+                    team_id=row.get("team_id", "").strip(),
                 )
             )
         except Exception as e:
@@ -314,17 +340,30 @@ def _load_payees_parquet(path: Path) -> list[Payee]:
     return payees
 
 
-def _parse_optional_decimal(raw: object) -> Decimal | None:
-    """Parse an optional decimal value. Returns None for empty/missing."""
+def _parse_optional_decimal(raw: object, field: str = "value") -> Decimal | None:
+    """Parse an optional decimal. Empty or missing is None; unparseable raises.
+
+    Trailing-percent notation is accepted and converted ("2%" -> 0.02), because
+    the recognised column heading for manager_override is literally
+    "manager override %" — writing 2% in it is the natural thing to do, and
+    silently discarding it costs the manager their entire override.
+    """
     if raw is None:
         return None
     s = str(raw).strip()
     if not s:
         return None
+    is_pct = s.endswith("%")
+    if is_pct:
+        s = s[:-1].strip()
     try:
-        return Decimal(s)
-    except Exception:
-        return None
+        value = Decimal(s)
+    except InvalidOperation as e:
+        raise ValueError(
+            f"{field}: cannot read {str(raw).strip()!r} as a number. "
+            f"Use a decimal (0.02) or a percentage (2%)."
+        ) from e
+    return value / Decimal("100") if is_pct else value
 
 
 def _parse_date(s: str) -> date:
@@ -339,6 +378,10 @@ def _parse_date(s: str) -> date:
     raise ValueError(f"Cannot parse date: '{s}'")
 
 
+_TRUTHY = frozenset({"true", "1", "yes", "y", "t", "on"})
+_FALSEY = frozenset({"false", "0", "no", "n", "f", "off"})
+
+
 def _parse_ramp(row: dict[str, str]) -> RampSchedule | None:
     """Parse ramp_months and ramp_schedule columns into a RampSchedule.
 
@@ -348,8 +391,14 @@ def _parse_ramp(row: dict[str, str]) -> RampSchedule | None:
     """
     months_raw = (row.get("ramp_months") or "").strip()
     schedule_raw = (row.get("ramp_schedule") or "").strip()
-    if not months_raw or not schedule_raw:
+    if not months_raw and not schedule_raw:
         return None
+    if not months_raw or not schedule_raw:
+        missing = "ramp_schedule" if months_raw else "ramp_months"
+        raise ValueError(
+            f"ramp is half-specified: {missing} is empty. Set both columns, or "
+            f"neither — a partial ramp would silently apply no quota relief."
+        )
     months = int(months_raw)
     schedule = [Decimal(v) for v in schedule_raw.split()]
     return RampSchedule(months=months, schedule=schedule)
@@ -361,8 +410,13 @@ def _parse_draw(row: dict[str, str]) -> Draw | None:
     if not amount_raw:
         return None
     recoverable_raw = (row.get("draw_recoverable") or "").strip().lower()
-    recoverable = recoverable_raw in ("true", "1", "yes", "y", "t", "on")
-    return Draw(amount=Decimal(amount_raw), recoverable=recoverable)
+    if recoverable_raw and recoverable_raw not in _TRUTHY | _FALSEY:
+        raise ValueError(
+            f"draw_recoverable: cannot read {recoverable_raw!r} as true or false. "
+            f"A draw defaulting to non-recoverable is money the company never "
+            f"recovers, so this has to be explicit."
+        )
+    return Draw(amount=Decimal(amount_raw), recoverable=recoverable_raw in _TRUTHY)
 
 
 def _parse_category_quotas(row: dict[str, str]) -> dict[str, Decimal]:

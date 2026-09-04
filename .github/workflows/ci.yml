@@ -26,8 +26,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
+      # Same scope as `make lint`, so the Makefile and CI can't disagree.
       - name: Ruff
-        run: uv run ruff check src/icm_engine/
+        run: uv run ruff check src/ tests/
 
       # The runner is Linux but the shipped artifact is a Windows .exe, so
       # check both platforms — each one sees code the other marks unreachable.

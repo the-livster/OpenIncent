@@ -8,7 +8,6 @@ from pydantic import ValidationError
 
 from icm_engine.engine import CommissionEngine
 from icm_engine.formula import (
-    FormulaError,
     FormulaEvalError,
     check_formula_fields,
     compile_formula,
@@ -299,8 +298,9 @@ class TestFormulaLintAndCheck:
         assert not any(f.code == "accelerator_no_base" for f in lint_plan(plan))
 
     def test_template_assertions_pass(self) -> None:
-        import yaml
         from pathlib import Path
+
+        import yaml
 
         template = (
             Path(__file__).parent.parent
