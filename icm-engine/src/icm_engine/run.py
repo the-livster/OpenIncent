@@ -203,12 +203,12 @@ def persist(
     # The legacy single row keeps the latest balance (display/API); the
     # period-stamped history rows are what make re-runs idempotent.
     if not ctx.locked_relevant:
-        by_period = result.draw_balances_by_period
+        draw_by_period = result.draw_balances_by_period
         for payee_id, balance in result.draw_balances.items():
             plan_id = payee_plan.get(payee_id, "")
             if plan_id:
                 ctx.db.set_draw_balance(payee_id, plan_id, balance)
-                for period, bal in sorted(by_period.get(payee_id, {}).items()):
+                for period, bal in sorted(draw_by_period.get(payee_id, {}).items()):
                     ctx.db.set_draw_balance_asof(payee_id, plan_id, period, bal)
 
     return calc_ids
