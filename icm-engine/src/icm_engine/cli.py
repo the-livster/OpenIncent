@@ -269,8 +269,8 @@ def main(
         calc_ids = persist(ctx, result)
 
         console.print("[green]Saved to database[/green]")
-        for p, cid in sorted(calc_ids.items()):
-            console.print(f"  [dim]{p}: {cid}[/dim]")
+        for period_key, cid in sorted(calc_ids.items()):
+            console.print(f"  [dim]{period_key}: {cid}[/dim]")
 
     # Write output files
 

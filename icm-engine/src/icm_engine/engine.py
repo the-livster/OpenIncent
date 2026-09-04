@@ -63,27 +63,28 @@ def _window_key(period: str, period_type: str) -> str:
 def _window_date_range(window_key: str, period_type: str) -> tuple[date, date]:
     """Return (start_date, end_date_inclusive) for a window key."""
     if period_type == "monthly":
-        y, m = window_key.split("-")
-        start = date(int(y), int(m), 1)
-        if int(m) == 12:
-            end = date(int(y), 12, 31)
+        y_str, m_str = window_key.split("-")
+        year, month = int(y_str), int(m_str)
+        start = date(year, month, 1)
+        if month == 12:
+            end = date(year, 12, 31)
         else:
-            end = date(int(y), int(m) + 1, 1) - timedelta(days=1)
+            end = date(year, month + 1, 1) - timedelta(days=1)
         return start, end
     if period_type == "quarterly":
         y_str, q_str = window_key.split("-Q")
-        y, q = int(y_str), int(q_str)
-        start_month = (q - 1) * 3 + 1
-        start = date(y, start_month, 1)
+        year, quarter = int(y_str), int(q_str)
+        start_month = (quarter - 1) * 3 + 1
+        start = date(year, start_month, 1)
         end_month = start_month + 2
         if end_month == 12:
-            end = date(y, 12, 31)
+            end = date(year, 12, 31)
         else:
-            end = date(y, end_month + 1, 1) - timedelta(days=1)
+            end = date(year, end_month + 1, 1) - timedelta(days=1)
         return start, end
     if period_type == "annual":
-        y = int(window_key)
-        return date(y, 1, 1), date(y, 12, 31)
+        year = int(window_key)
+        return date(year, 1, 1), date(year, 12, 31)
     # Unknown — return a zero-length range
     today = date.today()
     return today, today
@@ -299,19 +300,19 @@ def _compute_attainment(
     team_bookings: dict[tuple[str, str], Decimal] = {}
     team_quotas: dict[tuple[str, str], Decimal] = {}
     for (tid, window), members in teams.items():
-        tb = sum(bookings.get((m, window), Decimal("0")) for m in members)
-        tq = sum(quotas.get((m, window), Decimal("0")) for m in members)
+        tb = sum((bookings.get((m, window), Decimal("0")) for m in members), Decimal("0"))
+        tq = sum((quotas.get((m, window), Decimal("0")) for m in members), Decimal("0"))
         team_bookings[(tid, window)] = tb
         team_quotas[(tid, window)] = tq
 
     summaries: list[AttainmentSummary] = []
     seen: set[tuple[str, str]] = set()
     for (pid, window) in sorted(bookings.keys()):
-        tid = team_by_payee.get(pid)
-        if tid:
+        team_id = team_by_payee.get(pid)
+        if team_id:
             # Team payee: use team aggregate
-            b = team_bookings.get((tid, window), Decimal("0"))
-            q = team_quotas.get((tid, window), Decimal("0"))
+            b = team_bookings.get((team_id, window), Decimal("0"))
+            q = team_quotas.get((team_id, window), Decimal("0"))
             # Only emit one summary per (pid, window)
             if (pid, window) in seen:
                 continue
@@ -331,13 +332,13 @@ def _compute_attainment(
 
     # Also emit attainment for payees who had no bookings but have a quota
     for pid, _p in payee_map.items():
-        tid = team_by_payee.get(pid)
-        if tid:
+        team_id = team_by_payee.get(pid)
+        if team_id:
             for window in {w for (_, w) in bookings}:
                 if (pid, window) not in seen:
                     seen.add((pid, window))
-                    tb = team_bookings.get((tid, window), Decimal("0"))
-                    tq = team_quotas.get((tid, window), Decimal("0"))
+                    tb = team_bookings.get((team_id, window), Decimal("0"))
+                    tq = team_quotas.get((team_id, window), Decimal("0"))
                     pct = tb / tq if tq != 0 else None
                     summaries.append(AttainmentSummary(
                         payee_id=pid,
@@ -688,10 +689,10 @@ class CommissionEngine:
         # Group credit units by each payee's plan
         plan_credits: dict[str, list[_CreditUnit]] = {pid: [] for pid in plans}
         for cu in credits:
-            p = payee_map.get(cu.payee_id)
-            if p is None:
+            payee = payee_map.get(cu.payee_id)
+            if payee is None:
                 continue
-            pid = p.plan_id
+            pid = payee.plan_id
             if pid in plan_credits:
                 plan_credits[pid].append(cu)
 
@@ -706,17 +707,17 @@ class CommissionEngine:
         if mbos:
             for mbo in mbos:
                 pid = getattr(mbo, "payee_id", "")
-                p = payee_map.get(pid)
-                if p and p.plan_id in plan_mbos:
-                    plan_mbos[p.plan_id].append(mbo)
+                payee = payee_map.get(pid)
+                if payee and payee.plan_id in plan_mbos:
+                    plan_mbos[payee.plan_id].append(mbo)
 
         plan_adj: dict[str, list[Any]] = {pid: [] for pid in plans}
         if adjustments:
             for adj in adjustments:
                 pid = getattr(adj, "payee_id", "")
-                p = payee_map.get(pid)
-                if p and p.plan_id in plan_adj:
-                    plan_adj[p.plan_id].append(adj)
+                payee = payee_map.get(pid)
+                if payee and payee.plan_id in plan_adj:
+                    plan_adj[payee.plan_id].append(adj)
 
         # Run each plan's pipeline independently
         all_commissions: list[Commission] = []
