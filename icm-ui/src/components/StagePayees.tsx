@@ -13,6 +13,9 @@ interface Props {
 
 export default function StagePayees({ payees, setPayees, onNext }: Props) {
   const [loading, setLoading] = useState(false);
+  // The roster is built from /preview, which returns at most 50 rows. Anyone
+  // past that would be dropped from the run without a word, so say so.
+  const [truncated, setTruncated] = useState(false);
 
   const { paginated, totalItems, page, totalPages, setPage, sortCol, sortDir, filters, toggleSort, setFilter, clearFilters } = useTableSort(payees, "id");
 
@@ -21,6 +24,7 @@ export default function StagePayees({ payees, setPayees, onNext }: Props) {
     try {
       const preview = await previewFile(f, "payees");
       const rows: PayeeRow[] = [];
+      setTruncated(preview.preview_rows.length >= 50);
       for (const row of preview.preview_rows.slice(0, 50)) {
         const get = (target: string, fallback: string) => {
           const src = preview.mapping[target];
@@ -34,7 +38,9 @@ export default function StagePayees({ payees, setPayees, onNext }: Props) {
           id: get("id", ""), name: get("name", ""), quota: get("quota", "0"),
           plan_id: get("plan_id", ""), effective_from: get("effective_from", ""),
           effective_to: get("effective_to", ""), email: get("email", ""),
-          ramp_months: "", ramp_schedule: "", category_quotas: "{}",
+          ramp_months: get("ramp_months", ""), ramp_schedule: get("ramp_schedule", ""),
+          category_quotas: get("category_quotas", "{}"),
+          draw_amount: get("draw_amount", ""), draw_recoverable: get("draw_recoverable", ""),
           manager_id: get("manager_id", ""), manager_override: get("manager_override", ""),
           team_id: get("team_id", ""),
         });
@@ -56,7 +62,9 @@ export default function StagePayees({ payees, setPayees, onNext }: Props) {
           id: cells[0] || "", name: cells[1] || "", quota: cells[2] || "0",
           plan_id: cells[3] || "", effective_from: cells[4] || "",
           effective_to: cells[5] || "", email: cells[6] || "",
-          ramp_months: "", ramp_schedule: "", category_quotas: "{}",
+          ramp_months: get(["ramp_months"]), ramp_schedule: get(["ramp_schedule"]),
+          category_quotas: get(["category_quotas"]) || "{}",
+          draw_amount: get(["draw_amount"]), draw_recoverable: get(["draw_recoverable"]),
           manager_id: get(["manager_id", "manager"]),
           manager_override: get(["manager_override", "manager rate"]),
           team_id: get(["team_id", "team"]),
@@ -71,6 +79,13 @@ export default function StagePayees({ payees, setPayees, onNext }: Props) {
     <div className="max-w-3xl space-y-4">
       <h1 className="text-lg font-bold text-zinc-800">1. Payees</h1>
       <p className="text-sm text-zinc-500">Upload your payee roster (CSV or XLSX). Columns: id, name, quota, plan_id, effective_from.</p>
+      {truncated && (
+        <div className="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs">
+          Only the first {payees.length} payees were loaded — this screen reads a
+          preview of the file, not all of it. A larger roster will not calculate
+          in full here. Import it under Payees, or use the CLI.
+        </div>
+      )}
       {payees.length === 0 ? (
         <div className="border-2 border-dashed border-zinc-300 rounded-xl p-8 text-center space-y-3">
           <p className="text-sm text-zinc-500">Drop a CSV or XLSX file with columns: id, name, quota, plan_id, effective_from</p>

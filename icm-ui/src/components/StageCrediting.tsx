@@ -57,9 +57,18 @@ export default function StageCrediting({ payees, transactions: _transactions, se
   async function runCalc() {
     if (preview.length === 0) { setError("No transactions loaded."); return; }
     setStatus("loading"); setError("");
-    const peeHeaders = ["id","name","quota","plan_id","effective_from","effective_to","email","manager_id","manager_override","team_id"];
+    // Every field PayeeRow carries must be written, or it is silently dropped:
+    // ramps and draws were absent here, so quota relief and recoverable draws
+    // simply did not apply to a Pipeline run.
+    const peeHeaders = [
+      "id","name","quota","plan_id","effective_from","effective_to","email",
+      "ramp_months","ramp_schedule","category_quotas","draw_amount","draw_recoverable",
+      "manager_id","manager_override","team_id",
+    ];
     const peeCSV = [peeHeaders.join(","), ...payees.map(p =>
-      [p.id, p.name, p.quota, p.plan_id, p.effective_from, p.effective_to, p.email, p.manager_id, p.manager_override, p.team_id].map(v => `"${v ?? ""}"`).join(",")
+      [p.id, p.name, p.quota, p.plan_id, p.effective_from, p.effective_to, p.email,
+       p.ramp_months, p.ramp_schedule, p.category_quotas, p.draw_amount, p.draw_recoverable,
+       p.manager_id, p.manager_override, p.team_id].map(v => `"${v ?? ""}"`).join(",")
     )].join("\n");
     const txnHeaders = ["id","payee_id","deal_id","period","amount","product","close_date"];
     const txnCSV = [txnHeaders.join(","), ...preview.map(t =>

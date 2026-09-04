@@ -14,6 +14,9 @@ export interface PayeeRow {
   id: string; name: string; quota: string; plan_id: string;
   effective_from: string; effective_to: string; email: string;
   ramp_months: string; ramp_schedule: string; category_quotas: string;
+  // A recoverable draw that never reaches the engine is money the company
+  // never recovers, so these travel with the row like every other field.
+  draw_amount: string; draw_recoverable: string;
   manager_id: string; manager_override: string; team_id: string;
 }
 

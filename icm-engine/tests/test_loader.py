@@ -463,3 +463,66 @@ class TestNumberErrorQuality:
         p.write_text('id,payee_id,period,amount\nT1,P1,2026-05,"1,234"\n', encoding="utf-8")
         with pytest.raises(ValueError):
             load_transactions(p)
+
+
+class TestUiRosterContract:
+    """The desktop Pipeline rebuilds the roster as CSV before calculating.
+
+    It previously wrote ten columns and dropped ramps, draws and category
+    quotas, so a recoverable draw simply never applied to a Pipeline run and
+    nothing said so. These pin the column set it has to emit.
+    """
+
+    # Mirrors peeHeaders in icm-ui/src/components/StageCrediting.tsx.
+    UI_COLUMNS = [
+        "id", "name", "quota", "plan_id", "effective_from", "effective_to", "email",
+        "ramp_months", "ramp_schedule", "category_quotas", "draw_amount",
+        "draw_recoverable", "manager_id", "manager_override", "team_id",
+    ]
+    VALUES = {
+        "id": "P1", "name": "Rep", "quota": "10000", "plan_id": "demo",
+        "effective_from": "2024-01-01", "effective_to": "", "email": "rep@example.com",
+        "ramp_months": "3", "ramp_schedule": "0.5 0.75 1.0", "category_quotas": "{}",
+        "draw_amount": "2000", "draw_recoverable": "true",
+        "manager_id": "M1", "manager_override": "0.02", "team_id": "east",
+    }
+
+    def _roster(self, tmp_path: Path) -> Path:
+        p = tmp_path / "payees.csv"
+        p.write_text(
+            ",".join(self.UI_COLUMNS) + "\n"
+            + ",".join(f'"{self.VALUES[c]}"' for c in self.UI_COLUMNS) + "\n",
+            encoding="utf-8",
+        )
+        return p
+
+    def test_every_plan_critical_field_survives(self, tmp_path: Path) -> None:
+        payees, _ = load_payees(self._roster(tmp_path))
+        p = payees[0]
+        assert p.draw is not None and p.draw.amount == Decimal("2000")
+        assert p.draw.recoverable is True
+        assert p.ramp is not None and p.ramp.months == 3
+        assert p.manager_override == Decimal("0.02")
+        assert p.team_id == "east"
+
+    def test_a_recoverable_draw_actually_changes_the_payout(self, tmp_path: Path) -> None:
+        """The symptom: the same rep paid 500 without the draw, 2000 with it."""
+        from icm_engine.engine import CommissionEngine
+
+        plan_path = tmp_path / "plan.yaml"
+        plan_path.write_text(
+            "plan_id: demo\nname: D\ncurrency: USD\nperiod_type: monthly\n"
+            "rules:\n  - type: flat_rate\n    id: R1\n    rate: '0.10'\n",
+            encoding="utf-8",
+        )
+        deals = tmp_path / "deals.csv"
+        deals.write_text(
+            "id,payee_id,period,amount\nT1,P1,2026-05,5000\n", encoding="utf-8"
+        )
+        payees, _ = load_payees(self._roster(tmp_path))
+        txns, _ = load_transactions(deals)
+        res = CommissionEngine().calculate(load_plan(plan_path), txns, payees)
+        # P1 alone: 10% of 5,000 is 500, lifted to the 2,000 draw floor.
+        # (M1 also earns a manager overlay here; that is not what this pins.)
+        p1 = sum(c.commission_amount for c in res.commissions if c.payee_id == "P1")
+        assert p1 == Decimal("2000.00")
