@@ -29,8 +29,13 @@ jobs:
       - name: Ruff
         run: uv run ruff check src/icm_engine/
 
-      - name: Mypy
-        run: uv run mypy src/icm_engine/
+      # The runner is Linux but the shipped artifact is a Windows .exe, so
+      # check both platforms — each one sees code the other marks unreachable.
+      - name: Mypy (Linux)
+        run: uv run mypy --platform linux src/icm_engine/
+
+      - name: Mypy (Windows)
+        run: uv run mypy --platform win32 src/icm_engine/
 
       - name: Pytest
         run: uv run pytest --tb=short

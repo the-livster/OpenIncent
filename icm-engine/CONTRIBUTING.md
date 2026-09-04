@@ -15,12 +15,18 @@ uv sync --extra all     # + Excel, Parquet, AI extras
 Run the gates before committing:
 
 ```bash
-uv run pytest                   # tests
-uv run ruff check src/ tests/   # lint
-uv run mypy src/                # typecheck
+uv run pytest                        # tests
+uv run ruff check src/ tests/        # lint
+uv run mypy --platform linux src/    # typecheck (CI's platform)
+uv run mypy --platform win32 src/    # typecheck (the desktop app's)
 ```
 
-All three must pass. There are currently 259+ tests; they run in under 5 seconds.
+Or just `make check`, which runs all of them.
+
+All must pass. There are currently 598 tests; they run in about 12 seconds.
+Both `--platform` passes matter: the code has Windows-only branches (the
+updater's `subprocess` flags, for one), and CI type-checks on Linux. Checking
+only your own platform will let the other one's errors through.
 
 ## Pull requests
 
