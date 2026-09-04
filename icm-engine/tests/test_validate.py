@@ -132,3 +132,40 @@ class TestUnknownPayees:
         plan = Plan(plan_id="demo", name="D", currency="USD", period_type="monthly", rules=[])
         issues = validate_run(plan, [_txn("T1", "nobody")], [_payee("AKHAN")])
         assert any(i.code == "unknown_payee" for i in issues)
+
+
+class TestPreflightSharedByBothSurfaces:
+    """run.preflight is the one place the CLI and the HTTP API agree on."""
+
+    def _plan(self, **rule: object) -> Plan:
+        from icm_engine.models import FlatRateRule
+        base = {"type": "flat_rate", "id": "R1", "rate": Decimal("0.1")}
+        return Plan(
+            plan_id="demo", name="D", currency="USD", period_type="monthly",
+            rules=[FlatRateRule(**{**base, **rule})],  # type: ignore[arg-type]
+        )
+
+    def test_unknown_payee_is_an_error(self) -> None:
+        from icm_engine.run import preflight
+
+        issues = preflight({"demo": self._plan()}, [_txn("T1", "ghost")], [_payee("AKHAN")])
+        assert [i.code for i in issues] == ["unknown_payee"]
+        assert issues[0].severity == "error"
+
+    def test_unknown_filter_field_is_only_a_warning(self) -> None:
+        # A rule scoped to a product line with no deals this period legitimately
+        # names a field no transaction carries, so this must not block a run.
+        from icm_engine.run import preflight
+
+        issues = preflight(
+            {"demo": self._plan(filter="regoin == 'EMEA'")},
+            [_txn("T1", "AKHAN")], [_payee("AKHAN")],
+        )
+        assert [i.code for i in issues] == ["unknown_filter_field"]
+        assert issues[0].severity == "warning"
+        assert "regoin" in issues[0].message
+
+    def test_clean_inputs_produce_nothing(self) -> None:
+        from icm_engine.run import preflight
+
+        assert preflight({"demo": self._plan()}, [_txn("T1", "AKHAN")], [_payee("AKHAN")]) == []

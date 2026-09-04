@@ -14,6 +14,7 @@ from typing import Any
 from icm_engine.database import Database
 from icm_engine.engine import CalculationResult, CommissionEngine
 from icm_engine.models import Commission, Payee, Plan, Transaction
+from icm_engine.validate import ValidationIssue
 
 
 @dataclass
@@ -116,6 +117,59 @@ class LockedPeriodError(Exception):
             f"Some periods are locked: {locked_periods}. "
             f"Set allow_recalculate_locked=true to proceed."
         )
+
+
+def preflight(
+    plan_library: dict[str, Plan],
+    transactions: list[Transaction],
+    payees: list[Payee],
+) -> list[ValidationIssue]:
+    """Checks that must run before any calculation, on every surface.
+
+    These lived in cli.py, so the desktop app - which reaches the engine through
+    api.py - ran none of them. Anything here has to hold regardless of how the
+    run was started, so it belongs with the orchestration rather than with one
+    front end. Takes the inputs directly rather than a RunContext, because the
+    CLI has these in hand well before it builds one.
+
+    Severity is the caller's cue, not its decision: an `error` names a run whose
+    output would be wrong, a `warning` names a rule that will not fire. The
+    filter and formula checks stay warnings on purpose — a rule scoped to a
+    product line with no deals this period legitimately references a field no
+    transaction carries.
+    """
+    from icm_engine.filter_parser import check_filter_fields
+    from icm_engine.formula import check_formula_fields
+    from icm_engine.validate import find_unknown_payees
+
+    issues: list[ValidationIssue] = list(
+        find_unknown_payees(transactions, payees)
+    )
+
+    for plan in plan_library.values():
+        for rule in plan.rules:
+            filter_source: str | None = getattr(rule, "filter", None)
+            if filter_source:
+                for field in check_filter_fields(filter_source, transactions):
+                    issues.append(ValidationIssue(
+                        "warning", "unknown_filter_field",
+                        f"Filter on rule {rule.id!r} (plan {plan.plan_id!r}) references "
+                        f"{field!r}, which is neither a canonical field nor present in "
+                        f"any transaction's metadata. It will never match.",
+                    ))
+
+            formula_source: str | None = getattr(rule, "formula", None)
+            if formula_source:
+                for field in check_formula_fields(formula_source, transactions):
+                    issues.append(ValidationIssue(
+                        "warning", "unknown_formula_variable",
+                        f"Formula on rule {rule.id!r} (plan {plan.plan_id!r}) references "
+                        f"{field!r}, which is neither a built-in variable nor present in "
+                        f"any transaction's metadata. Every row will be skipped and the "
+                        f"rule will pay nothing.",
+                    ))
+
+    return issues
 
 
 def execute(ctx: RunContext) -> CalculationResult:

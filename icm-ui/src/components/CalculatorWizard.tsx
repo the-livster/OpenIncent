@@ -61,6 +61,10 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
   // Step 5: Results
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [error, setError] = useState("");
+  // Set when a run was blocked only because some ids are off the roster;
+  // without a way to proceed, the desktop app would simply be stuck.
+  const [unknownPayeesBlocked, setUnknownPayeesBlocked] = useState(false);
+  const [allowUnknownPayees, setAllowUnknownPayees] = useState(false);
   const [data, setData] = useState<CalculateResponse | null>(null);
 
   const [step, setStep] = useState<Step>("data");
@@ -168,15 +172,22 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
     setStatus("loading");
     setError("");
     try {
-      const result = await calculate({ plan, transactions: txns, payees: pees });
+      const result = await calculate({
+        plan,
+        transactions: txns,
+        payees: pees,
+        allowUnknownPayees,
+      });
       setData(result);
       setStatus("success");
       setStep("results");
     } catch (e: unknown) {
+      const codes = (e as { codes?: string[] })?.codes ?? [];
+      setUnknownPayeesBlocked(codes.includes("unknown_payee"));
       setError(e instanceof Error ? e.message : "Calculation failed");
       setStatus("error");
     }
-  }, [planSource, selectedPlanId, plans, planFile, payeeFile, buildMappedFile, buildAutoPayees]);
+  }, [planSource, selectedPlanId, plans, planFile, payeeFile, buildMappedFile, buildAutoPayees, allowUnknownPayees]);
 
   // Export XLSX statements
   const handleExport = useCallback(async () => {
@@ -481,8 +492,23 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 
       {/* Error */}
       {status === "error" && (
-        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/20 text-danger text-sm animate-in select-text">
-          {error}
+        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/20 text-danger text-sm animate-in select-text space-y-3">
+          <div className="whitespace-pre-wrap">{error}</div>
+          {unknownPayeesBlocked && (
+            <label className="flex items-start gap-2 pt-2 border-t border-danger/20 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={allowUnknownPayees}
+                onChange={(e) => setAllowUnknownPayees(e.target.checked)}
+              />
+              <span>
+                Pay these ids anyway, as separate people. Only do this if they are
+                genuinely not on the roster — a mistyped id will split one person's
+                bookings in two and neither half will reach quota.
+              </span>
+            </label>
+          )}
         </div>
       )}
 

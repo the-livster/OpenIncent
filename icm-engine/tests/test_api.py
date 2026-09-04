@@ -570,3 +570,57 @@ def test_preview_xlsx_returns_cell_values_not_headers() -> None:
     assert data["headers"] == ["id", "payee_id", "amount"]
     assert data["preview_rows"] == [["T1", "P1", "5000"], ["T2", "P2", "7500"]]
     assert data["preview_rows"][0] != data["headers"]
+
+
+class TestCalculatePreflight:
+    """The desktop app reaches the engine through this endpoint, so the checks
+    the CLI runs have to run here too — they used to exist only in cli.py."""
+
+    PLAN = (
+        b"plan_id: pf_demo\nname: D\ncurrency: USD\nperiod_type: monthly\n"
+        b"rules:\n  - type: flat_rate\n    id: R1\n    rate: '0.10'\n"
+    )
+    ROSTER = b"id,name,quota,plan_id,effective_from\nAKHAN,Aisha,8000,pf_demo,2024-01-01\n"
+
+    def _post(self, deals: bytes, query: str = "") -> object:
+        return client.post(
+            f"{V}/calculate{query}",
+            files={
+                "plan": ("p.yaml", self.PLAN, "application/x-yaml"),
+                "transactions": ("d.csv", deals, "text/csv"),
+                "payees": ("r.csv", self.ROSTER, "text/csv"),
+            },
+        )
+
+    MISMATCHED = (
+        b"id,payee_id,period,amount\n"
+        b"T1,AKHAN,2026-05,6000\n"
+        b"T2,akhan,2026-05,6000\n"
+    )
+
+    def test_unknown_payee_is_rejected(self) -> None:
+        r = self._post(self.MISMATCHED)
+        assert r.status_code == 400, r.text
+        detail = r.json()["detail"]
+        assert any(i["code"] == "unknown_payee" for i in detail["issues"])
+
+    def test_rejection_names_the_id_and_suggests_the_match(self) -> None:
+        detail = self._post(self.MISMATCHED).json()["detail"]
+        message = detail["issues"][0]["message"]
+        assert "akhan" in message
+        assert "AKHAN" in message  # the suggestion the user needs
+
+    def test_opt_out_allows_the_run(self) -> None:
+        r = self._post(self.MISMATCHED, "?allow_unknown_payees=true")
+        assert r.status_code == 200, r.text
+        # Paid as two separate people — which is exactly why it blocks by default.
+        assert set(r.json()["summary"]) == {"AKHAN", "akhan"}
+
+    def test_consistent_ids_calculate_normally(self) -> None:
+        r = self._post(
+            b"id,payee_id,period,amount\n"
+            b"T1,AKHAN,2026-05,6000\n"
+            b"T2,AKHAN,2026-05,6000\n"
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["summary"]["AKHAN"] == "1200.00"

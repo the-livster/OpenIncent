@@ -18,7 +18,7 @@ function v1(path: string): string {
 }
 
 export async function calculate(
-  args: { plan?: File; transactions: File; payees?: File },
+  args: { plan?: File; transactions: File; payees?: File; allowUnknownPayees?: boolean },
   signal?: AbortSignal,
 ): Promise<CalculateResponse> {
   const form = new FormData();
@@ -30,7 +30,8 @@ export async function calculate(
   }
   form.append("transactions", args.transactions);
 
-  const res = await fetch(v1("/calculate"), { method: "POST", body: form, signal });
+  const query = args.allowUnknownPayees ? "?allow_unknown_payees=true" : "";
+  const res = await fetch(v1("/calculate") + query, { method: "POST", body: form, signal });
 
   if (!res.ok) {
     const text = await res.text();
@@ -41,6 +42,25 @@ export async function calculate(
       throw new Error(`Server error (${res.status}): ${text.slice(0, 500)}`);
     }
     const detail = parsed.detail as Record<string, unknown> | undefined;
+
+    // Pre-flight rejections carry the specific problems; showing only the
+    // headline would tell the user something is wrong but not which row.
+    const issues = detail?.issues as
+      | Array<{ severity: string; code: string; message: string }>
+      | undefined;
+    if (issues?.length) {
+      const lines = issues.map(
+        (i) => `${i.severity === "error" ? "Error" : "Warning"}: ${i.message}`,
+      );
+      // The API hint names a query parameter, which is useless to someone
+      // clicking buttons; the UI offers a checkbox instead.
+      const err = new Error(
+        `${String(detail?.error ?? "Cannot calculate")}\n\n${lines.join("\n\n")}`,
+      ) as Error & { codes?: string[] };
+      err.codes = issues.map((i) => i.code);
+      throw err;
+    }
+
     const msg = detail?.traceback
       ? `${detail.detail}\n\n${detail.traceback}`
       : (detail?.detail as string) ?? (detail?.error as string) ?? JSON.stringify(detail) ?? "Calculation failed";

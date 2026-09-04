@@ -190,51 +190,27 @@ def main(
             f"{len(payee_list)} payee(s), {len(txns)} transaction(s)[/cyan]"
         )
 
-    # Unknown-payee guard. A deal naming an id that is not on the roster gets
-    # paid as a separate person, so an inconsistently capitalised id silently
-    # splits one rep's bookings across two identities and neither reaches quota.
-    # Loud here because a normal run never calls `icm validate`.
-    from icm_engine.validate import find_unknown_payees
-    unknown = find_unknown_payees(txns, payee_list)
-    for issue in unknown:
-        console.print(f"[red]Error:[/red] {issue.message}")
-    if unknown:
+    # Pre-run checks, shared with the HTTP API via run.preflight so the desktop
+    # app cannot quietly skip them.
+    from icm_engine.run import preflight
+    issues = preflight(plan_library, txns, payee_list)
+    blocking = [
+        i for i in issues
+        if i.severity == "error" and not (
+            i.code == "unknown_payee" and allow_unknown_payees
+        )
+    ]
+    for issue in issues:
+        if issue.severity == "error":
+            console.print(f"[red]Error:[/red] {issue.message}")
+        else:
+            console.print(f"[yellow]Warning:[/yellow] {issue.message}")
+    if blocking:
         console.print(
-            f"[red]{len(unknown)} unknown payee id(s). Fix the roster or the deal "
+            f"[red]{len(blocking)} blocking problem(s). Fix the roster or the deal "
             f"file, or re-run with --allow-unknown-payees to pay them anyway.[/red]"
         )
-        if not allow_unknown_payees:
-            raise typer.Exit(code=1)
-
-    # Filter-field typo guard
-    from icm_engine.filter_parser import check_filter_fields
-    for p in plan_library.values():
-        for rule in p.rules:
-            f_source: str | None = getattr(rule, "filter", None)
-            if f_source:
-                unused = check_filter_fields(f_source, txns)
-                for field in unused:
-                    console.print(
-                        f"[yellow]Warning:[/yellow] filter on rule [bold]{rule.id}[/bold] "
-                        f"(plan [bold]{p.plan_id}[/bold]) references field "
-                        f"[bold]{field!r}[/bold] which is neither a canonical field "
-                        f"nor present in any transaction's metadata. It will never match."
-                    )
-
-    # Formula-variable typo guard
-    from icm_engine.formula import check_formula_fields
-    for p in plan_library.values():
-        for rule in p.rules:
-            formula_source: str | None = getattr(rule, "formula", None)
-            if formula_source:
-                for field in check_formula_fields(formula_source, txns):
-                    console.print(
-                        f"[yellow]Warning:[/yellow] formula on rule [bold]{rule.id}[/bold] "
-                        f"(plan [bold]{p.plan_id}[/bold]) references variable "
-                        f"[bold]{field!r}[/bold] which is neither a built-in variable "
-                        f"nor present in any transaction's metadata. Every row will be "
-                        f"skipped with a formula_eval_error in the ledger."
-                    )
+        raise typer.Exit(code=1)
 
     if txn_mapping:
         _print_mapping(txn_mapping)

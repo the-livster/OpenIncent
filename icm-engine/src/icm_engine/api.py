@@ -24,7 +24,7 @@ from icm_engine.ledger import LedgerEntry
 from icm_engine.loader import load_payees, load_plan, load_transactions
 from icm_engine.models import Commission, Payee, Plan
 from icm_engine.rounding import RoundingMode, parse_rounding_mode, round_money
-from icm_engine.run import LockedPeriodError, RunContext, execute, persist
+from icm_engine.run import LockedPeriodError, RunContext, execute, persist, preflight
 
 app = FastAPI(title="icm-engine")
 
@@ -124,6 +124,7 @@ async def calculate(
     mbos: UploadFile | None = File(None),  # noqa: B008
     effective_period: str | None = None,
     allow_recalculate_locked: bool = True,
+    allow_unknown_payees: bool = False,
     org: str = Depends(get_org),
 ) -> dict[str, Any]:
     """Calculate commissions.
@@ -274,6 +275,24 @@ async def calculate(
                 mbos_list = load_mbos(mbo_path)
 
         # --- Delegate to shared run orchestration ---
+        # Same checks the CLI runs. Without these the desktop app silently paid
+        # deals credited to ids that were not on the roster.
+        issues = preflight(plan_library, txn_list, payee_list)
+        blocking = [
+            i for i in issues
+            if i.severity == "error"
+            and not (i.code == "unknown_payee" and allow_unknown_payees)
+        ]
+        if blocking:
+            raise HTTPException(status_code=400, detail={
+                "error": "Input problems must be resolved before calculating",
+                "issues": [
+                    {"severity": i.severity, "code": i.code, "message": i.message}
+                    for i in issues
+                ],
+                "hint": "Set allow_unknown_payees=true to pay unrostered ids anyway.",
+            })
+
         ctx = RunContext(
             plan_library=plan_library,
             transactions=txn_list,
