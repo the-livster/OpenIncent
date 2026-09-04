@@ -345,19 +345,31 @@ class Database:
         return cur.rowcount > 0
 
     def load_plan_library(self) -> dict[str, Any]:
-        """Load all plans for this org into a {plan_id: Plan} dict.
+        """Load all plans for this org into a {plan_id: Plan} dict."""
+        library, _ = self.load_plan_library_detailed()
+        return library
 
-        Parses stored YAML via load_plan / Plan.model_validate. Plans that
-        fail to parse are skipped with a warning logged, but the method
-        continues — a corrupted plan file should not block the entire library.
+    def load_plan_library_detailed(self) -> tuple[dict[str, Any], dict[str, str]]:
+        """Load the library, and report which plans could not be parsed.
+
+        Returns ({plan_id: Plan}, {plan_id: reason}). A broken plan should not
+        block the whole library, but callers need the failures: a plan that is
+        saved yet unparseable is invisible in the library, and reporting only
+        "plan not found" sends the user to fix a roster that is already correct.
+
+        Parses the stored YAML in memory. Writing each plan to a temp file just
+        to read it back put an unusable path into every error message, and cost
+        a disk round-trip per plan.
         """
         import logging
-        import tempfile
 
-        from icm_engine.loader import load_plan
+        import yaml as _yaml
+
+        from icm_engine.models import Plan
 
         _log = logging.getLogger(__name__)
         library: dict[str, Any] = {}
+        failures: dict[str, str] = {}
 
         for row in self.list_plans():
             pid = row["id"]
@@ -365,17 +377,15 @@ class Database:
             if not yaml_text.strip():
                 continue
             try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".yaml", delete=False, encoding="utf-8",
-                ) as tf:
-                    tf.write(yaml_text)
-                    tf.flush()
-                    plan = load_plan(Path(tf.name))
-                    library[pid] = plan
+                raw = _yaml.safe_load(yaml_text)
+                if not isinstance(raw, dict):
+                    raise ValueError("plan YAML must be a mapping at the top level")
+                library[pid] = Plan.model_validate(raw)
             except Exception as e:
                 _log.warning("Failed to parse plan %s: %s", pid, e)
+                failures[pid] = _summarise_plan_error(e)
 
-        return library
+        return library, failures
 
     # ------------------------------------------------------------------
     # Payees
@@ -1014,3 +1024,24 @@ def _get(obj: Any, attr: str, default: str = "") -> str:
 
 def _get_dec(obj: Any, attr: str) -> Decimal:
     return Decimal(_get(obj, attr, "0"))
+
+
+def _summarise_plan_error(exc: Exception) -> str:
+    """One readable line from a pydantic/YAML failure, for a plan author.
+
+    Pydantic renders a URL and a full error table; the field and the reason are
+    the only parts that help someone editing YAML.
+    """
+    text = str(exc)
+    lines = [
+        ln.strip() for ln in text.splitlines()
+        if ln.strip() and "errors.pydantic.dev" not in ln
+    ]
+    if not lines:
+        return text[:200]
+    # "N validation errors for Plan" then "field" / "  reason [type=...]" pairs.
+    if len(lines) >= 3 and "validation error" in lines[0]:
+        field, reason = lines[1], lines[2].split(" [type=")[0]
+        return f"{lines[0]} ({field}: {reason})"[:250]
+    return " ".join(lines)[:250]
+

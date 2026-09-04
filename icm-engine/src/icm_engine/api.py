@@ -225,7 +225,7 @@ async def calculate(
             plan_library[plan_obj.plan_id] = plan_obj
         else:
             # Multi-plan: resolve from DB based on payee plan_ids
-            plan_library = db.load_plan_library()
+            plan_library, plan_failures = db.load_plan_library_detailed()
             if not plan_library:
                 raise HTTPException(
                     status_code=400,
@@ -244,15 +244,39 @@ async def calculate(
             if missing_plans:
                 available = sorted(plan_library.keys())
                 details = []
+                # A plan that is saved but unparseable is absent from the
+                # library, so blaming the payee sends the user to fix a roster
+                # that is already right. Say which of the two it is.
+                broken = {
+                    pid: plan_failures[pid]
+                    for pid in missing_plans
+                    if pid in plan_failures
+                }
                 for plan_id, pids in sorted(missing_plans.items()):
-                    details.append(f"Payees {sorted(pids)} reference '{plan_id}'")
+                    if plan_id in broken:
+                        details.append(
+                            f"Payees {sorted(pids)} reference '{plan_id}', which is "
+                            f"saved but could not be loaded: {broken[plan_id]}"
+                        )
+                    else:
+                        details.append(f"Payees {sorted(pids)} reference '{plan_id}'")
                 raise HTTPException(
                     status_code=400,
                     detail={
-                        "error": "Some payees reference plans not in the library.",
+                        "error": (
+                            "Some payees reference plans that could not be loaded."
+                            if broken else
+                            "Some payees reference plans not in the library."
+                        ),
                         "missing": details,
                         "available_plans": available,
-                        "hint": "Import the missing plans or reassign the payees to an available plan.",
+                        "broken_plans": sorted(broken),
+                        "hint": (
+                            "Fix the plan YAML for: " + ", ".join(sorted(broken))
+                            if broken else
+                            "Import the missing plans or reassign the payees to an "
+                            "available plan."
+                        ),
                     },
                 )
 

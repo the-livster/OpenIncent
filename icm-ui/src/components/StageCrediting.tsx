@@ -18,6 +18,10 @@ interface Props {
 export default function StageCrediting({ payees, transactions: _transactions, setTransactions, plans: _plans, onCalculated, onBack }: Props) {
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [error, setError] = useState("");
+  // Mirrors CalculatorWizard: the pre-flight blocks unrostered ids, so this
+  // flow needs the same way past it or the Pipeline is simply stuck.
+  const [unknownPayeesBlocked, setUnknownPayeesBlocked] = useState(false);
+  const [allowUnknownPayees, setAllowUnknownPayees] = useState(false);
   const [preview, setPreview] = useState<TransactionRow[]>(_transactions);
   const [txnFile, setTxnFile] = useState<File | null>(null);
 
@@ -66,10 +70,12 @@ export default function StageCrediting({ payees, transactions: _transactions, se
       // Send the original uploaded file so the FULL dataset is calculated,
       // not the capped on-screen preview; fall back to reconstructed rows.
       const txns = txnFile ?? new File([txnCSV], "transactions.csv", { type: "text/csv" });
-      const result = await calculate({ transactions: txns, payees: pees });
+      const result = await calculate({ transactions: txns, payees: pees, allowUnknownPayees });
       onCalculated(result);
       setStatus("done");
     } catch (e: unknown) {
+      const codes = (e as { codes?: string[] })?.codes ?? [];
+      setUnknownPayeesBlocked(codes.includes("unknown_payee"));
       setError(e instanceof Error ? e.message : "Calculation failed");
       setStatus("error");
     }
@@ -135,7 +141,26 @@ export default function StageCrediting({ payees, transactions: _transactions, se
               {status === "loading" ? "Calculating..." : "Calculate Commissions →"}
             </button>
           </div>
-          {error && <div className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs select-text">{error}</div>}
+          {error && (
+            <div className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs select-text space-y-2">
+              <div className="whitespace-pre-wrap">{error}</div>
+              {unknownPayeesBlocked && (
+                <label className="flex items-start gap-2 pt-2 border-t border-red-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={allowUnknownPayees}
+                    onChange={(e) => setAllowUnknownPayees(e.target.checked)}
+                  />
+                  <span>
+                    Pay these ids anyway, as separate people. Only do this if they are
+                    genuinely not on the roster - a mistyped id will split one person's
+                    bookings in two and neither half will reach quota.
+                  </span>
+                </label>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

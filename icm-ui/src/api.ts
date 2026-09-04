@@ -61,6 +61,16 @@ export async function calculate(
       throw err;
     }
 
+    // Plan-library rejections carry a `missing` list naming which plans and
+    // which payees; the headline alone leaves the user guessing.
+    const missing = detail?.missing as string[] | undefined;
+    if (missing?.length) {
+      const hint = detail?.hint ? `\n\n${String(detail.hint)}` : "";
+      throw new Error(
+        `${String(detail?.error ?? "Cannot calculate")}\n\n${missing.join("\n")}${hint}`,
+      );
+    }
+
     const msg = detail?.traceback
       ? `${detail.detail}\n\n${detail.traceback}`
       : (detail?.detail as string) ?? (detail?.error as string) ?? JSON.stringify(detail) ?? "Calculation failed";

@@ -470,3 +470,62 @@ class TestPayeePersistence:
         db.init()
         db.init()  # second init must not raise
         assert db_path.exists()
+
+
+VALID_PLAN = """
+plan_id: good_plan
+name: Good
+currency: USD
+period_type: monthly
+rules:
+  - id: R1
+    type: flat_rate
+    rate: '0.05'
+"""
+
+# `tiered_rate` is not a rule type; `tiered` is. A plan saved with the wrong
+# tag is listed in the library but cannot be loaded for a run.
+BROKEN_PLAN = """
+plan_id: broken_plan
+name: Broken
+currency: USD
+period_type: monthly
+rules:
+  - id: R1
+    type: tiered_rate
+    tiers:
+      - threshold_pct: '1.0'
+        rate: '0.05'
+"""
+
+
+class TestPlanLibraryFailures:
+    """A saved-but-unparseable plan is invisible to the library. Callers need
+    to know it exists and is broken, not merely that it is absent."""
+
+    def _db(self, tmp_path: Path) -> Database:
+        db = Database(tmp_path / "t.db")
+        db.init()
+        db.save_plan("Good", VALID_PLAN, plan_id="good_plan")
+        db.save_plan("Broken", BROKEN_PLAN, plan_id="broken_plan")
+        return db
+
+    def test_valid_plan_still_loads(self, tmp_path: Path) -> None:
+        library, _ = self._db(tmp_path).load_plan_library_detailed()
+        assert set(library) == {"good_plan"}
+
+    def test_broken_plan_is_reported_not_just_dropped(self, tmp_path: Path) -> None:
+        _, failures = self._db(tmp_path).load_plan_library_detailed()
+        assert set(failures) == {"broken_plan"}
+
+    def test_failure_reason_names_the_bad_tag_and_the_valid_ones(self, tmp_path: Path) -> None:
+        _, failures = self._db(tmp_path).load_plan_library_detailed()
+        reason = failures["broken_plan"]
+        assert "tiered_rate" in reason      # what they wrote
+        assert "flat_rate" in reason        # what they could have written
+        assert "\n" not in reason           # one line, for a UI
+        assert "errors.pydantic.dev" not in reason
+
+    def test_plain_library_call_is_unchanged(self, tmp_path: Path) -> None:
+        # Existing callers keep the dict-only signature.
+        assert set(self._db(tmp_path).load_plan_library()) == {"good_plan"}
