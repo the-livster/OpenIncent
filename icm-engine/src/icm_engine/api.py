@@ -42,7 +42,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app.add_middleware(SlowAPIMiddleware)
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
 
 @app.exception_handler(Exception)
@@ -706,6 +706,9 @@ async def preview_file(
     filename = file.filename or ""
     is_xlsx = filename.lower().endswith(".xlsx")
 
+    headers: list[str] = []
+    rows: list[list[str]] = []
+
     if is_xlsx:
         try:
             import tempfile as _tf
@@ -715,8 +718,11 @@ async def preview_file(
             with _tf.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
                 tf.write(content)
                 tf.flush()
-                headers, rows = read_xlsx_rows(Path(tf.name))
+                headers, dict_rows = read_xlsx_rows(Path(tf.name))
             Path(tf.name).unlink(missing_ok=True)
+            # read_xlsx_rows returns rows keyed by header; preview_rows is
+            # positional, so flatten in header order.
+            rows = [[str(r.get(h, "")) for h in headers] for r in dict_rows[:50]]
         except Exception:
             headers, rows = [], []
     else:
@@ -740,7 +746,7 @@ async def preview_file(
 
     return {
         "headers": headers,
-        "preview_rows": [[str(c) for c in row] for row in rows],
+        "preview_rows": rows,
         "mapping": mapping,
         "is_xlsx": is_xlsx,
     }
