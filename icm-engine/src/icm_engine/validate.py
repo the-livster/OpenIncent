@@ -16,7 +16,7 @@ from icm_engine.models import Payee, Period, Plan, Transaction
 @dataclass
 class ValidationIssue:
     severity: str  # "error" | "warning"
-    code: str      # "duplicate" | "ineligible" | "missing_fx"
+    code: str      # "duplicate" | "ineligible" | "missing_fx" | "unknown_payee"
     message: str
 
 
@@ -81,6 +81,46 @@ def find_ineligible(
     return issues
 
 
+def find_unknown_payees(
+    transactions: list[Transaction], payees: list[Payee],
+) -> list[ValidationIssue]:
+    """Flag deals credited to somebody who is not on the roster.
+
+    The engine pays whatever payee id a deal names, inventing the payee if it
+    has to. A capitalised-differently id therefore becomes a second person:
+    the rep's bookings split across two identities, so neither reaches quota
+    and the tiers never open. That reads as a 62% underpayment on a two-tier
+    plan and nothing anywhere says so, which is why this is an error rather
+    than a warning.
+    """
+    from rapidfuzz.distance import Levenshtein
+
+    issues: list[ValidationIssue] = []
+    known = {p.id for p in payees}
+    if not known:
+        return issues
+
+    lowered = {p.id.lower(): p.id for p in payees}
+    credited: dict[str, str] = {}
+    for t in transactions:
+        for pid in [t.payee_id] + [c.payee_id for c in (t.credits or [])]:
+            if pid and pid not in known:
+                credited.setdefault(pid, t.id)
+
+    for pid, first_txn in sorted(credited.items()):
+        near = lowered.get(pid.lower())
+        if near is None:
+            candidates = [k for k in known if Levenshtein.distance(pid, k) <= 1]
+            near = candidates[0] if candidates else None
+        hint = f" Did you mean {near!r}?" if near else ""
+        issues.append(ValidationIssue(
+            "error", "unknown_payee",
+            f"Transaction {first_txn!r} credits {pid!r}, who is not on the roster."
+            f"{hint} The engine will pay this id as a separate person.",
+        ))
+    return issues
+
+
 def check_fx_completeness(
     plan: Plan, rates: dict[str, Decimal] | None,
 ) -> list[ValidationIssue]:
@@ -110,5 +150,6 @@ def validate_run(
     issues: list[ValidationIssue] = []
     issues += find_duplicates(transactions)
     issues += find_ineligible(transactions, payees)
+    issues += find_unknown_payees(transactions, payees)
     issues += check_fx_completeness(plan, rates)
     return issues

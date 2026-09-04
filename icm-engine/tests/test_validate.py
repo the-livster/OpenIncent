@@ -8,6 +8,7 @@ from icm_engine.validate import (
     check_fx_completeness,
     find_duplicates,
     find_ineligible,
+    find_unknown_payees,
     validate_run,
 )
 
@@ -75,3 +76,59 @@ def test_validate_run_aggregates() -> None:
     codes = {i.code for i in issues}
     assert "duplicate" in codes
     assert "ineligible" in codes
+
+
+def _payee(pid: str, quota: str = "8000") -> Payee:
+    return Payee(
+        id=pid, name=pid.title(), quota=Decimal(quota),
+        plan_id="demo", effective_from=date(2024, 1, 1),
+    )
+
+
+class TestUnknownPayees:
+    """A deal naming an id that isn't on the roster is paid as a new person."""
+
+    def test_case_mismatch_is_flagged_with_a_suggestion(self) -> None:
+        issues = find_unknown_payees(
+            [_txn("T1", "AKHAN"), _txn("T2", "akhan")], [_payee("AKHAN")],
+        )
+        assert len(issues) == 1
+        assert issues[0].severity == "error"
+        assert issues[0].code == "unknown_payee"
+        assert "akhan" in issues[0].message
+        assert "AKHAN" in issues[0].message  # the suggestion
+
+    def test_genuinely_unknown_id_is_flagged_without_a_bad_guess(self) -> None:
+        issues = find_unknown_payees([_txn("T1", "JOWENS")], [_payee("AKHAN")])
+        assert len(issues) == 1
+        assert "Did you mean" not in issues[0].message
+
+    def test_known_roster_is_clean(self) -> None:
+        assert find_unknown_payees([_txn("T1", "AKHAN")], [_payee("AKHAN")]) == []
+
+    def test_split_credits_are_checked_too(self) -> None:
+        from icm_engine.models import Credit
+
+        txn = _txn("T1", "AKHAN", credits=[
+            Credit(payee_id="AKHAN", split_pct=Decimal("0.6")),
+            Credit(payee_id="GHOST", split_pct=Decimal("0.4")),
+        ])
+        issues = find_unknown_payees([txn], [_payee("AKHAN")])
+        assert len(issues) == 1
+        assert "GHOST" in issues[0].message
+
+    def test_each_unknown_id_reported_once(self) -> None:
+        issues = find_unknown_payees(
+            [_txn("T1", "ghost"), _txn("T2", "ghost"), _txn("T3", "ghost")],
+            [_payee("AKHAN")],
+        )
+        assert len(issues) == 1
+
+    def test_empty_roster_reports_nothing(self) -> None:
+        # Nothing to compare against; other checks cover a missing roster.
+        assert find_unknown_payees([_txn("T1", "X")], []) == []
+
+    def test_wired_into_validate_run(self) -> None:
+        plan = Plan(plan_id="demo", name="D", currency="USD", period_type="monthly", rules=[])
+        issues = validate_run(plan, [_txn("T1", "nobody")], [_payee("AKHAN")])
+        assert any(i.code == "unknown_payee" for i in issues)

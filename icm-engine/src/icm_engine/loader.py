@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -69,62 +70,48 @@ def _load_transactions_csv(path: Path) -> list[Transaction]:
     if not rows:
         return []
 
-    # Normalize CSV headers: lowercase, spaces→underscores, strip parens
-    remap = {k: _norm(k) for k in rows[0]}
-    rows = [{remap.get(k, k): v for k, v in r.items()} for r in rows]
+    rows = _normalise_rows(rows)
+    aliases = _alias_index()
 
-    # Build alias reverse-lookup so "hours" → units, "gp" → margin, etc.
-    from icm_engine.mapping import _FIELD_ALIASES
-    _canonical_aliases: dict[str, list[str]] = {
-        canonical: [_norm(a) for a in aliases]
-        for canonical, aliases in _FIELD_ALIASES.items()
-    }
-
-    def _get_field(row: dict[str, str], canonical: str) -> str:
-        """Look up a field by canonical name, also checking normalized aliases."""
-        val = row.get(canonical)
-        if val is not None:
-            return val.strip()
-        for alias in _canonical_aliases.get(canonical, []):
-            val = row.get(alias)
-            if val is not None:
-                return val.strip()
-        return ""
+    def _get(row: dict[str, str], canonical: str) -> str:
+        return _get_field(row, canonical, aliases)
 
     transactions: list[Transaction] = []
     known = {"id", "payee_id", "deal_id", "period", "amount", "product", "close_date",
              "bill_rate", "pay_rate", "units", "margin", "credits", "quota_amount"}
     for i, row in enumerate(rows, start=2):
+        if _is_blank(row):
+            continue
         meta = {k: v for k, v in row.items() if k and k not in known}
         try:
-            product = (_get_field(row, "product") or None) or None
-            deal_id = _get_field(row, "deal_id")
-            period = _get_field(row, "period")
-            close_date_str = _get_field(row, "close_date")
-            txn_id = _get_field(row, "id")
+            product = (_get(row, "product") or None) or None
+            deal_id = _get(row, "deal_id")
+            period = _get(row, "period")
+            close_date_str = _get(row, "close_date")
+            txn_id = _get(row, "id")
             if not txn_id:
                 txn_id = f"T{i - 1:03d}"
-            bill_raw = _get_field(row, "bill_rate")
-            pay_raw = _get_field(row, "pay_rate")
-            units_raw = _get_field(row, "units")
-            margin_raw = _get_field(row, "margin")
-            credits_raw = _get_field(row, "credits")
-            quota_raw = _get_field(row, "quota_amount")
+            bill_raw = _get(row, "bill_rate")
+            pay_raw = _get(row, "pay_rate")
+            units_raw = _get(row, "units")
+            margin_raw = _get(row, "margin")
+            credits_raw = _get(row, "credits")
+            quota_raw = _get(row, "quota_amount")
             t = Transaction(
                 id=txn_id,
-                payee_id=_get_field(row, "payee_id"),
+                payee_id=_get(row, "payee_id"),
                 deal_id=deal_id,
                 period=period,
-                amount=Decimal(_get_field(row, "amount") or "0"),
+                amount=_number(_get(row, "amount") or "0", "amount"),
                 product=product,
                 close_date=_parse_date(close_date_str) if close_date_str else None,
                 metadata=meta,
-                bill_rate=Decimal(bill_raw) if bill_raw else None,
-                pay_rate=Decimal(pay_raw) if pay_raw else None,
-                units=Decimal(units_raw) if units_raw else Decimal("1"),
-                margin=Decimal(margin_raw) if margin_raw else None,
+                bill_rate=_number(bill_raw, "bill_rate") if bill_raw else None,
+                pay_rate=_number(pay_raw, "pay_rate") if pay_raw else None,
+                units=_number(units_raw, "units") if units_raw else Decimal("1"),
+                margin=_number(margin_raw, "margin") if margin_raw else None,
                 credits=parse_credits_spec(credits_raw) if credits_raw else None,
-                quota_amount=Decimal(quota_raw) if quota_raw else None,
+                quota_amount=_number(quota_raw, "quota_amount") if quota_raw else None,
             )
             transactions.append(t)
         except Exception as e:
@@ -150,76 +137,93 @@ def _load_transactions_xlsx(
     return list(mapped), mapping
 
 
+_REQUIRED_PAYEE_COLUMNS = ("id", "name", "quota", "plan_id")
+
+
+def _is_blank(row: dict[str, str]) -> bool:
+    """True for a row whose every cell is empty — trailing junk in real exports."""
+    return not any((v or "").strip() for v in row.values())
+
+
+def _payee_fields(row: dict[str, str], aliases: dict[str, list[str]]) -> dict[str, Any]:
+    """Build Payee kwargs for one normalised row. Quota is handled by the caller,
+    which has to decide between the flat quota and the per-period quotas map."""
+    def g(field: str) -> str:
+        return _get_field(row, field, aliases)
+
+    ef_from, ef_to = g("effective_from"), g("effective_to")
+    return {
+        "id": g("id"),
+        "name": g("name"),
+        "plan_id": g("plan_id"),
+        "effective_from": _parse_date(ef_from) if ef_from else None,
+        "effective_to": _parse_date(ef_to) if ef_to else None,
+        "email": g("email") or None,
+        "ramp": _parse_ramp(row),
+        "draw": _parse_draw(row),
+        "category_quotas": _parse_category_quotas(row),
+        "manager_id": g("manager_id"),
+        "manager_override": _parse_optional_decimal(
+            g("manager_override") or None, "manager_override"
+        ),
+        "team_id": g("team_id"),
+    }
+
+
 def _load_payees_csv(path: Path) -> list[Payee]:
-    payees: list[Payee] = []
     with path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValueError(f"CSV file '{path}' has no header row")
+        raw_rows = list(reader)
 
-        has_period = "period" in reader.fieldnames
+    # Headers go through the same normalisation and alias table the transactions
+    # loader uses. Without it this loader matched only exact canonical spellings,
+    # so a "Manager Override %" column silently produced no override at all.
+    rows = _normalise_rows(raw_rows)
+    if not rows:
+        return []
 
-        # If period column exists, merge rows for same payee id into quotas map
-        if has_period:
-            by_id: dict[str, dict[str, Any]] = {}
-            for i, row in enumerate(reader, start=2):
-                try:
-                    pid = row["id"].strip()
-                    period = row.get("period", "").strip()
-                    quota_val = Decimal(row["quota"].strip())
-                    if pid not in by_id:
-                        effective_to_raw = (row.get("effective_to") or "").strip()
-                        ef_from = row["effective_from"].strip()
-                        by_id[pid] = {
-                            "id": pid,
-                            "name": row["name"].strip(),
-                            "quota": Decimal("0"),
-                            "quotas": {},
-                            "plan_id": row["plan_id"].strip(),
-                            "effective_from": _parse_date(ef_from) if ef_from else None,
-                            "effective_to": _parse_date(effective_to_raw) if effective_to_raw else None,
-                            "email": (row.get("email") or "").strip() or None,
-                            "ramp": _parse_ramp(row),
-                            "draw": _parse_draw(row),
-                            "category_quotas": _parse_category_quotas(row),
-                            "manager_id": (row.get("manager_id") or "").strip(),
-                            "manager_override": _parse_optional_decimal(
-                                row.get("manager_override"), "manager_override"),
-                            "team_id": (row.get("team_id") or "").strip(),
-                        }
-                    if period:
-                        by_id[pid]["quotas"][period] = quota_val
-                    else:
-                        by_id[pid]["quota"] = quota_val
-                except Exception as e:
-                    raise ValueError(f"Row {i} in '{path}': {e}") from e
-            payees = [Payee(**data) for data in by_id.values()]
-        else:
-            for i, row in enumerate(reader, start=2):
-                try:
-                    effective_to_raw = (row.get("effective_to") or "").strip()
-                    ef_from_raw = row["effective_from"].strip()
-                    payees.append(
-                        Payee(
-                            id=row["id"].strip(),
-                            name=row["name"].strip(),
-                            quota=Decimal(row["quota"].strip()),
-                            plan_id=row["plan_id"].strip(),
-                            effective_from=_parse_date(ef_from_raw) if ef_from_raw else None,
-                            effective_to=_parse_date(effective_to_raw) if effective_to_raw else None,
-                            email=(row.get("email") or "").strip() or None,
-                            ramp=_parse_ramp(row),
-                            draw=_parse_draw(row),
-                            category_quotas=_parse_category_quotas(row),
-                            manager_id=(row.get("manager_id") or "").strip(),
-                            manager_override=_parse_optional_decimal(
-                                row.get("manager_override"), "manager_override"),
-                            team_id=(row.get("team_id") or "").strip(),
-                        )
-                    )
-                except Exception as e:
-                    raise ValueError(f"Row {i} in '{path}': {e}") from e
+    aliases = _alias_index()
+    present = set(rows[0])
 
+    def _has(field: str) -> bool:
+        return field in present or any(a in present for a in aliases.get(field, []))
+
+    missing = [c for c in _REQUIRED_PAYEE_COLUMNS if not _has(c)]
+    if missing:
+        raise ValueError(
+            f"'{path}' is missing required column(s): {', '.join(missing)}. "
+            f"Columns found: {', '.join(sorted(present))}"
+        )
+
+    payees: list[Payee] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    has_period = _has("period")
+
+    for i, row in enumerate(rows, start=2):
+        if _is_blank(row):
+            continue
+        try:
+            fields = _payee_fields(row, aliases)
+            if not fields["id"]:
+                raise ValueError("id is empty")
+            quota_val = _number(_get_field(row, "quota", aliases), "quota")
+            if has_period:
+                period = _get_field(row, "period", aliases)
+                if fields["id"] not in by_id:
+                    by_id[fields["id"]] = {**fields, "quota": Decimal("0"), "quotas": {}}
+                if period:
+                    by_id[fields["id"]]["quotas"][period] = quota_val
+                else:
+                    by_id[fields["id"]]["quota"] = quota_val
+            else:
+                payees.append(Payee(**fields, quota=quota_val))
+        except Exception as e:
+            raise ValueError(f"Row {i} in '{path}': {e}") from e
+
+    if has_period:
+        payees = [Payee(**data) for data in by_id.values()]
     return payees
 
 
@@ -498,6 +502,68 @@ def load_mbos(path: str | Path) -> list[Any]:
     return mbos
 
 
+_PARENTHETICAL = re.compile(r"\([^)]*\)")
+
+
 def _norm(h: str) -> str:
-    """Normalize a CSV header: lowercase, spaces→underscores, strip parens."""
-    return h.strip().lower().replace(" ", "_").replace("(", "").replace(")", "")
+    """Normalise a CSV header to its canonical form.
+
+    Real exports annotate units in the heading — "Bill Rate (GBP/hr)",
+    "Amount ($)", "Manager Override %". Previously only the brackets were
+    removed, so "Bill Rate (GBP/hr)" became "bill_rate_gbp/hr", matched no
+    field, and fell into metadata: the rate silently vanished and margin
+    rules stopped applying. Drop the whole parenthetical instead, and
+    collapse runs of spaces and underscores.
+    """
+    text = _PARENTHETICAL.sub(" ", h).strip().lower().rstrip("%").strip()
+    return re.sub(r"[\s_]+", "_", text).strip("_")
+
+
+def _alias_index() -> dict[str, list[str]]:
+    """Canonical field name -> its normalised aliases."""
+    from icm_engine.mapping import _FIELD_ALIASES
+
+    return {
+        canonical: [_norm(a) for a in aliases]
+        for canonical, aliases in _FIELD_ALIASES.items()
+    }
+
+
+def _normalise_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Rewrite every row's keys through _norm, dropping csv restkey overflow."""
+    if not rows:
+        return []
+    remap = {k: _norm(k) for k in rows[0] if k is not None}
+    return [
+        {remap.get(k, k): v for k, v in r.items() if k is not None}
+        for r in rows
+    ]
+
+
+def _get_field(row: dict[str, str], canonical: str, aliases: dict[str, list[str]]) -> str:
+    """Read a field by canonical name, falling back to its normalised aliases."""
+    val = row.get(canonical)
+    if val is not None:
+        return str(val).strip()
+    for alias in aliases.get(canonical, []):
+        val = row.get(alias)
+        if val is not None:
+            return str(val).strip()
+    return ""
+
+
+def _number(raw: str, field: str) -> Decimal:
+    """Parse a numeric cell, naming the column and the offending value.
+
+    Deliberately does not strip thousands separators: "1,234" is 1234 to a US
+    export and 1.234 to a European one, and guessing wrong is a thousand-fold
+    error on someone's pay. Refusing is the only safe reading.
+    """
+    text = raw.strip()
+    try:
+        return Decimal(text)
+    except InvalidOperation as e:
+        raise ValueError(
+            f"{field}: cannot read {text!r} as a number. Write a plain decimal "
+            f"(12500.00) — no currency symbol, thousands separator or brackets."
+        ) from e

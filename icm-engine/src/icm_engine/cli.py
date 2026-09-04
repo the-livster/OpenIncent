@@ -62,6 +62,10 @@ def main(
         True, "--allow-recalculate-locked/--no-allow-recalculate-locked",
         help="Allow recalculation of locked periods"
     ),
+    allow_unknown_payees: bool = typer.Option(
+        False, "--allow-unknown-payees",
+        help="Pay deals credited to ids that are not on the roster (off by default)"
+    ),
     adjustments_file: str = typer.Option(
         None, "--adjustments", help="Path to manual adjustments CSV"
     ),
@@ -175,6 +179,22 @@ def main(
             f"[cyan]Multi-plan run: {len(plan_library)} plan(s), "
             f"{len(payee_list)} payee(s), {len(txns)} transaction(s)[/cyan]"
         )
+
+    # Unknown-payee guard. A deal naming an id that is not on the roster gets
+    # paid as a separate person, so an inconsistently capitalised id silently
+    # splits one rep's bookings across two identities and neither reaches quota.
+    # Loud here because a normal run never calls `icm validate`.
+    from icm_engine.validate import find_unknown_payees
+    unknown = find_unknown_payees(txns, payee_list)
+    for issue in unknown:
+        console.print(f"[red]Error:[/red] {issue.message}")
+    if unknown:
+        console.print(
+            f"[red]{len(unknown)} unknown payee id(s). Fix the roster or the deal "
+            f"file, or re-run with --allow-unknown-payees to pay them anyway.[/red]"
+        )
+        if not allow_unknown_payees:
+            raise typer.Exit(code=1)
 
     # Filter-field typo guard
     from icm_engine.filter_parser import check_filter_fields

@@ -396,3 +396,70 @@ class TestParquetParity:
         assert from_csv == from_parquet
         assert from_csv["P1"] == Decimal("6000.000")
         assert from_csv["P2"] == Decimal("4000.000")
+
+
+class TestHeaderNormalisation:
+    """Real exports don't use canonical column names. Missing a column silently
+    is the same failure as misreading a value — the field just isn't there."""
+
+    PAYEES = "id,name,quota,plan_id,effective_from,manager_id,{col}\nP1,Rep,8000,demo,2024-01-01,M1,2%\n"
+
+    @pytest.mark.parametrize("col", [
+        "manager_override", "Manager Override %", "manager override",
+        "MANAGER_OVERRIDE", " manager_override ", "Override",
+    ])
+    def test_payee_headers_reach_the_field(self, tmp_path: Path, col: str) -> None:
+        p = tmp_path / "payees.csv"
+        p.write_text(self.PAYEES.format(col=col), encoding="utf-8")
+        payees, _ = load_payees(p)
+        assert payees[0].manager_override == Decimal("0.02")
+
+    @pytest.mark.parametrize("col", [
+        "bill_rate", "Bill Rate", "bill rate", "BILL RATE", "Bill Rate (GBP/hr)",
+    ])
+    def test_transaction_headers_reach_the_field(self, tmp_path: Path, col: str) -> None:
+        p = tmp_path / "deals.csv"
+        p.write_text(
+            f"id,payee_id,period,amount,{col}\nT1,P1,2026-05,1000,90.00\n", encoding="utf-8"
+        )
+        txns, _ = load_transactions(p)
+        # A parenthetical unit used to leave this in metadata as bill_rate_gbp/hr.
+        assert txns[0].bill_rate == Decimal("90.00")
+
+    def test_missing_required_column_names_what_is_missing(self, tmp_path: Path) -> None:
+        p = tmp_path / "payees.csv"
+        p.write_text("id,name,plan_id,effective_from\nP1,Rep,demo,2024-01-01\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="quota"):
+            load_payees(p)
+
+    def test_blank_rows_are_skipped(self, tmp_path: Path) -> None:
+        p = tmp_path / "deals.csv"
+        p.write_text(
+            "id,payee_id,period,amount\nT1,P1,2026-05,1000\n\nT2,P1,2026-05,2000\n",
+            encoding="utf-8",
+        )
+        txns, _ = load_transactions(p)
+        assert [t.id for t in txns] == ["T1", "T2"]
+
+
+class TestNumberErrorQuality:
+    """A comp manager reading the error is not a Python developer."""
+
+    @pytest.mark.parametrize("value", ['"12,500.00"', '"GBP 4,200"', "(500)"])
+    def test_bad_amount_names_column_and_value(self, tmp_path: Path, value: str) -> None:
+        p = tmp_path / "deals.csv"
+        p.write_text(f"id,payee_id,period,amount\nT1,P1,2026-05,{value}\n", encoding="utf-8")
+        with pytest.raises(ValueError) as exc:
+            load_transactions(p)
+        msg = str(exc.value)
+        assert "amount" in msg
+        assert "ConversionSyntax" not in msg  # the old, unreadable failure
+        assert "plain decimal" in msg
+
+    def test_thousands_separators_are_refused_not_guessed(self, tmp_path: Path) -> None:
+        # "1,234" is 1234 to a US export and 1.234 to a European one. Guessing
+        # wrong is a thousand-fold error on someone's pay, so refuse.
+        p = tmp_path / "deals.csv"
+        p.write_text('id,payee_id,period,amount\nT1,P1,2026-05,"1,234"\n', encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_transactions(p)
