@@ -520,3 +520,53 @@ rules:
     data = response.json()
     assert data["summary"]["P1"] == "64.59"
     assert data["commissions"][0]["commission_amount"] == "64.59"
+
+
+def test_preview_csv_returns_cell_values() -> None:
+    csv_bytes = b"id,payee_id,amount\nT1,P1,5000\nT2,P2,7500\n"
+    response = client.post(
+        f"{V}/preview",
+        files={"file": ("deals.csv", csv_bytes, "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["is_xlsx"] is False
+    assert data["headers"] == ["id", "payee_id", "amount"]
+    assert data["preview_rows"] == [["T1", "P1", "5000"], ["T2", "P2", "7500"]]
+
+
+def test_preview_xlsx_returns_cell_values_not_headers() -> None:
+    """Regression: preview_rows iterated the xlsx row dicts, which yields their
+    keys, so every previewed row came back as the header list instead of data.
+    """
+    from icm_engine.excel import write_xlsx
+
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "deals.xlsx"
+        write_xlsx(
+            path,
+            {
+                "Sheet1": [
+                    {"id": "T1", "payee_id": "P1", "amount": "5000"},
+                    {"id": "T2", "payee_id": "P2", "amount": "7500"},
+                ]
+            },
+        )
+        with open(path, "rb") as f:
+            response = client.post(
+                f"{V}/preview",
+                files={
+                    "file": (
+                        "deals.xlsx",
+                        f,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                },
+            )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["is_xlsx"] is True
+    assert data["headers"] == ["id", "payee_id", "amount"]
+    assert data["preview_rows"] == [["T1", "P1", "5000"], ["T2", "P2", "7500"]]
+    assert data["preview_rows"][0] != data["headers"]
