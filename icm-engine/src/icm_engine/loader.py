@@ -401,7 +401,7 @@ def _parse_ramp(row: dict[str, str]) -> RampSchedule | None:
         missing = "ramp_schedule" if months_raw else "ramp_months"
         raise ValueError(
             f"ramp is half-specified: {missing} is empty. Set both columns, or "
-            f"neither — a partial ramp would silently apply no quota relief."
+            f"neither - a partial ramp would silently apply no quota relief."
         )
     months = int(months_raw)
     schedule = [Decimal(v) for v in schedule_raw.split()]

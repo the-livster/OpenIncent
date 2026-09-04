@@ -20,7 +20,7 @@ from icm_engine.loader import load_payees, load_plan, load_transactions
 from icm_engine.models import Commission, Payee, Plan, Transaction
 from icm_engine.run import LockedPeriodError, RunContext, execute, persist
 
-app = typer.Typer()
+app = typer.Typer(pretty_exceptions_enable=False)
 db_app = typer.Typer(help="Database operations")
 app.add_typer(db_app, name="db")
 console = Console()
@@ -96,10 +96,20 @@ def main(
         from icm_engine.mapping import load_mapping as _load_mapping_file
         mapping_obj = _load_mapping_file(Path(mapping))
 
-    txns, txn_mapping = load_transactions(transactions, mapping=mapping_obj)
+    try:
+        txns, txn_mapping = load_transactions(transactions, mapping=mapping_obj)
+    except (ValueError, KeyError) as e:
+        console.print("[red]Could not read the transactions file.[/red]")
+        console.print(str(e))
+        raise typer.Exit(code=1) from e
 
     if payees is not None:
-        payee_list, payee_mapping = load_payees(payees, mapping=mapping_obj)
+        try:
+            payee_list, payee_mapping = load_payees(payees, mapping=mapping_obj)
+        except (ValueError, KeyError) as e:
+            console.print("[red]Could not read the payees file.[/red]")
+            console.print(str(e))
+            raise typer.Exit(code=1) from e
         using_saved_roster = False
     else:
         if no_db:
