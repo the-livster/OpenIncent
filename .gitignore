@@ -43,3 +43,6 @@ website/
 
 # Private business/strategy docs — never commit
 _private/
+
+# Unrelated project parked in this working dir — never commit here
+artist-portfolio/
