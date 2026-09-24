@@ -7,9 +7,10 @@ prove the number.** OpenIncent is a repeatable way of taking commission from a
 messy spreadsheet to **paid, reconciled, and explainable** — and proving it at
 every step. The method is the product; the engine is free software that runs it.
 
-- **The [method](METHOD.md)** — eight steps from messy spreadsheet to a run that
-  reconciles to reality and explains every line, with a four-level conformance
-  ladder (L0–L3) as your proof it worked.
+- **The [method](METHOD.md)** — a one-time setup that takes you from a messy
+  spreadsheet to a run that matches what you actually paid, then a six-step pay
+  cycle that confirms payroll, takes in plan changes and late deals, and explains
+  every line. Four checkpoints are your proof it worked.
 - **The engine** — a free, open implementation that runs the method: it validates
   your data, checks your plan, calculates payouts, and reconciles the result to
   what you actually paid.
