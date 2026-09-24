@@ -364,6 +364,37 @@ see `examples/templates/solar_redline.yaml`.
 Ledger events: `commission_computed` (price, redline, size, deductions, split, milestone, share);
 `rule_skipped` (filtered).
 
+### 7.6 Mid-year plan changes
+
+A plan changes during the year without starting a new plan file. The plan's own fields apply from the
+start; each entry under `changes` applies from its `effective_from` period and replaces only the fields
+it sets (`rules`, `payout_cap`, `draw`, `negative_balance`). A `reason` is required.
+
+```yaml
+rules:
+  - {type: flat_rate, id: fee, rate: "0.10"}
+changes:
+  - effective_from: "2026-07"
+    reason: "Q3 rate rise approved 20 June"
+    rules:
+      - {type: flat_rate, id: fee, rate: "0.12"}
+```
+
+- **Each period is paid under the version in force for it.** Deals, manual adjustments, MBOs, locked
+  periods and their prior results are routed by period.
+- **A late deal for a closed period is priced under that period's version**, then paid as a correction in
+  the current period ([§8](#8-locking-versioning--payout-adjustments)). A backdated change works the same
+  way: re-run the affected closed periods and the difference is paid now.
+- **Year-to-date attainment carries across a change.** On `attainment_basis: cumulative`, deals before the
+  change still count toward the position the new rates start from; a July rate change does not reset
+  anyone against an annual quota.
+- **Draw and carried-forward balances carry across a change.**
+- A change starts on the first month of a period (any month for monthly plans; January, April, July or
+  October for quarterly), changes are listed oldest first, and each resulting version must be a valid
+  plan. Plan assertions pick a version with `period:`.
+
+Ledger event: `plan_version`, one per version used in a run, with its start and reason.
+
 ## 8. Locking, versioning & payout adjustments
 
 **Versioning.** Every calculation run is versioned per `(plan_id, period)`. Re-running creates a new draft
@@ -525,6 +556,7 @@ Every figure is backed by one or more of these events (`ledger.jsonl`):
 | `commission_computed` | a commission slice is produced (the core "why $X" record)  |
 | `true_up`             | a locked-period delta is paid into the payout period       |
 | `balance`             | a deficit is carried forward or recovered (carry_forward)  |
+| `plan_version`        | a dated version of the plan applies to part of the run     |
 
 ---
 

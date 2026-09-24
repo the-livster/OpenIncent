@@ -46,6 +46,10 @@ rule type, and constraint shown here MUST be satisfied by your output.
   `{{M1: "0.5", M2: "0.5"}}`) pay part of the deal on each milestone row; a row
   whose milestone column is `cancel` takes back the paid share. Use it when a
   plan says "paid on price per watt over redline" or pays at signing and install.
+- **Mid-year changes**: if the plan describes a rate or rule change from a
+  date ("from July, 12%"), keep the original rules and add a `changes` list:
+  `[{{effective_from: "2026-07", reason: "...", rules: [...]}}]`. A change
+  replaces only the fields it sets and must start on a period boundary.
 - **formula**: Escape hatch for plans the other rule types can't express. Has
   `type: formula`, `id`, optional `filter`, and `formula` — an arithmetic
   expression evaluated per credited deal. Variables: `amount`, `margin`,

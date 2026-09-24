@@ -78,6 +78,7 @@ uv run icm --plan plan.yaml --transactions deals.csv --payees reps.csv --output 
 - **Ramp schedules:** quota relief for new hires
 - **Time-varying quotas:** per-period quota overrides
 - **Rule composition:** `on_rule` — a rule whose base is what an earlier rule paid, so a kicker layered on base commission has one rate to maintain, not two
+- **Mid-year plan changes:** dated `changes` on a plan - new rates or rules from a given month, with a recorded reason; earlier months keep their own rates and year-to-date attainment carries across
 - **Year-to-date attainment:** `attainment_basis: cumulative` — tiers measured against fiscal-year-cumulative bookings and quota, so tier position carries across periods
 - **Per-rep statements:** XLSX, HTML, PDF — one file per payee
 - **Distribution:** SMTP / .eml / mail-merge; safe by default (no sending without `--send`)

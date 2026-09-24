@@ -870,7 +870,7 @@ class CommissionEngine:
         payee_map = {p.id: p for p in payees}
         credits = _resolve_credits(transactions)
         credits = _resolve_hierarchy_credits(credits, payee_map)
-        return self._run_plan_pipeline(
+        return self._run_versioned(
             plan, credits, payee_map,
             locked_periods=locked_periods,
             effective_period=effective_period,
@@ -957,7 +957,7 @@ class CommissionEngine:
 
         for plan_id in sorted(plans.keys()):
             plan = plans[plan_id]
-            plan_result = self._run_plan_pipeline(
+            plan_result = self._run_versioned(
                 plan,
                 plan_credits.get(plan_id, []),
                 plan_payees.get(plan_id, {}),
@@ -986,7 +986,7 @@ class CommissionEngine:
             draw_balances_by_period=all_draw_by_period,
         )
 
-    def _run_plan_pipeline(
+    def _run_versioned(
         self,
         plan: Plan,
         credits: list[_CreditUnit],
@@ -999,7 +999,127 @@ class CommissionEngine:
         prior_draw_balances: dict[str, Decimal] | None = None,
         mbos: list[Any] | None = None,
     ) -> CalculationResult:
+        """Run a plan that changed mid-year, one version at a time.
+
+        Each period is paid under the version in force for it: deals,
+        adjustments, bonuses, locked periods and their prior results are
+        routed by period. Versions run oldest first, so a draw balance carries
+        from one into the next, and on a year-to-date plan the earlier deals
+        still count toward attainment - a rate change in July does not reset
+        anyone's position against an annual quota.
+        """
+        if not plan.changes:
+            return self._run_plan_pipeline(
+                plan, credits, payee_map,
+                locked_periods=locked_periods,
+                effective_period=effective_period,
+                prior_commissions=prior_commissions,
+                adjustments=adjustments,
+                prior_draw_balances=prior_draw_balances,
+                mbos=mbos,
+            )
+
+        pt = plan.period_type
+
+        def month_of(period: str) -> str:
+            # A window key back to its first YYYY-MM, since changes start there.
+            if "-Q" in period:
+                year, q = period.split("-Q")
+                return f"{year}-{(int(q) - 1) * 3 + 1:02d}"
+            if len(period) == 4:
+                return f"{period}-01"
+            return period
+
+        def version_key(period: str) -> str:
+            return plan.version_start(month_of(period)) or ""
+
+        keys = sorted(
+            {version_key(cu.period) for cu in credits}
+            | {version_key(p) for p in locked_periods or ()}
+            | {version_key(c.period) for c in prior_commissions or []}
+            | {version_key(a.period) for a in adjustments or []}
+            | {version_key(m.period) for m in mbos or []}
+        )
+        reasons = {c.effective_from: c.reason for c in plan.changes}
+
+        commissions: list[Commission] = []
+        ledger: list[LedgerEntry] = []
+        attainment: list[AttainmentSummary] = []
+        balances: dict[str, Decimal] = dict(prior_draw_balances or {})
+        balances_by_period: dict[str, dict[str, Decimal]] = {}
+        touched: set[str] = set()
+
+        for key in keys:
+            version = plan.version_for(key or "0000-00")
+            seg_locked = {p for p in locked_periods or () if version_key(p) == key}
+            seg_prior = [c for c in prior_commissions or [] if version_key(c.period) == key]
+            ytd = version.attainment_basis == "cumulative"
+            result = self._run_plan_pipeline(
+                version,
+                [cu for cu in credits if version_key(cu.period) == key],
+                payee_map,
+                locked_periods=seg_locked or None,
+                effective_period=effective_period,
+                prior_commissions=seg_prior or None,
+                adjustments=[a for a in adjustments or [] if version_key(a.period) == key] or None,
+                prior_draw_balances=balances or None,
+                mbos=[m for m in mbos or [] if version_key(m.period) == key] or None,
+                history_credits=[cu for cu in credits if key and cu.period < key] if ytd else None,
+                window_from=_window_key(key, pt) if key else None,
+            )
+            ledger.append(LedgerEntry(
+                transaction_id="*",
+                payee_id="*",
+                rule_id="*",
+                event_type="plan_version",
+                inputs={
+                    "plan_id": plan.plan_id,
+                    "effective_from": key or "start",
+                    "reason": reasons.get(key, "original plan"),
+                },
+                human_readable=(
+                    f"Plan {plan.plan_id}: "
+                    + (f"version from {key} ({reasons[key]})" if key else "original version")
+                    + " applies"
+                ),
+            ))
+            commissions.extend(result.commissions)
+            ledger.extend(result.ledger)
+            attainment.extend(result.attainment)
+            balances.update(result.draw_balances)
+            touched.update(result.draw_balances)
+            for pid, by_period in result.draw_balances_by_period.items():
+                balances_by_period.setdefault(pid, {}).update(by_period)
+
+        return CalculationResult(
+            commissions=commissions,
+            ledger=ledger,
+            attainment=attainment,
+            draw_balances={pid: balances[pid] for pid in touched},
+            draw_balances_by_period=balances_by_period,
+        )
+
+    def _run_plan_pipeline(
+        self,
+        plan: Plan,
+        credits: list[_CreditUnit],
+        payee_map: dict[str, Payee],
+        *,
+        locked_periods: set[str] | None = None,
+        effective_period: str | None = None,
+        prior_commissions: list[Commission] | None = None,
+        adjustments: list[Any] | None = None,
+        prior_draw_balances: dict[str, Decimal] | None = None,
+        mbos: list[Any] | None = None,
+        history_credits: list[_CreditUnit] | None = None,
+        window_from: str | None = None,
+    ) -> CalculationResult:
         """Core pipeline: attainment → rule eval → MBOs → cap → draw → locking → adjustments.
+
+        `history_credits` are earlier deals that count toward year-to-date
+        attainment but are not paid by this run, and `window_from` drops the
+        windows before it from the attainment reported. Both are set when a
+        plan version starts mid-year (see _run_versioned).
 
         Operates on pre-resolved credit units and a single plan. Used by both
         calculate() (single-plan) and calculate_run() (multi-plan)."""
@@ -1022,7 +1142,10 @@ class CommissionEngine:
 
         # Compute attainment: bookings per (payee, window) vs quota
         ytd = getattr(plan, "attainment_basis", "period") == "cumulative"
-        attainment = _compute_attainment(credits, payee_map, pt, fractions, cumulative=ytd)
+        attainment = _compute_attainment(
+            (history_credits or []) + credits if ytd else credits,
+            payee_map, pt, fractions, cumulative=ytd,
+        )
 
         # Under YTD, a window's tier slicing must start where the previous
         # window ended, not at zero, or every month re-enters at tier 1.
@@ -1036,6 +1159,8 @@ class CommissionEngine:
                 for a in sorted(group, key=lambda x: x.period):
                     opening_bookings[(a.payee_id, a.period)] = prior
                     prior = a.bookings
+        if window_from is not None:
+            attainment = [a for a in attainment if a.period >= window_from]
         for a in attainment:
             all_ledger.append(LedgerEntry(
                 transaction_id="*",

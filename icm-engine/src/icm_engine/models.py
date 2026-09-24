@@ -559,6 +559,23 @@ class PlanAssertion(BaseModel):
     tolerance: Decimal = Field(default=Decimal("0.01"), ge=Decimal("0"))
 
 
+class PlanChange(BaseModel):
+    """A dated change to a plan: what replaces what, from which period on.
+
+    The plan's own fields apply from the start. Each change applies from its
+    `effective_from` period until the next change, and replaces only the
+    fields it sets. The reason is required, because a plan change nobody can
+    explain later is the dispute this tool exists to prevent.
+    """
+
+    effective_from: str = Field(pattern=r"^\d{4}-\d{2}$")
+    reason: str = Field(min_length=1)
+    rules: list[Rule] | None = None
+    payout_cap: Decimal | None = Field(default=None, ge=Decimal("0"))
+    draw: Draw | None = None
+    negative_balance: Literal["pay", "carry_forward"] | None = None
+
+
 class Plan(BaseModel):
     plan_id: str
     name: str
@@ -583,6 +600,52 @@ class Plan(BaseModel):
     rounding: RoundingPolicy | None = None  # None = exact (no display rounding)
     ote: Decimal | None = Field(default=None, ge=Decimal("0"))  # stated on-target earnings (metadata)
     assertions: list[PlanAssertion] = Field(default_factory=list)
+    # Dated versions of the plan, oldest first. See PlanChange.
+    changes: list[PlanChange] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_changes(self) -> Plan:
+        """Changes run oldest first, start on a period boundary, and each
+        resulting version must be a valid plan in its own right."""
+        starts = [c.effective_from for c in self.changes]
+        if starts != sorted(starts) or len(set(starts)) != len(starts):
+            raise ValueError(
+                f"plan '{self.plan_id}': changes must be listed oldest first, one per "
+                f"period, got {starts}"
+            )
+        first_months = {"monthly": None, "quarterly": {1, 4, 7, 10}, "annual": {1}}
+        allowed = first_months.get(self.period_type)
+        for start in starts:
+            month = int(start[5:])
+            if allowed is not None and month not in allowed:
+                raise ValueError(
+                    f"plan '{self.plan_id}': a change starting {start} falls inside a "
+                    f"{self.period_type} period. Start it on the first month of a period."
+                )
+        for start in starts:
+            self.version_for(start)  # raises if that version is not a valid plan
+        return self
+
+    def version_for(self, period: str) -> Plan:
+        """The plan as it applies to `period` (YYYY-MM), with no changes left."""
+        if not self.changes:
+            return self
+        merged = self.model_dump(exclude={"changes"})
+        for change in self.changes:
+            if change.effective_from > period:
+                break
+            for field in ("rules", "payout_cap", "draw", "negative_balance"):
+                if field in change.model_fields_set:
+                    merged[field] = change.model_dump()[field]
+        return Plan.model_validate(merged)
+
+    def version_start(self, period: str) -> str | None:
+        """When the version that applies to `period` began (None: from the start)."""
+        start = None
+        for change in self.changes:
+            if change.effective_from <= period:
+                start = change.effective_from
+        return start
 
     @model_validator(mode="after")
     def _check_rule_composition(self) -> Plan:

@@ -154,10 +154,11 @@ Shipped:
 - ~~Multi-plan runs~~ ✅ — route each payee through their assigned plan in a single run
 - ~~Manager hierarchy~~ ✅ — auto-generate upline overrides from `manager_id` + `manager_override`
 - ~~Finance payout register~~ ✅ — rounded-to-cents XLSX auto-generated on period lock
+- ~~Mid-year plan changes (dated versions)~~ ✅
 - ~~Commission on gross profit (margin)~~ ✅ · ~~Plan assertions (`check-plan`)~~ ✅ · ~~Ingestion validation (`validate`)~~ ✅ · ~~Reconciliation (`reconcile`)~~ ✅
 
 Next:
-- **Plan effective-dating**, what-if modeling, and org-level reporting
+- What-if modeling and org-level reporting
 
 See [`ROADMAP.md`](./ROADMAP.md) for the field-validated priorities and their current status.
 
