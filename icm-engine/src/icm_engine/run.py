@@ -210,25 +210,32 @@ def persist(
 ) -> dict[str, str]:
     """Persist commission lines, ledger entries, transactions, and draw balances.
 
-    Returns a dict mapping period_key -> calculation_id.
+    One calculation per (plan, period), holding only the lines of that plan's
+    payees, because locks and true-ups are keyed on (plan, period). Saving a
+    whole multi-plan month under the first line's plan left the other plans
+    with nothing to lock, and a re-run of the locked month reversed all of
+    their lines as a true-up - a manager's entire override for the month.
+
+    Returns calculation ids keyed by period, or by "plan_id:period" when the
+    run covered more than one plan.
     """
     payee_plan = {p.id: p.plan_id for p in ctx.payees}
     commissions = [c.model_dump() for c in result.commissions]
     ledger_dicts = [e.to_dict() for e in result.ledger]
+    default_plan = list(ctx.plan_library.keys())[0]
 
-    # Group by period
-    by_period: dict[str, list[dict[str, Any]]] = {}
-    for c_dict in commissions:
-        p = c_dict["period"]
-        by_period.setdefault(p, []).append(c_dict)
+    def plan_of(payee_id: str) -> str:
+        # A single-plan run pays everyone under the plan it ran, whatever the
+        # roster's plan column says; a multi-plan run routes by that column.
+        if not ctx.multi_plan:
+            return default_plan
+        pid = payee_plan.get(payee_id, default_plan)
+        return pid if pid in ctx.plan_library else default_plan
 
-    # Determine which plan each period's lines belong to
-    period_plan: dict[str, str] = {}
+    by_plan_period: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for c_dict in commissions:
-        p = c_dict["period"]
-        pid = payee_plan.get(c_dict["payee_id"], list(ctx.plan_library.keys())[0])
-        if p not in period_plan:
-            period_plan[p] = pid
+        key = (plan_of(c_dict["payee_id"]), c_dict["period"])
+        by_plan_period.setdefault(key, []).append(c_dict)
 
     calc_ids: dict[str, str] = {}
     # Freeze the statement context with the run. Later edits to a roster or
@@ -244,10 +251,9 @@ def persist(
             for a in result.attainment
         ],
     }
-    for period_key, comms in sorted(by_period.items()):
-        plan_for_period = period_plan.get(period_key, list(ctx.plan_library.keys())[0])
+    for (plan_id, period_key), comms in sorted(by_plan_period.items()):
         calc_id = ctx.db.record_calculation(
-            plan_for_period,
+            plan_id,
             period=period_key,
             input_summary={
                 "txn_count": len(ctx.transactions),
@@ -257,7 +263,7 @@ def persist(
         )
         ctx.db.save_commission_lines(calc_id, comms)
         ctx.db.save_ledger_entries(calc_id, ledger_dicts)
-        calc_ids[period_key] = calc_id
+        calc_ids[f"{plan_id}:{period_key}" if ctx.multi_plan else period_key] = calc_id
 
     # Persist transactions and link to all calculations
     txn_dicts = [t.model_dump() for t in ctx.transactions]

@@ -106,7 +106,7 @@ Every calculation run is versioned per `(plan_id, period)`. When you close a per
 - **Draft versions** — each recalculation creates a new version. Locks stay on the previously pinned version until you deliberately re-lock.
 - **Origin tracking** — commission lines carry an `origin_period` field showing which period the deal actually closed in, distinct from the payout period.
 
-Lock and unlock via the HTTP API or the CLI (`icm db` subcommands). Recalculation on locked periods is allowed by default; use `--no-allow-recalculate-locked` to enforce strict mode.
+Lock and unlock through the HTTP API (`POST` / `DELETE /v1/periods/{plan_id}/{period}/lock`); the CLI has no lock command yet. A run that covers several plans saves each plan's month as its own calculation, so lock each plan that paid the month. Recalculation on locked periods is allowed by default; use `--no-allow-recalculate-locked` to enforce strict mode.
 
 | Flag | Default | Purpose |
 |------|---------|---------|

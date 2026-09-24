@@ -736,8 +736,8 @@ def get_calculation_result(
         "payouts": payouts,
         "payout_totals": {k: str(v) for k, v in payout_totals.items()},
         "sample": sample,
-        # Keyed by period, matching persist(), so the export endpoint and the
-        # UI's export helper accept this response unchanged.
+        # Keyed as persist() keys a single-plan run. The export endpoint and
+        # the UI's export helper read only the ids, so either keying works.
         "calculation_ids": {period: calculation_id},
         "commissions": commissions,
         "ledger": ledger,

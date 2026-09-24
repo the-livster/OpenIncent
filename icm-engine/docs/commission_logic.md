@@ -328,6 +328,10 @@ version; nothing is overwritten.
 **Locking.** Closing a period **locks** it to one official calculation (the pinned version). A lock holds
 until you deliberately unlock; re-running a locked period creates a new *draft* without disturbing the lock.
 
+**Per plan.** A run that covers several plans saves one calculation per `(plan_id, period)`, holding only
+that plan's payees, and each is locked on its own (`POST /v1/periods/{plan_id}/{period}/lock`). Lock every
+plan that paid the month before re-running it: a plan whose month is not locked is recalculated as a draft.
+
 **Recalculation of a locked period (true-ups).** When a new run includes transactions whose window is
 locked, the engine does **not** rewrite the locked statement. Instead:
 
