@@ -9,9 +9,12 @@ import StageAttainment from "./StageAttainment";
 import StageEarnings from "./StageEarnings";
 import StageAdjustments from "./StageAdjustments";
 import StageReporting from "./StageReporting";
+import PipelineWelcome from "./PipelineWelcome";
+import { parsePayees, previewFile } from "../api";
 
 export interface PayeeRow {
   id: string; name: string; quota: string; plan_id: string;
+  quotas?: Record<string, string>;
   effective_from: string; effective_to: string; email: string;
   ramp_months: string; ramp_schedule: string; category_quotas: string;
   // A recoverable draw that never reaches the engine is money the company
@@ -46,6 +49,47 @@ export default function Pipeline() {
   const [resultsAvailable, setResultsAvailable] = useState(false);
   // Track which result stages have been visited
   const [visitedResults, setVisitedResults] = useState<Set<number>>(new Set());
+  const [txnFile, setTxnFile] = useState<File | null>(null);
+  const [samplePlan, setSamplePlan] = useState<File | null>(null);
+  const [sampleLoading, setSampleLoading] = useState(false);
+  const [sampleError, setSampleError] = useState("");
+
+  const invalidate = useCallback(() => {
+    setResult(null);
+    setResultsAvailable(false);
+    setVisitedResults(new Set());
+  }, []);
+  const updatePayees = useCallback((rows: PayeeRow[]) => { setPayees(rows); invalidate(); }, [invalidate]);
+  const updateTransactions = useCallback((rows: TransactionRow[]) => { setTransactions(rows); invalidate(); }, [invalidate]);
+  const updatePlans = useCallback((rows: SavedPlan[]) => {
+    setPlans(previous => {
+      if (JSON.stringify(previous) === JSON.stringify(rows)) return previous;
+      return rows;
+    });
+  }, []);
+
+  async function loadSample() {
+    setSampleLoading(true); setSampleError("");
+    try {
+      const files = await Promise.all(["payees.csv", "transactions.csv", "openincent_sample.yaml"].map(async name => {
+        const response = await fetch(`/sample/${name}`);
+        if (!response.ok) throw new Error("Sample files could not be loaded. Please try again.");
+        return new File([await response.text()], name);
+      }));
+      const roster = await parsePayees(files[0]);
+      const preview = await previewFile(files[1]);
+      const rows = preview.preview_rows.map(row => Object.fromEntries(preview.headers.map((key, i) => [key, row[i]])) as unknown as TransactionRow);
+      setPayees(roster); setTransactions(rows); setTxnFile(files[1]); setSamplePlan(files[2]);
+      setPlans([{ id: "openincent_sample", name: "Sample monthly commission", description: "10% of sales", yaml_content: await files[2].text(), created_at: "", updated_at: "" }]);
+      invalidate(); setStage(1);
+    } catch (e) { setSampleError(e instanceof Error ? e.message : "Could not load sample data."); }
+    finally { setSampleLoading(false); }
+  }
+
+  function exitSample() {
+    setSamplePlan(null); setPayees([]); setTransactions([]); setTxnFile(null); setPlans([]);
+    invalidate(); setStage(1);
+  }
 
   const canAccess = useCallback((s: number) => {
     if (s <= 5) return true; // input stages: 1-5
@@ -53,15 +97,16 @@ export default function Pipeline() {
   }, [resultsAvailable]);
 
   const goTo = useCallback((s: number) => {
-    if (canAccess(s) || s <= stage) {
+    if (canAccess(s)) {
       setStage(s);
       if (s >= 6) setVisitedResults(prev => new Set(prev).add(s));
     }
-  }, [canAccess, stage]);
+  }, [canAccess]);
 
   const onCalculated = useCallback((r: CalculateResponse) => {
     setResult(r);
     setResultsAvailable(true);
+    setVisitedResults(new Set([6]));
     setStage(6); // auto-advance to Attainment
   }, []);
 
@@ -105,8 +150,8 @@ export default function Pipeline() {
                     <div className={`w-0.5 flex-1 min-h-[4px] ${isFirst ? "bg-transparent" : prevComplete ? "bg-green-400" : "bg-zinc-200"}`} />
                     {/* Circle */}
                     <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0
-                      ${stage === s.n ? "bg-blue-600 text-white ring-2 ring-blue-200" : s.n < stage ? "bg-green-100 text-green-700" : canAccess(s.n) ? "bg-zinc-200 text-zinc-500" : "bg-zinc-100 text-zinc-300"}`}>
-                      {s.n < stage ? "✓" : s.n}
+                      ${stage === s.n ? "bg-blue-600 text-white ring-2 ring-blue-200" : complete ? "bg-green-100 text-green-700" : canAccess(s.n) ? "bg-zinc-200 text-zinc-500" : "bg-zinc-100 text-zinc-300"}`}>
+                      {complete ? "✓" : s.n}
                     </span>
                     {/* Outgoing line: fills when THIS stage is complete */}
                     <div className={`w-0.5 flex-1 min-h-[4px] ${isLast ? "bg-transparent" : complete ? "bg-green-400" : "bg-zinc-200"}`} />
@@ -114,7 +159,8 @@ export default function Pipeline() {
                   {/* Button */}
                   <button
                     onClick={() => goTo(s.n)}
-                    disabled={!canAccess(s.n) && s.n > stage}
+                    disabled={!canAccess(s.n)}
+                    aria-current={stage === s.n ? "step" : undefined}
                     className={`flex-1 text-left px-3 py-2 rounded-lg text-sm transition-colors
                       ${stage === s.n
                         ? "bg-blue-50 text-blue-700 font-semibold"
@@ -134,14 +180,19 @@ export default function Pipeline() {
 
       {/* Main content */}
       <main className="flex-1 p-6 overflow-auto">
-        {stage === 1 && <StagePayees payees={payees} setPayees={setPayees} onNext={() => goTo(2)} />}
-        {stage === 2 && <StageQuotas payees={payees} setPayees={setPayees} onNext={() => goTo(3)} onBack={() => goTo(1)} />}
-        {stage === 3 && <StagePlans plans={plans} setPlans={setPlans} onNext={() => goTo(4)} onBack={() => goTo(2)} />}
-        {stage === 4 && <StageEligibility payees={payees} setPayees={setPayees} plans={plans} setPlans={setPlans} onNext={() => goTo(5)} onBack={() => goTo(3)} />}
+        {samplePlan && <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm flex justify-between gap-4">
+          <div><strong>Sample workspace</strong><p>Fictional data. The unchanged sample pays USD 3,500.00. Follow the steps to download statements.</p></div>
+          <button onClick={exitSample} className="text-blue-700 underline shrink-0">Exit sample</button>
+        </div>}
+        {stage === 1 && !samplePlan && payees.length === 0 && <PipelineWelcome onSample={loadSample} loading={sampleLoading} error={sampleError} />}
+        {stage === 1 && <StagePayees payees={payees} setPayees={updatePayees} onNext={() => goTo(2)} />}
+        {stage === 2 && <StageQuotas payees={payees} setPayees={updatePayees} onNext={() => goTo(3)} onBack={() => goTo(1)} />}
+        {stage === 3 && <StagePlans plans={plans} setPlans={updatePlans} sample={!!samplePlan} onChanged={invalidate} onNext={() => goTo(4)} onBack={() => goTo(2)} />}
+        {stage === 4 && <StageEligibility payees={payees} setPayees={updatePayees} plans={plans} setPlans={updatePlans} sample={!!samplePlan} onNext={() => goTo(5)} onBack={() => goTo(3)} />}
         {stage === 5 && (
           <StageCrediting
-            payees={payees} transactions={transactions} setTransactions={setTransactions}
-            plans={plans} onCalculated={onCalculated}
+            payees={payees} transactions={transactions} setTransactions={updateTransactions}
+            txnFile={txnFile} setTxnFile={setTxnFile} samplePlan={samplePlan} onCalculated={onCalculated}
             onBack={() => goTo(4)}
           />
         )}

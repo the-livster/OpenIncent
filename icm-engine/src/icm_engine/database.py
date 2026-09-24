@@ -726,6 +726,14 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_calculation(self, calculation_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM calculations WHERE id=? AND org_id=?",
+                (calculation_id, self.org_id),
+            ).fetchone()
+        return dict(row) if row else None
+
     def list_calculations(self, plan_id: str | None = None, period: str | None = None,
                           limit: int = 50) -> list[dict[str, Any]]:
         with self._conn() as conn:
@@ -1044,4 +1052,3 @@ def _summarise_plan_error(exc: Exception) -> str:
         field, reason = lines[1], lines[2].split(" [type=")[0]
         return f"{lines[0]} ({field}: {reason})"[:250]
     return " ".join(lines)[:250]
-

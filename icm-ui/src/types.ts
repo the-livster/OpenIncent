@@ -25,11 +25,27 @@ export interface CalculateResponse {
   commissions: Commission[];
   ledger: LedgerEntry[];
   summary: Record<string, string>;
+  payouts?: { payee_id: string; name: string; period: string; currency: string; total: string }[];
+  payout_totals?: Record<string, string>;
+  sample?: boolean;
   calculation_ids?: Record<string, string>;
   attainment?: Record<string, unknown>[];
   draw_balances?: Record<string, string>;
   effective_period?: string;
   locked_periods?: string[];
+}
+
+/** A stored calculation read back from history. Same shape as a live run,
+ *  plus the record's own identity so the detail view can label it. */
+export interface CalculationResult extends CalculateResponse {
+  calculation_id: string;
+  plan_id: string;
+  period: string;
+  version: number;
+  status: string;
+  created_at: string;
+  locked: boolean;
+  ledger_truncated: boolean;
 }
 
 export interface PlanFromTextRequest {

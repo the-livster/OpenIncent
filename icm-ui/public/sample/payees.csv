@@ -1,0 +1,4 @@
+id,name,quota,plan_id,effective_from
+SAMPLE_ALEX,Alex Sample,10000,openincent_sample,2026-01-01
+SAMPLE_SAM,Sam Sample,10000,openincent_sample,2026-01-01
+SAMPLE_JO,Jo Sample,10000,openincent_sample,2026-01-01

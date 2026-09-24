@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { listPlans, savePlan } from "../api";
 import type { SavedPlan } from "../types";
 
@@ -7,14 +7,19 @@ interface Props {
   setPlans: (p: SavedPlan[]) => void;
   onNext: () => void;
   onBack: () => void;
+  sample?: boolean;
+  onChanged: () => void;
 }
 
-export default function StagePlans({ plans, setPlans, onNext, onBack }: Props) {
+export default function StagePlans({ plans, setPlans, onNext, onBack, sample, onChanged }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [status, setStatus] = useState("");
+  useEffect(() => { if (!sample) listPlans().then(setPlans).catch(() => setStatus("Could not load plans.")); }, [sample, setPlans]);
 
   const handleFiles = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    if (sample) return;
+    onChanged();
     setStatus(`Importing ${files.length} plan(s)...`);
     const existingIds = new Set(plans.map(p => p.id));
     let imported = 0;
@@ -40,7 +45,7 @@ export default function StagePlans({ plans, setPlans, onNext, onBack }: Props) {
     const refreshed = await listPlans();
     setPlans(refreshed);
     setStatus(imported > 0 ? `Imported ${imported} plan(s).` : "No valid plan files found.");
-  }, [plans, setPlans]);
+  }, [plans, setPlans, sample, onChanged]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -50,12 +55,13 @@ export default function StagePlans({ plans, setPlans, onNext, onBack }: Props) {
 
   return (
     <div className="max-w-3xl space-y-4">
-      <h1 className="text-lg font-bold text-zinc-800">2b. Plans</h1>
+      <h1 className="text-lg font-bold text-zinc-800">3. Plans</h1>
       <p className="text-sm text-zinc-500">
         Import commission plan YAML files. These will be available to assign to payees in the next step.
       </p>
 
-      <div
+      {sample && <p className="p-4 rounded-lg bg-blue-50 text-sm text-blue-800">The sample plan is ready: each person earns 10% of their sales. Continue to check who is assigned to it.</p>}
+      <div hidden={sample}
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
@@ -92,7 +98,7 @@ export default function StagePlans({ plans, setPlans, onNext, onBack }: Props) {
                   {p.name && <span className="text-zinc-500 ml-2">— {p.name}</span>}
                 </div>
                 <span className="text-xs text-zinc-400">
-                  {new Date(p.updated_at).toLocaleDateString()}
+                  {p.updated_at ? new Date(p.updated_at).toLocaleDateString() : "Sample"}
                 </span>
               </div>
             ))}

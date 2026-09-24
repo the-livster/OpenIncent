@@ -6,6 +6,8 @@ import TracePanel from "./TracePanel";
 interface Props {
   commissions: Commission[];
   ledger: LedgerEntry[];
+  /** Pins per-deal traces to one stored run; omitted for a live result. */
+  calculationId?: string;
 }
 
 const COLUMNS: { key: keyof Commission; label: string; align?: "right" }[] = [
@@ -20,7 +22,7 @@ const COLUMNS: { key: keyof Commission; label: string; align?: "right" }[] = [
 
 const PAGE_SIZE = 50;
 
-export default function CommissionsTable({ commissions, ledger }: Props) {
+export default function CommissionsTable({ commissions, ledger, calculationId }: Props) {
   const [sort, setSort] = useState<SortState>({ column: "commission_amount", dir: "desc" });
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 200);
@@ -271,6 +273,7 @@ export default function CommissionsTable({ commissions, ledger }: Props) {
           <TracePanel
             transactionId={traceTxn}
             payeeId={tracePayee}
+            calculationId={calculationId}
             onClose={() => { setTraceTxn(""); setTracePayee(""); }}
           />
         </>

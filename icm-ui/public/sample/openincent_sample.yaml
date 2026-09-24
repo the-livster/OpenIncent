@@ -1,0 +1,16 @@
+plan_id: openincent_sample
+name: Sample monthly commission
+period_type: monthly
+currency: USD
+rounding:
+  mode: half-up
+  places: 2
+rules:
+  - id: sales_commission
+    type: flat_rate
+    rate: 0.10
+assertions:
+  - name: Ten percent of sales
+    quota: "10000"
+    deals: ["10000"]
+    expect_total: "1000"

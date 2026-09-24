@@ -215,6 +215,8 @@ def _find_ui_dist() -> Path | None:
 
 def mount_static_ui(app: FastAPI, ui_dir: Path) -> None:
     app.mount("/assets", StaticFiles(directory=str(ui_dir / "assets")), name="ui_assets")
+    if (ui_dir / "sample").is_dir():
+        app.mount("/sample", StaticFiles(directory=str(ui_dir / "sample")), name="ui_samples")
 
     @app.get("/{full_path:path}", response_model=None)
     async def serve_spa(full_path: str = "") -> FileResponse | HTMLResponse:

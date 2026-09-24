@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { calculate, previewFile } from "../api";
-import type { CalculateResponse, SavedPlan } from "../types";
+import type { CalculateResponse } from "../types";
 import type { PayeeRow, TransactionRow } from "./Pipeline";
+import { payeeCsv } from "../payeeCsv";
 import { Td } from "./Table";
 import { useTableSort } from "./useTableSort";
 import { FilterBar, FilterTh, SortTh } from "./SortableTable";
@@ -10,26 +11,28 @@ interface Props {
   payees: PayeeRow[];
   transactions: TransactionRow[];
   setTransactions: (t: TransactionRow[]) => void;
-  plans: SavedPlan[];
+  txnFile: File | null;
+  setTxnFile: (file: File | null) => void;
+  samplePlan: File | null;
   onCalculated: (r: CalculateResponse) => void;
   onBack: () => void;
 }
 
-export default function StageCrediting({ payees, transactions: _transactions, setTransactions, plans: _plans, onCalculated, onBack }: Props) {
+export default function StageCrediting({ payees, transactions: preview, setTransactions, txnFile, setTxnFile, samplePlan, onCalculated, onBack }: Props) {
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [error, setError] = useState("");
   // Mirrors CalculatorWizard: the pre-flight blocks unrostered ids, so this
   // flow needs the same way past it or the Pipeline is simply stuck.
   const [unknownPayeesBlocked, setUnknownPayeesBlocked] = useState(false);
   const [allowUnknownPayees, setAllowUnknownPayees] = useState(false);
-  const [preview, setPreview] = useState<TransactionRow[]>(_transactions);
-  const [txnFile, setTxnFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   const { paginated, totalItems, page, totalPages, setPage, sortCol, sortDir, filters, toggleSort, setFilter, clearFilters } = useTableSort(preview, "id");
 
   async function handleFile(f: File) {
+    if (uploading) return;
+    setUploading(true); setError("");
     try {
-      setTxnFile(f);
       const p = await previewFile(f, "transactions");
       const rows = p.preview_rows.map((row, _i) => {
         const get = (target: string, fallback: string) => {
@@ -47,39 +50,22 @@ export default function StageCrediting({ payees, transactions: _transactions, se
           close_date: get("close_date", ""),
         };
       });
-      setPreview(rows);
-      setTransactions(rows);
-    } catch {
-      setError("Could not parse transactions file.");
-    }
+      if (!rows.length) throw new Error("The file contains no transactions.");
+      setTxnFile(f); setTransactions(rows);
+      setAllowUnknownPayees(false); setUnknownPayeesBlocked(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not parse transactions file.");
+    } finally { setUploading(false); }
   }
 
   async function runCalc() {
     if (preview.length === 0) { setError("No transactions loaded."); return; }
     setStatus("loading"); setError("");
-    // Every field PayeeRow carries must be written, or it is silently dropped:
-    // ramps and draws were absent here, so quota relief and recoverable draws
-    // simply did not apply to a Pipeline run.
-    const peeHeaders = [
-      "id","name","quota","plan_id","effective_from","effective_to","email",
-      "ramp_months","ramp_schedule","category_quotas","draw_amount","draw_recoverable",
-      "manager_id","manager_override","team_id",
-    ];
-    const peeCSV = [peeHeaders.join(","), ...payees.map(p =>
-      [p.id, p.name, p.quota, p.plan_id, p.effective_from, p.effective_to, p.email,
-       p.ramp_months, p.ramp_schedule, p.category_quotas, p.draw_amount, p.draw_recoverable,
-       p.manager_id, p.manager_override, p.team_id].map(v => `"${v ?? ""}"`).join(",")
-    )].join("\n");
-    const txnHeaders = ["id","payee_id","deal_id","period","amount","product","close_date"];
-    const txnCSV = [txnHeaders.join(","), ...preview.map(t =>
-      [t.id, t.payee_id, t.deal_id, t.period, t.amount, t.product, t.close_date].map(v => `"${v ?? ""}"`).join(",")
-    )].join("\n");
     try {
-      const pees = new File([peeCSV], "payees.csv", { type: "text/csv" });
-      // Send the original uploaded file so the FULL dataset is calculated,
-      // not the capped on-screen preview; fall back to reconstructed rows.
-      const txns = txnFile ?? new File([txnCSV], "transactions.csv", { type: "text/csv" });
-      const result = await calculate({ transactions: txns, payees: pees, allowUnknownPayees });
+      if (!txnFile) throw new Error("Upload the original transaction file before calculating.");
+      const pees = new File([payeeCsv(payees)], "payees.csv", { type: "text/csv" });
+      const result = await calculate({ transactions: txnFile, payees: pees, allowUnknownPayees,
+        plan: samplePlan ?? undefined, sample: !!samplePlan });
       onCalculated(result);
       setStatus("done");
     } catch (e: unknown) {
@@ -94,21 +80,22 @@ export default function StageCrediting({ payees, transactions: _transactions, se
     <div className="max-w-4xl space-y-4">
       <h1 className="text-lg font-bold text-zinc-800">5. Crediting</h1>
       <p className="text-sm text-zinc-500">Upload the period's deals (transactions).</p>
+      {error && preview.length === 0 && <p role="alert" className="p-3 bg-red-50 text-red-700 text-sm">{error}</p>}
       {preview.length === 0 ? (
         <div className="space-y-3">
           <div className="border-2 border-dashed border-zinc-300 rounded-xl p-8 text-center">
-            <p className="text-sm text-zinc-500 mb-3">Drop a CSV or XLSX file with columns: id, payee_id, amount, period</p>
+            <p className="text-sm text-zinc-500 mb-3">Choose a CSV or XLSX file with columns: id, payee_id, amount, period</p>
             <label className="inline-block px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
-              Upload Transactions
-              <input type="file" accept=".csv,.xlsx" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+              {uploading ? "Reading transactions..." : "Upload Transactions"}
+              <input aria-label="Upload Transactions" disabled={uploading} type="file" accept=".csv,.xlsx" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
             </label>
           </div>
         </div>
       ) : (
         <div className="space-y-3">
           <div className="flex items-center gap-3">
-            <span className="text-sm text-zinc-600">{preview.length} deals loaded</span>
-            <button onClick={() => { setPreview([]); setTransactions([]); setTxnFile(null); }} className="text-xs text-zinc-400 hover:text-zinc-600">Clear</button>
+            <span className="text-sm text-zinc-600">{txnFile?.name}: showing {preview.length} preview rows. The full original file will be calculated.</span>
+            <button disabled={status === "loading"} onClick={() => { setTransactions([]); setTxnFile(null); }} className="text-xs text-zinc-400 hover:text-zinc-600">Clear</button>
           </div>
           <FilterBar total={preview.length} shown={totalItems} filters={filters} onClear={clearFilters} />
           <table className="w-full text-xs border rounded-lg overflow-hidden">
@@ -145,7 +132,7 @@ export default function StageCrediting({ payees, transactions: _transactions, se
           )}
           <div className="flex justify-between items-center">
             <button onClick={onBack} className="text-sm text-zinc-500 hover:text-zinc-700">← Back</button>
-            <button onClick={runCalc} disabled={status === "loading"}
+            <button onClick={runCalc} disabled={status === "loading" || uploading || !txnFile}
               className="px-5 py-2.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 cursor-pointer">
               {status === "loading" ? "Calculating..." : "Calculate Commissions →"}
             </button>

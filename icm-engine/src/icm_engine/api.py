@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import tempfile
 from datetime import date as _date
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.routing import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -61,8 +62,10 @@ v1 = APIRouter(prefix="/v1")
 _db_cache: dict[tuple[str, str], Database] = {}
 
 
-def _get_db(org_id: str = "default") -> Database:
+def _get_db(org_id: str = "default", *, sample: bool = False) -> Database:
     path = os.environ.get("ICM_DB_PATH", str(default_db_path()))
+    if sample:
+        path = str(Path(path).with_suffix(".sample.db"))
     key = (path, org_id)
     if key not in _db_cache:
         db = Database(path, org_id=org_id)
@@ -111,6 +114,51 @@ def _serialize(obj: Any) -> Any:
     return obj
 
 
+def _present(
+    lines: list[Commission],
+    payees: list[Payee],
+    plans: dict[str, Plan],
+    multi_plan: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Decimal], list[dict[str, str]], dict[str, Decimal]]:
+    """Build the display payload for a set of commission lines.
+
+    Shared by /calculate and the stored-result endpoint, so a past run is
+    presented by exactly the code that presented it when it ran. A second
+    hand-written presenter would drift.
+    """
+    from icm_engine.reporting import payout_rows
+
+    # Resolve each payee's display-rounding policy from their plan (if set).
+    # Rounding is display-only; the stored/calculated values stay exact.
+    policy: dict[str, tuple[RoundingMode, int]] = {}
+    for payee in payees:
+        plan = plans.get(payee.plan_id)
+        if plan is not None and plan.rounding is not None:
+            policy[payee.id] = (parse_rounding_mode(plan.rounding.mode), plan.rounding.places)
+
+    commissions: list[dict[str, Any]] = []
+    summary: dict[str, Decimal] = {}
+    for c in lines:
+        d = c.model_dump()
+        amt = c.commission_amount
+        pol = policy.get(c.payee_id)
+        if pol is not None:
+            amt = round_money(amt, pol[0], pol[1])
+            d["commission_amount"] = amt
+            d["base_amount"] = round_money(c.base_amount, pol[0], pol[1])
+        commissions.append(d)
+        # Summary totals the ROUNDED lines so the UI reconciles to them.
+        summary[c.payee_id] = summary.get(c.payee_id, Decimal("0")) + amt
+
+    payouts = payout_rows(lines, payees, plans, multi_plan)
+    payout_totals: dict[str, Decimal] = {}
+    for row in payouts:
+        currency = row["currency"]
+        payout_totals[currency] = payout_totals.get(currency, Decimal(0)) + Decimal(row["total"])
+
+    return commissions, summary, payouts, payout_totals
+
+
 # ------------------------------------------------------------------
 # v1: Calculate
 # ------------------------------------------------------------------
@@ -125,6 +173,7 @@ async def calculate(
     effective_period: str | None = None,
     allow_recalculate_locked: bool = True,
     allow_unknown_payees: bool = False,
+    sample: bool = Form(False),
     org: str = Depends(get_org),
 ) -> dict[str, Any]:
     """Calculate commissions.
@@ -136,7 +185,7 @@ async def calculate(
     With a payee file: one-off / first-time import (file-based).
     Without a payee file: uses the saved roster from the DB.
     """
-    db = _get_db(org)
+    db = _get_db(org, sample=sample)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -203,8 +252,6 @@ async def calculate(
                     status_code=400,
                     detail={"error": f"No active payees for period {effective_period or 'any'}."},
                 )
-
-        db = _get_db(org)
 
         # --- Resolve plan(s) ---
         plan_library: dict[str, Plan] = {}
@@ -353,33 +400,15 @@ async def calculate(
                 "traceback": _tb.format_exc(),
             }) from e
 
-        # Resolve each payee's display-rounding policy from their plan (if set).
-        # Rounding is display-only; the stored/calculated values stay exact.
-        _payee_policy: dict[str, tuple[RoundingMode, int]] = {}
-        for _pp in payee_list:
-            _plan = plan_library.get(_pp.plan_id)
-            if _plan is not None and _plan.rounding is not None:
-                _payee_policy[_pp.id] = (
-                    parse_rounding_mode(_plan.rounding.mode), _plan.rounding.places,
-                )
-
-        commissions = []
-        summary: dict[str, Decimal] = {}
-        for c in result.commissions:
-            d = c.model_dump()
-            amt = c.commission_amount
-            pol = _payee_policy.get(c.payee_id)
-            if pol is not None:
-                amt = round_money(amt, pol[0], pol[1])
-                d["commission_amount"] = amt
-                d["base_amount"] = round_money(c.base_amount, pol[0], pol[1])
-            commissions.append(d)
-            # Summary totals the ROUNDED lines so the UI reconciles to them.
-            summary[c.payee_id] = summary.get(c.payee_id, Decimal("0")) + amt
-
+        commissions, summary, payouts, payout_totals = _present(
+            result.commissions, payee_list, plan_library, ctx.multi_plan,
+        )
         ledger_dicts = [e.to_dict() for e in result.ledger]
 
         return cast(dict[str, Any], _serialize({
+            "payouts": payouts,
+            "payout_totals": {k: str(v) for k, v in payout_totals.items()},
+            "sample": sample,
             "calculation_ids": calc_ids,
             "commissions": commissions,
             "ledger": ledger_dicts,
@@ -642,6 +671,69 @@ def list_transactions(
 @v1.get("/calculations/{calculation_id}/inputs")
 def get_calculation_inputs(calculation_id: str, org: str = Depends(get_org)) -> list[dict[str, Any]]:
     return _get_db(org).get_transactions_for_calculation(calculation_id)
+
+
+# A run's ledger is normally in the hundreds; this ceiling only guards against
+# loading an unbounded result set into one response.
+LEDGER_TRACE_LIMIT = 50_000
+
+
+@v1.get("/calculations/{calculation_id}/result")
+def get_calculation_result(
+    calculation_id: str, sample: bool = False, org: str = Depends(get_org),
+) -> dict[str, Any]:
+    """Return a stored calculation in the same shape as POST /calculate.
+
+    Reads the frozen run back: its commission lines, its ledger, and the
+    payees/plans snapshot taken when it ran. It never recalculates, so later
+    edits to the roster or the plan library cannot change a past result.
+    """
+    db = _get_db(org, sample=sample)
+    record = db.get_calculation(calculation_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail={"error": "Calculation not found"})
+
+    snapshot = json.loads(record["input_summary"]).get("statement_snapshot")
+    if not snapshot:
+        raise HTTPException(status_code=409, detail={
+            "error": "This older calculation has no statement snapshot. "
+                     "Calculate it again before viewing.",
+        })
+
+    payees = [Payee.model_validate(p) for p in snapshot["payees"]]
+    plans = {key: Plan.model_validate(value) for key, value in snapshot["plans"].items()}
+    lines = [Commission.model_validate(c) for c in db.get_commission_lines(calculation_id)]
+
+    commissions, summary, payouts, payout_totals = _present(
+        lines, payees, plans, snapshot["multi_plan"],
+    )
+
+    ledger = db.query_ledger(calculation_id=calculation_id, limit=LEDGER_TRACE_LIMIT)
+    # A silently truncated ledger explains the number wrongly but persuasively,
+    # which is worse than saying nothing. Report the truncation instead.
+    ledger_truncated = len(ledger) >= LEDGER_TRACE_LIMIT
+
+    period = record["period"]
+    return cast(dict[str, Any], _serialize({
+        "payouts": payouts,
+        "payout_totals": {k: str(v) for k, v in payout_totals.items()},
+        "sample": sample,
+        # Keyed by period, matching persist(), so the export endpoint and the
+        # UI's export helper accept this response unchanged.
+        "calculation_ids": {period: calculation_id},
+        "commissions": commissions,
+        "ledger": ledger,
+        "summary": {k: str(v) for k, v in summary.items()},
+        "attainment": snapshot.get("attainment", []),
+        "ledger_truncated": ledger_truncated,
+        "calculation_id": calculation_id,
+        "plan_id": record["plan_id"],
+        "period": period,
+        "version": record["version"],
+        "status": record["status"],
+        "created_at": record["created_at"],
+        "locked": db.is_locked(record["plan_id"], period),
+    }))
 
 
 # ------------------------------------------------------------------
@@ -1351,6 +1443,85 @@ async def export_statements(
 # ------------------------------------------------------------------
 # Mount v1 router
 # ------------------------------------------------------------------
+
+@v1.post("/payees/parse")
+async def parse_payee_file(
+    file: UploadFile = File(...),  # noqa: B008
+    org: str = Depends(get_org),
+) -> list[dict[str, Any]]:
+    """Validate the entire uploaded roster without changing the saved roster."""
+    import json
+    from xml.etree.ElementTree import ParseError
+    from zipfile import BadZipFile
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, detail={"error": "Payees file exceeds limit"})
+    ext = Path(file.filename or "payees.csv").suffix.lower()
+    if ext not in {".csv", ".xlsx"}:
+        raise HTTPException(400, detail={"error": "Choose a CSV or XLSX roster."})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / f"payees{ext}"
+        path.write_bytes(content)
+        try:
+            payees, _ = load_payees(path)
+            if not payees:
+                raise ValueError("The roster contains no payees.")
+            if len({p.id for p in payees}) != len(payees):
+                raise ValueError("Duplicate payee IDs. Each person needs a unique ID.")
+        except (ValueError, OSError, BadZipFile, KeyError, ParseError) as exc:
+            raise HTTPException(400, detail={"error": "Invalid roster", "detail": str(exc)}) from exc
+    return [
+        {"id": p.id, "name": p.name, "quota": str(p.quota), "plan_id": p.plan_id,
+         "quotas": {k: str(v) for k, v in p.quotas.items()},
+         "effective_from": str(p.effective_from or ""), "effective_to": str(p.effective_to or ""),
+         "email": p.email or "", "ramp_months": str(p.ramp.months) if p.ramp else "",
+         "ramp_schedule": " ".join(str(v) for v in p.ramp.schedule) if p.ramp else "",
+         "category_quotas": json.dumps({k: str(v) for k, v in p.category_quotas.items()}),
+         "draw_amount": str(p.draw.amount) if p.draw else "",
+         "draw_recoverable": str(p.draw.recoverable).lower() if p.draw else "",
+         "manager_id": p.manager_id,
+         "manager_override": str(p.manager_override) if p.manager_override is not None else "",
+         "team_id": p.team_id}
+        for p in payees
+    ]
+
+
+class SavedRunExportRequest(BaseModel):
+    calculation_ids: list[str] = Field(min_length=1, max_length=1000)
+    formats: list[Literal["pdf", "xlsx", "html"]] = Field(default=["xlsx"], min_length=1)
+    sample: bool = False
+
+
+@v1.post("/calculations/export")
+def export_calculation(req: SavedRunExportRequest, org: str = Depends(get_org)) -> Response:
+    from uuid import uuid4
+
+    from icm_engine.reporting import export_saved_run
+
+    if len(set(req.calculation_ids)) != len(req.calculation_ids):
+        raise HTTPException(400, detail={"error": "Duplicate calculation IDs."})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            content = export_saved_run(
+                _get_db(org, sample=req.sample), req.calculation_ids,
+                tuple(dict.fromkeys(req.formats)), Path(tmpdir),
+            )
+        except LookupError as exc:
+            raise HTTPException(404, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(409, detail={"error": str(exc)}) from exc
+    filename = f"{'sample_' if req.sample else ''}commission_statements_{uuid4().hex[:8]}.zip"
+    if os.environ.get("ICM_DESKTOP") == "1":
+        downloads = Path.home() / "Downloads"
+        downloads.mkdir(parents=True, exist_ok=True)
+        out = downloads / filename
+        out.write_bytes(content)
+        return JSONResponse({"saved_to": str(out)})
+    return Response(content, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+    })
+
 
 app.include_router(v1)
 

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { PayeeRow } from "./Pipeline";
-import { previewFile } from "../api";
+import { parsePayees } from "../api";
 import { Td } from "./Table";
 import { useTableSort } from "./useTableSort";
 import { FilterBar, FilterTh, SortTh } from "./SortableTable";
@@ -13,85 +13,32 @@ interface Props {
 
 export default function StagePayees({ payees, setPayees, onNext }: Props) {
   const [loading, setLoading] = useState(false);
-  // The roster is built from /preview, which returns at most 50 rows. Anyone
-  // past that would be dropped from the run without a word, so say so.
-  const [truncated, setTruncated] = useState(false);
+  const [error, setError] = useState("");
 
   const { paginated, totalItems, page, totalPages, setPage, sortCol, sortDir, filters, toggleSort, setFilter, clearFilters } = useTableSort(payees, "id");
 
   async function handleFile(f: File) {
-    setLoading(true);
+    if (loading) return;
+    setLoading(true); setError("");
     try {
-      const preview = await previewFile(f, "payees");
-      const rows: PayeeRow[] = [];
-      setTruncated(preview.preview_rows.length >= 50);
-      for (const row of preview.preview_rows.slice(0, 50)) {
-        const get = (target: string, fallback: string) => {
-          const src = preview.mapping[target];
-          if (src !== undefined) {
-            const idx = preview.headers.indexOf(src);
-            if (idx >= 0 && idx < row.length) return String(row[idx]);
-          }
-          return fallback;
-        };
-        rows.push({
-          id: get("id", ""), name: get("name", ""), quota: get("quota", "0"),
-          plan_id: get("plan_id", ""), effective_from: get("effective_from", ""),
-          effective_to: get("effective_to", ""), email: get("email", ""),
-          ramp_months: get("ramp_months", ""), ramp_schedule: get("ramp_schedule", ""),
-          category_quotas: get("category_quotas", "{}"),
-          draw_amount: get("draw_amount", ""), draw_recoverable: get("draw_recoverable", ""),
-          manager_id: get("manager_id", ""), manager_override: get("manager_override", ""),
-          team_id: get("team_id", ""),
-        });
-      }
-      setPayees(rows);
-    } catch {
-      const text = await f.text();
-      const lines = text.trim().split(/\r?\n/);
-      if (lines.length < 2) return;
-      const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
-      const rows: PayeeRow[] = [];
-      for (let i = 1; i < Math.min(lines.length, 51); i++) {
-        const cells = lines[i].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
-        const get = (names: string[]) => {
-          for (const n of names) { const idx = headers.indexOf(n); if (idx >= 0) return cells[idx] || ""; }
-          return "";
-        };
-        rows.push({
-          id: cells[0] || "", name: cells[1] || "", quota: cells[2] || "0",
-          plan_id: cells[3] || "", effective_from: cells[4] || "",
-          effective_to: cells[5] || "", email: cells[6] || "",
-          ramp_months: get(["ramp_months"]), ramp_schedule: get(["ramp_schedule"]),
-          category_quotas: get(["category_quotas"]) || "{}",
-          draw_amount: get(["draw_amount"]), draw_recoverable: get(["draw_recoverable"]),
-          manager_id: get(["manager_id", "manager"]),
-          manager_override: get(["manager_override", "manager rate"]),
-          team_id: get(["team_id", "team"]),
-        });
-      }
-      setPayees(rows);
-    }
-    setLoading(false);
+      const rows = await parsePayees(f);
+      setPayees(rows); setPage(1); clearFilters();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not import the roster.");
+    } finally { setLoading(false); }
   }
 
   return (
     <div className="max-w-3xl space-y-4">
       <h1 className="text-lg font-bold text-zinc-800">1. Payees</h1>
       <p className="text-sm text-zinc-500">Upload your payee roster (CSV or XLSX). Columns: id, name, quota, plan_id, effective_from.</p>
-      {truncated && (
-        <div className="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs">
-          Only the first {payees.length} payees were loaded — this screen reads a
-          preview of the file, not all of it. A larger roster will not calculate
-          in full here. Import it under Payees, or use the CLI.
-        </div>
-      )}
+      {error && <p role="alert" className="p-3 rounded-lg bg-red-50 text-red-700 text-sm whitespace-pre-wrap">{error}</p>}
       {payees.length === 0 ? (
         <div className="border-2 border-dashed border-zinc-300 rounded-xl p-8 text-center space-y-3">
-          <p className="text-sm text-zinc-500">Drop a CSV or XLSX file with columns: id, name, quota, plan_id, effective_from</p>
+          <p className="text-sm text-zinc-500">Choose a CSV or XLSX file with columns: id, name, quota, plan_id, effective_from</p>
           <label className="inline-block px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
             {loading ? "Loading..." : "Upload Payees"}
-            <input type="file" accept=".csv,.xlsx" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+            <input aria-label="Upload Payees" disabled={loading} type="file" accept=".csv,.xlsx" className="hidden" onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) handleFile(f); }} />
           </label>
         </div>
       ) : (
@@ -135,10 +82,10 @@ export default function StagePayees({ payees, setPayees, onNext }: Props) {
           <div className="flex gap-2">
             <button onClick={() => setPayees([])} className="text-xs text-zinc-500 hover:text-zinc-700">Clear</button>
             <button onClick={() => document.getElementById("payee-reupload")?.click()} className="text-xs text-blue-600 hover:underline">Re-upload</button>
-            <input id="payee-reupload" type="file" accept=".csv,.xlsx" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+            <input id="payee-reupload" aria-label="Upload Payees" disabled={loading} type="file" accept=".csv,.xlsx" className="hidden" onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) handleFile(f); }} />
           </div>
           <div className="flex justify-end">
-            <button onClick={onNext} className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
+            <button disabled={loading} onClick={onNext} className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
               {payees.length} payees loaded →
             </button>
           </div>

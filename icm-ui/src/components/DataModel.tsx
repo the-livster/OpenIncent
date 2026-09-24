@@ -30,10 +30,20 @@ export default function DataModel() {
   const [mappings, setMappings] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [txnPeriod, setTxnPeriod] = useState("");
 
   useEffect(() => {
     loadAll();
   }, []);
+
+  // A period filter beats a truncated list: the server already supports it.
+  useEffect(() => {
+    let cancelled = false;
+    listTransactions(txnPeriod || undefined)
+      .then(rows => { if (!cancelled) setTransactions(rows); })
+      .catch(() => { /* the section simply stays as it was */ });
+    return () => { cancelled = true; };
+  }, [txnPeriod]);
 
   async function loadAll() {
     setLoading(true);
@@ -145,6 +155,18 @@ export default function DataModel() {
 
       {/* Transactions */}
       <Section label="Transactions" count={transactions.length} open={sectionOpen("transactions")} onToggle={() => toggle("transactions")}>
+        <div className="mb-2">
+          <label className="text-xs text-zinc-500">
+            Period
+            <input
+              aria-label="Filter transactions by period"
+              value={txnPeriod}
+              onChange={e => setTxnPeriod(e.target.value)}
+              placeholder="all periods"
+              className="ml-2 px-2 py-1 text-xs border border-zinc-300 rounded w-32"
+            />
+          </label>
+        </div>
         {transactions.length === 0 ? <Empty /> : (
           <table className="w-full text-xs">
             <thead>
@@ -153,7 +175,7 @@ export default function DataModel() {
               </tr>
             </thead>
             <tbody>
-              {transactions.slice(0, 200).map(t => (
+              {transactions.map(t => (
                 <tr key={t.id} className="border-b border-zinc-100 hover:bg-zinc-50">
                   <Td mono>{t.id}</Td>
                   <Td mono>{t.payee_id}</Td>
@@ -163,9 +185,6 @@ export default function DataModel() {
                   <Td>{t.product ?? ""}</Td>
                 </tr>
               ))}
-              {transactions.length > 200 && (
-                <tr><td colSpan={6} className="p-2 text-zinc-400 text-center">+ {transactions.length - 200} more</td></tr>
-              )}
             </tbody>
           </table>
         )}
@@ -183,7 +202,7 @@ export default function DataModel() {
             <tbody>
               {calculations.map(c => (
                 <tr key={c.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                  <Td mono>{c.id.slice(0, 12)}</Td>
+                  <Td mono className="select-all">{c.id}</Td>
                   <Td mono>{c.plan_id}</Td>
                   <Td mono>{c.period}</Td>
                   <Td>{c.version}</Td>

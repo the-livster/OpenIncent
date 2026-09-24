@@ -5,10 +5,12 @@ import type { OrderTrace, TraceStep } from "../types";
 interface Props {
   transactionId: string;
   payeeId: string;
+  /** Pins the trace to one stored run; omitted for a live result. */
+  calculationId?: string;
   onClose: () => void;
 }
 
-export default function TracePanel({ transactionId, payeeId, onClose }: Props) {
+export default function TracePanel({ transactionId, payeeId, calculationId, onClose }: Props) {
   const [trace, setTrace] = useState<OrderTrace | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -18,12 +20,12 @@ export default function TracePanel({ transactionId, payeeId, onClose }: Props) {
     let cancelled = false;
     setLoading(true);
     setError("");
-    fetchTrace(transactionId, payeeId)
+    fetchTrace(transactionId, payeeId, calculationId)
       .then((data) => { if (!cancelled) setTrace(data); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Failed"); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [transactionId, payeeId]);
+  }, [transactionId, payeeId, calculationId]);
 
   const toggleEvent = useCallback((stepIdx: number) => {
     setExpandedEvents((prev) => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { calculate, listPlans, exportStatements, previewFile } from "../api";
+import { calculate, listPlans, exportSavedStatements, previewFile } from "../api";
 import PlanBuilder, { type PlanBuilderPlanData } from "./PlanBuilder";
 import DropZone from "./DropZone";
 import CalcResultsView from "./CalcResultsView";
@@ -189,31 +189,22 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
     }
   }, [planSource, selectedPlanId, plans, planFile, payeeFile, buildMappedFile, buildAutoPayees, allowUnknownPayees]);
 
-  // Export XLSX statements
+  const [exportMessage, setExportMessage] = useState("");
   const handleExport = useCallback(async () => {
-    let plan: File | null | undefined = planFile;
-    if (planSource === "library" && selectedPlanId) {
-      const found = plans.find(p => p.id === selectedPlanId);
-      if (!found) {
-        setError("Selected plan no longer exists. Please select another.");
-        return;
-      }
-      plan = new File([found.yaml_content], "plan.yaml", { type: "text/yaml" });
-    }
-    const txns = buildMappedFile();
-    const pees = payeeFile || buildAutoPayees();
-    if (!plan || !txns) return;
+    if (!data) return;
     try {
-      await exportStatements({ plan, transactions: txns, payees: pees });
+      const savedTo = await exportSavedStatements(data);
+      setExportMessage(savedTo ? "Statements saved to " + savedTo : "Statements downloaded.");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Export failed");
     }
-  }, [planSource, selectedPlanId, plans, planFile, payeeFile, buildMappedFile, buildAutoPayees]);
+  }, [data]);
 
   const stepIndex = ["data", "map", "payees", "plan", "results"].indexOf(step);
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
+      {exportMessage && <p role="status" className="text-sm text-green-700">{exportMessage}</p>}
       {/* Step indicator */}
       {step !== "results" && (
         <div className="flex items-center gap-2">
@@ -603,4 +594,3 @@ function PlanBuilderWizard({ onUse, onCancel }: { onUse: (yaml: string) => void;
     />
   );
 }
-

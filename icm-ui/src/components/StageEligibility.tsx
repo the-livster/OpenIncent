@@ -11,21 +11,22 @@ interface Props {
   setPlans: (p: SavedPlan[]) => void;
   onNext: () => void;
   onBack: () => void;
+  sample?: boolean;
 }
 
 type SortCol = "id" | "name" | "plan_id";
 
 type QuickFilter = null | "unassigned" | "wrong";
 
-export default function StageEligibility({ payees, setPayees, plans, setPlans, onNext, onBack }: Props) {
+export default function StageEligibility({ payees, setPayees, plans, setPlans, onNext, onBack, sample }: Props) {
   const [sortCol, setSortCol] = useState<SortCol>("id");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
   const [quickFilter, setQuickFilter] = useState<QuickFilter>(null);
 
   useEffect(() => {
-    listPlans().then(setPlans).catch(() => {});
-  }, [setPlans]);
+    if (!sample) listPlans().then(setPlans).catch(() => {});
+  }, [setPlans, sample]);
 
   function update(payeeId: string, field: keyof PayeeRow, value: string) {
     setPayees(payees.map(p => p.id === payeeId ? { ...p, [field]: value } : p));

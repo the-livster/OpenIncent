@@ -6,6 +6,7 @@ loading, draw-balance management, engine invocation, and database persistence.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import date as _date
 from decimal import Decimal
@@ -230,6 +231,19 @@ def persist(
             period_plan[p] = pid
 
     calc_ids: dict[str, str] = {}
+    # Freeze the statement context with the run. Later edits to a roster or
+    # library must never change an export of results already reviewed.
+    snapshot = {
+        "run_id": uuid.uuid4().hex,
+        "payees": [p.model_dump(mode="json") for p in ctx.payees],
+        "plans": {key: p.model_dump(mode="json") for key, p in ctx.plan_library.items()},
+        "multi_plan": ctx.multi_plan,
+        "attainment": [
+            {"payee_id": a.payee_id, "period": a.period, "bookings": str(a.bookings),
+             "quota": str(a.quota), "attainment_pct": str(a.attainment_pct)}
+            for a in result.attainment
+        ],
+    }
     for period_key, comms in sorted(by_period.items()):
         plan_for_period = period_plan.get(period_key, list(ctx.plan_library.keys())[0])
         calc_id = ctx.db.record_calculation(
@@ -238,6 +252,7 @@ def persist(
             input_summary={
                 "txn_count": len(ctx.transactions),
                 "payee_count": len(ctx.payees),
+                "statement_snapshot": snapshot,
             },
         )
         ctx.db.save_commission_lines(calc_id, comms)

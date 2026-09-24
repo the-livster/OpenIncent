@@ -1,5 +1,6 @@
 import type {
   CalculateResponse,
+  CalculationResult,
   Payee,
   PlanFromTextRequest,
   PlanFromTextResponse,
@@ -18,7 +19,7 @@ function v1(path: string): string {
 }
 
 export async function calculate(
-  args: { plan?: File; transactions: File; payees?: File; allowUnknownPayees?: boolean },
+  args: { plan?: File; transactions: File; payees?: File; allowUnknownPayees?: boolean; sample?: boolean },
   signal?: AbortSignal,
 ): Promise<CalculateResponse> {
   const form = new FormData();
@@ -29,6 +30,7 @@ export async function calculate(
     form.append("payees", args.payees);
   }
   form.append("transactions", args.transactions);
+  if (args.sample) form.append("sample", "true");
 
   const query = args.allowUnknownPayees ? "?allow_unknown_payees=true" : "";
   const res = await fetch(v1("/calculate") + query, { method: "POST", body: form, signal });
@@ -215,6 +217,10 @@ export async function exportStatements(args: {
     throw new Error(String(detail?.detail ?? detail?.error ?? "Export failed"));
   }
 
+  return downloadExport(res);
+}
+
+async function downloadExport(res: Response): Promise<string | undefined> {
   // Desktop mode: server returns JSON with saved path
   const contentType = res.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
@@ -227,7 +233,7 @@ export async function exportStatements(args: {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "commission_statements.zip";
+  a.download = res.headers.get("content-disposition")?.match(/filename="?([^";]+)"?/)?.[1] ?? "commission_statements.zip";
   a.style.display = "none";
   document.body.appendChild(a);
   a.click();
@@ -236,14 +242,48 @@ export async function exportStatements(args: {
   return undefined;
 }
 
+async function requireSuccess(res: Response, fallback: string): Promise<void> {
+  if (res.ok) return;
+  const body = await res.json().catch(() => ({}));
+  const detail = body.detail;
+  throw new Error(typeof detail === "string" ? detail : detail?.detail ?? detail?.error ?? fallback);
+}
+
+export async function parsePayees(file: File): Promise<import("./components/Pipeline").PayeeRow[]> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(v1("/payees/parse"), { method: "POST", body: form });
+  await requireSuccess(res, "Could not import the roster. Check the file and try again.");
+  return res.json();
+}
+
+export async function exportSavedStatements(result: CalculateResponse, formats = ["xlsx"]): Promise<string | undefined> {
+  const ids = Object.values(result.calculation_ids ?? {});
+  if (!ids.length) throw new Error("There are no saved payouts to export. Calculate commissions first.");
+  const res = await fetch(v1("/calculations/export"), {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ calculation_ids: ids, formats, sample: result.sample ?? false }),
+  });
+  await requireSuccess(res, "Could not export statements. Please try again.");
+  return downloadExport(res);
+}
+
 // ------------------------------------------------------------------
 // Order trace
 // ------------------------------------------------------------------
 
 import type { OrderTrace } from "./types";
 
-export async function fetchTrace(transaction_id: string, payee_id: string, signal?: AbortSignal): Promise<OrderTrace> {
+export async function fetchTrace(
+  transaction_id: string,
+  payee_id: string,
+  calculation_id?: string,
+  signal?: AbortSignal,
+): Promise<OrderTrace> {
   const params = new URLSearchParams({ transaction_id, payee_id });
+  // Without this the ledger query spans every version of the period, so a
+  // recalculated run traces against a mix of its own history.
+  if (calculation_id) params.set("calculation_id", calculation_id);
   const res = await fetch(v1(`/trace?${params}`), { signal });
   if (!res.ok) {
     const text = await res.text();
@@ -394,6 +434,26 @@ export async function listTransactions(period?: string, signal?: AbortSignal): P
 
 export async function listPeriods(plan_id: string, signal?: AbortSignal): Promise<PeriodStatusRow[]> {
   const res = await fetch(v1(`/periods/${encodeURIComponent(plan_id)}`), { signal });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getCalculationResult(
+  calculation_id: string,
+  sample = false,
+  signal?: AbortSignal,
+): Promise<CalculationResult> {
+  const qs = sample ? "?sample=true" : "";
+  const res = await fetch(v1(`/calculations/${encodeURIComponent(calculation_id)}/result${qs}`), { signal });
+  await requireSuccess(res, "Could not open this calculation.");
+  return res.json();
+}
+
+export async function getCalculationInputs(
+  calculation_id: string,
+  signal?: AbortSignal,
+): Promise<TransactionRow[]> {
+  const res = await fetch(v1(`/calculations/${encodeURIComponent(calculation_id)}/inputs`), { signal });
   if (!res.ok) return [];
   return res.json();
 }

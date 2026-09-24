@@ -1,0 +1,4 @@
+id,payee_id,deal_id,period,amount,product,close_date
+SAMPLE_T1,SAMPLE_ALEX,SAMPLE_D1,2026-08,12000,Subscription,2026-08-12
+SAMPLE_T2,SAMPLE_SAM,SAMPLE_D2,2026-08,8000,Subscription,2026-08-15
+SAMPLE_T3,SAMPLE_JO,SAMPLE_D3,2026-08,15000,Subscription,2026-08-20
