@@ -16,7 +16,7 @@ from rich.table import Table
 
 from icm_engine.database import Database, default_db_path
 from icm_engine.engine import CalculationResult, CommissionEngine
-from icm_engine.exceptions import MissingAPIKeyError, PlanGenerationError, ReversalError
+from icm_engine.exceptions import MissingAPIKeyError, PlanDataError, PlanGenerationError
 from icm_engine.ledger import write_ledger_jsonl
 from icm_engine.loader import load_payees, load_plan, load_transactions
 from icm_engine.models import Commission, Payee, Plan, Transaction
@@ -29,15 +29,15 @@ console = Console()
 
 
 @contextmanager
-def _refused_reversals() -> Iterator[None]:
-    """Report negative lines the engine refuses to price, not a traceback.
+def _refused_lines() -> Iterator[None]:
+    """Report deal lines the engine refuses to price, not a traceback.
 
     Same shape as the pre-flight errors: the reader is a comp manager holding
     a deal file, and each message says which line and what to do about it.
     """
     try:
         yield
-    except ReversalError as e:
+    except PlanDataError as e:
         for problem in e.problems:
             console.print(f"[red]Error:[/red] {problem}")
         console.print(
@@ -252,7 +252,7 @@ def main(
     if no_db or db is None:
         # No-DB mode: direct engine call, no locking or persistence
         engine = CommissionEngine()
-        with _refused_reversals():
+        with _refused_lines():
             if use_multi_plan:
                 result = engine.calculate_run(
                     plan_library, txns, payee_list,
@@ -292,7 +292,7 @@ def main(
                 f"Late transactions will be attributed to {ctx.effective_period}.[/yellow]"
             )
 
-        with _refused_reversals():
+        with _refused_lines():
             result = execute(ctx)
         calc_ids = persist(ctx, result)
 
@@ -540,7 +540,7 @@ def _reconcile_compute(
     txns, _ = load_transactions(transactions)
     payee_list, _ = load_payees(payees)
     engine = CommissionEngine()
-    with _refused_reversals():
+    with _refused_lines():
         if plan:
             result = engine.calculate(load_plan(plan), txns, payee_list)
         else:
@@ -1000,7 +1000,7 @@ def statements_command(
         from icm_engine.loader import load_mbos
         mbos_list = load_mbos(mbos_file)
 
-    with _refused_reversals():
+    with _refused_lines():
         if len(plan_library) > 1:
             result = CommissionEngine().calculate_run(
                 plan_library, txn_list, payee_list,

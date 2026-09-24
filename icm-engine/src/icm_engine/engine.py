@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from icm_engine.exceptions import ReversalError
+from icm_engine.exceptions import PlanDataError, ReversalError
 from icm_engine.filter_parser import compile_filter
 from icm_engine.formula import FormulaEvalError, compile_formula
 from icm_engine.ledger import LedgerEntry
@@ -14,10 +14,12 @@ from icm_engine.models import (
     AcceleratorRule,
     Commission,
     Credit,
+    Draw,
     FlatRateRule,
     FormulaRule,
     Payee,
     Plan,
+    RedlineRule,
     Tier,
     TieredRule,
     Transaction,
@@ -1179,6 +1181,8 @@ class CommissionEngine:
                     quota_overrides=quota_overrides,
                     attainment=attainment,
                 )
+            elif isinstance(rule, RedlineRule):
+                commissions, ledger = self._calc_redline(rule, synth_txns, pt)
             else:
                 continue
 
@@ -1266,12 +1270,19 @@ class CommissionEngine:
                 draw = getattr(p, "draw", None)
             if draw is None:
                 draw = getattr(plan, "draw", None)
+            # Carrying a deficit forward is a recoverable draw of zero: the
+            # period pays at least 0, the shortfall becomes a balance, and
+            # later commission pays it back. It shares the draw's balance.
+            deficit_only = draw is None and plan.negative_balance == "carry_forward"
+            if deficit_only:
+                draw = Draw(amount=Decimal("0"), recoverable=True)
             if draw is None:
                 continue
 
             draw_amt = getattr(draw, "amount", Decimal("0"))
             recoverable = bool(getattr(draw, "recoverable", False))
             prior_bal = (prior_draw_balances or {}).get(pid, Decimal("0"))
+            line_rule = "balance" if deficit_only else "draw"
 
             # Sum this payee's post-cap commission per period
             by_period: dict[str, Decimal] = {}
@@ -1283,7 +1294,7 @@ class CommissionEngine:
                 # Apply activity fraction to draw amount
                 af_draw = fractions.get((pid, period), Decimal("1"))
                 effective_draw = draw_amt * af_draw
-                if effective_draw == 0:
+                if effective_draw == 0 and not deficit_only:
                     continue
                 if recoverable:
                     available = max(Decimal("0"), earned - effective_draw)
@@ -1295,22 +1306,30 @@ class CommissionEngine:
                     if recovered > 0:
                         all_commissions.append(Commission(
                             transaction_id="*", payee_id=pid, period=period,
-                            rule_id="draw", base_amount=-recovered, rate=Decimal("1"),
+                            rule_id=line_rule, base_amount=-recovered, rate=Decimal("1"),
                             commission_amount=-recovered,
-                            notes=f"draw_recovery: recovered {recovered} toward draw {effective_draw}",
+                            notes=(
+                                f"balance_recovered: {recovered} of an earlier deficit of {prior_bal}"
+                                if deficit_only else
+                                f"draw_recovery: recovered {recovered} toward draw {effective_draw}"
+                            ),
                         ))
                     if earned < effective_draw:
                         topup = effective_draw - earned
                         all_commissions.append(Commission(
                             transaction_id="*", payee_id=pid, period=period,
-                            rule_id="draw", base_amount=topup, rate=Decimal("1"),
+                            rule_id=line_rule, base_amount=topup, rate=Decimal("1"),
                             commission_amount=topup,
-                            notes=f"draw_topup: floor {effective_draw}, earned {earned}",
+                            notes=(
+                                f"carried_forward: {topup} of clawbacks deferred to later commission"
+                                if deficit_only else
+                                f"draw_topup: floor {effective_draw}, earned {earned}"
+                            ),
                         ))
 
                     all_ledger.append(LedgerEntry(
-                        transaction_id="*", payee_id=pid, rule_id="draw",
-                        event_type="draw",
+                        transaction_id="*", payee_id=pid, rule_id=line_rule,
+                        event_type="balance" if deficit_only else "draw",
                         inputs={
                             "earned": str(earned), "draw": str(effective_draw),
                             "recovered": str(recovered), "prior_balance": str(prior_bal),
@@ -2298,6 +2317,159 @@ class CommissionEngine:
                 notes=f"Custom formula: {rule.formula}",
             ))
 
+        return results, ledger
+
+    # -- redline (solar) -----------------------------------------------------
+
+    def _calc_redline(
+        self,
+        rule: RedlineRule,
+        transactions: list[Transaction],
+        period_type: str = "monthly",
+    ) -> tuple[list[Commission], list[LedgerEntry]]:
+        """Pay the margin sold above a redline, milestone by milestone.
+
+        Every row is priced from its own columns, so the rule needs no tier
+        position and a cancellation months later takes back exactly what the
+        paid milestones paid. A row missing what it needs stops the run rather
+        than paying 0, since a solar deal with no price is a data error, not a
+        deal worth nothing.
+        """
+        predicate = compile_filter(rule.filter)
+        results: list[Commission] = []
+        ledger: list[LedgerEntry] = []
+        problems: list[str] = []
+        milestones = rule.milestones or {}
+        unit = rule.size_field
+
+        def number(meta: dict[str, Any], column: str | None) -> Decimal | None:
+            if column is None:
+                return None
+            raw = str(meta.get(column, "") or "").strip()
+            if not raw:
+                return None
+            try:
+                value = Decimal(raw)
+            except ArithmeticError:
+                return None
+            return value if value.is_finite() else None
+
+        for txn in transactions:
+            if not predicate(txn):
+                ledger.append(LedgerEntry(
+                    transaction_id=txn.id,
+                    payee_id=txn.payee_id,
+                    rule_id=rule.id,
+                    event_type="rule_skipped",
+                    inputs={"filter": rule.filter or "(none)", "reason": "filter_excluded"},
+                    human_readable=f"Transaction {txn.id} skipped by rule {rule.id} (filter excluded)",
+                ))
+                continue
+
+            meta = txn.metadata or {}
+            price = number(meta, rule.price_field)
+            size = number(meta, rule.size_field)
+            redline = rule.redline if rule.redline is not None else number(meta, rule.redline_field)
+            missing = [
+                name for name, value in (
+                    (rule.price_field, price),
+                    (rule.size_field, size),
+                    (rule.redline_field or "redline", redline),
+                ) if value is None
+            ]
+            if missing:
+                problems.append(
+                    f"Line {txn.id} ({txn.payee_id}, {txn.period}) has no usable "
+                    f"{', '.join(missing)}. Rule {rule.id} prices every deal from its "
+                    f"price, size and redline, so fill these in on the row."
+                )
+                continue
+            assert price is not None and size is not None and redline is not None
+            deductions = number(meta, rule.deductions_field) or Decimal("0")
+
+            gross = (price - redline) * size - deductions
+            deal_pay = max(gross, Decimal("0")) if rule.floor_at_zero else gross
+            split = Decimal(str(meta.get("_credit_split_pct", "1")))
+            full = deal_pay * split
+
+            what = f"{size} {unit} sold at {price} against a {redline} redline"
+            if deductions:
+                what += f", less {deductions}"
+            what += f" = {deal_pay}"
+            if split != 1:
+                what += f"; {split:.0%} share = {full}"
+
+            milestone = str(meta.get(rule.milestone_field, "") or "").strip()
+            if milestone.lower() == rule.cancel_value.lower():
+                if milestones:
+                    listed = str(meta.get("paid_milestones", "") or "").replace(";", ",")
+                    names = [m.strip() for m in listed.split(",") if m.strip()]
+                    names = names or rule.clawback_on_cancel or [next(iter(milestones))]
+                    unknown = [m for m in names if m not in milestones]
+                    if unknown:
+                        problems.append(
+                            f"Line {txn.id} cancels a deal after milestones {unknown}, which "
+                            f"rule {rule.id} does not define ({', '.join(milestones)})."
+                        )
+                        continue
+                    share = sum((milestones[m] for m in names), Decimal("0"))
+                    label = "+".join(names)
+                else:
+                    share, label = Decimal("1"), "the whole deal"
+                commission = -(full * share)
+                note = f"Cancelled: {label} ({share:.0%}) taken back. {what}"
+            elif milestones:
+                if milestone not in milestones:
+                    shown = f"milestone '{milestone}'" if milestone else "no milestone"
+                    problems.append(
+                        f"Line {txn.id} ({txn.payee_id}, {txn.period}) has {shown}. Rule "
+                        f"{rule.id} pays by milestone, so each row needs one of "
+                        f"{', '.join(milestones)} or '{rule.cancel_value}' in the "
+                        f"{rule.milestone_field} column."
+                    )
+                    continue
+                share = milestones[milestone]
+                commission = full * share
+                note = f"{milestone} pays {share:.0%}. {what}"
+            else:
+                if milestone:
+                    problems.append(
+                        f"Line {txn.id} has milestone '{milestone}', but rule {rule.id} "
+                        f"defines no milestones and would pay the whole deal on every "
+                        f"row. Add milestones to the rule, or clear the column."
+                    )
+                    continue
+                share, commission, note = Decimal("1"), full, what
+
+            ledger.append(LedgerEntry(
+                transaction_id=txn.id,
+                payee_id=txn.payee_id,
+                rule_id=rule.id,
+                event_type="commission_computed",
+                inputs={
+                    "price": str(price), "redline": str(redline), "size": str(size),
+                    "deductions": str(deductions), "split_pct": str(split),
+                    "milestone": milestone, "share": str(share),
+                },
+                outputs={"commission_amount": str(commission)},
+                human_readable=f"Redline: {note} -> {commission}",
+            ))
+            if commission == 0:
+                continue  # sold at or below redline: the ledger shows why
+
+            results.append(Commission(
+                transaction_id=txn.id,
+                payee_id=txn.payee_id,
+                period=_window_key(txn.period, period_type),
+                rule_id=rule.id,
+                base_amount=-full if commission < 0 else full,
+                rate=share,
+                commission_amount=commission,
+                notes=note,
+            ))
+
+        if problems:
+            raise PlanDataError(problems)
         return results, ledger
 
     # -- helpers -------------------------------------------------------------

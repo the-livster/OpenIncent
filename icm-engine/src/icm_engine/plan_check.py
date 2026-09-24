@@ -40,11 +40,12 @@ def check_plan(plan: Plan) -> list[AssertionResult]:
             if a.base == "margin":
                 txns.append(Transaction(
                     id=f"_d{i}", payee_id="_assert", amount=Decimal("0"),
-                    period=a.period, margin=value,
+                    period=a.period, margin=value, metadata=dict(a.fields),
                 ))
             else:
                 txns.append(Transaction(
                     id=f"_d{i}", payee_id="_assert", amount=value, period=a.period,
+                    metadata=dict(a.fields),
                 ))
         try:
             result = engine.calculate(plan, txns, [payee])

@@ -320,6 +320,50 @@ Examples: `product == "Enterprise"`, `amount >= 50000`,
 
 ---
 
+### 7.5 Redline (solar and price-above-floor pay)
+
+Pays the price sold above a redline, per unit of size, read from each deal's own columns:
+
+`pay = (price − redline) × size − deductions`, then × the credit's share (setter/closer splits).
+
+| Field | Default | Meaning |
+|---|---|---|
+| `redline` / `redline_field` | — | one value for every deal, or a column carrying each deal's redline (exactly one) |
+| `price_field` | `ppw` | price sold per unit, e.g. $/W |
+| `size_field` | `watts` | units sold, e.g. system watts |
+| `deductions_field` | none | column of amounts taken off (adders, dealer fees) |
+| `floor_at_zero` | `true` | selling below redline pays 0; `false` charges the difference |
+| `milestones` | none | shares adding up to 1, e.g. `{M1: 0.5, M2: 0.5}` |
+| `milestone_field` | `milestone` | the column naming each row's milestone |
+| `cancel_value` | `cancel` | the milestone value that marks a cancellation |
+| `clawback_on_cancel` | first milestone | milestones a cancellation takes back |
+
+With milestones, each row of the deal file is one milestone of one deal and pays that milestone's share,
+in that row's period. A `cancel` row takes back the milestones in its `paid_milestones` column (`M1;M2`),
+else `clawback_on_cancel`, else the first milestone. Without milestones a row pays the whole deal and a
+cancellation takes all of it back.
+
+**Worked example** — redline $2.90/W, `M1: 0.5, M2: 0.5`, an 8,000 W system sold at $3.40/W, split 70/30
+closer/setter:
+
+```
+deal pay : (3.40 − 2.90) × 8,000 = 4,000.00
+July  M1 : closer 4,000 × 70% × 50% = 1,400.00   setter 600.00
+Sept  cancel (before install)       = −1,400.00   setter −600.00
+```
+
+Because the pay depends only on the deal, a cancellation is priced exactly in any later period, unlike a
+reversal on a tiered rule ([§7.2](#72-tiered-boundary-crossing-marginal)). A row the rule cannot price
+(no price, size or redline; a milestone the rule does not define; a milestone on a rule without milestones,
+which would pay the whole deal on every row) stops the run with an error naming the line.
+
+Put the contract value in `amount` on one row per deal (and 0 on the others) if anything reads attainment,
+or each milestone row counts it again. Plan assertions can set deal columns with `fields:` —
+see `examples/templates/solar_redline.yaml`.
+
+Ledger events: `commission_computed` (price, redline, size, deductions, split, milestone, share);
+`rule_skipped` (filtered).
+
 ## 8. Locking, versioning & payout adjustments
 
 **Versioning.** Every calculation run is versioned per `(plan_id, period)`. Re-running creates a new draft
@@ -424,6 +468,12 @@ calculation path only. Recalculation of locked periods with draw balances is not
 logic runs before true-ups and does not interact with locked-period delta emission. Contact the maintainer
 if this is a requirement.
 
+**Negative balances.** `negative_balance: carry_forward` on the plan floors each period's payout at 0
+when clawbacks exceed commission and recovers the deficit from later commission. It is a recoverable draw
+of 0: a `balance` line adds back the shortfall ("Carried Forward" on the statement), and later periods take
+it back ("Balance Recovered"), with the balance saved between runs like a draw's. A payee with a draw is
+handled by the draw. The default, `pay`, lets a period go negative.
+
 ### 9.3 Manual adjustments
 
 `ManualAdjustment` objects represent a manual override — e.g., a discretionary bonus, a one-off clawback,
@@ -474,6 +524,7 @@ Every figure is backed by one or more of these events (`ledger.jsonl`):
 | `tier_crossed_down`   | a reversal takes attainment back below a tier boundary     |
 | `commission_computed` | a commission slice is produced (the core "why $X" record)  |
 | `true_up`             | a locked-period delta is paid into the payout period       |
+| `balance`             | a deficit is carried forward or recovered (carry_forward)  |
 
 ---
 
@@ -504,7 +555,7 @@ should become.
 - Non-monthly **locking** is not fully verified ([§3](#3-periods--windows)).
 - **No rounding** by default ([§10](#10-money--rounding)).
 - No caps/floors/draws/guarantees/MBOs/multi-currency yet.
-- Recoverable draws do not interact with locked-period true-up recalculation ([§9.2](#92-draws--guarantees)).
+- Recoverable draws and carried-forward deficits do not interact with locked-period true-up recalculation ([§9.2](#92-draws--guarantees)).
 - On a tiered or accelerator plan, a fall-off from an earlier period cannot be entered as a negative line in
   the current one; it is recorded by re-running the original period (a true-up) or as a manual adjustment
   ([§7.2](#72-tiered-boundary-crossing-marginal)).

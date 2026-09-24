@@ -21,7 +21,7 @@ from slowapi.util import get_remote_address
 
 from icm_engine.database import Database, default_db_path
 from icm_engine.engine import CommissionEngine
-from icm_engine.exceptions import ReversalError
+from icm_engine.exceptions import PlanDataError
 from icm_engine.ledger import LedgerEntry
 from icm_engine.loader import load_payees, load_plan, load_transactions
 from icm_engine.models import Commission, Payee, Plan
@@ -115,8 +115,8 @@ def _serialize(obj: Any) -> Any:
     return obj
 
 
-def _refused_reversals(e: ReversalError) -> HTTPException:
-    """Negative lines the engine refuses to price, in the pre-flight shape.
+def _refused_lines(e: PlanDataError) -> HTTPException:
+    """Deal lines the engine refuses to price, in the pre-flight shape.
 
     A 400 with an `issues` list, like the pre-flight checks, so the desktop app
     shows each line and what to do about it rather than a 500 and a traceback.
@@ -124,7 +124,7 @@ def _refused_reversals(e: ReversalError) -> HTTPException:
     return HTTPException(status_code=400, detail={
         "error": "Input problems must be resolved before calculating",
         "issues": [
-            {"severity": "error", "code": "unpriced_reversal", "message": p}
+            {"severity": "error", "code": e.code, "message": p}
             for p in e.problems
         ],
     })
@@ -408,8 +408,8 @@ async def calculate(
         try:
             result = execute(ctx)
             calc_ids = persist(ctx, result)
-        except ReversalError as e:
-            raise _refused_reversals(e) from e
+        except PlanDataError as e:
+            raise _refused_lines(e) from e
         except Exception as e:
             import traceback as _tb
             raise HTTPException(status_code=500, detail={
@@ -1362,8 +1362,8 @@ async def export_statements(
                 plan_obj, txn_list, payee_list,
                 adjustments=adjustments_list, mbos=mbos_list,
             )
-        except ReversalError as e:
-            raise _refused_reversals(e) from e
+        except PlanDataError as e:
+            raise _refused_lines(e) from e
         except Exception as e:
             import traceback as _tb2
             raise HTTPException(status_code=500, detail={

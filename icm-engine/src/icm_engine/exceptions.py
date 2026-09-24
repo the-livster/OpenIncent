@@ -27,7 +27,21 @@ class MissingAPIKeyError(Exception):
         )
 
 
-class ReversalError(ValueError):
+class PlanDataError(ValueError):
+    """Deal lines a rule refuses to price, each with what to do about it.
+
+    Raised mid-run by the engine; the CLI prints the problems and the API
+    returns them in the pre-flight `issues` shape under `code`.
+    """
+
+    code = "unpriceable_line"
+
+    def __init__(self, problems: list[str]) -> None:
+        self.problems = problems
+        super().__init__("\n".join(f"- {p}" for p in problems))
+
+
+class ReversalError(PlanDataError):
     """Negative lines a tiered or accelerator rule cannot price.
 
     Those rules pay a deal by where it lands in the payee's attainment, so a
@@ -36,6 +50,4 @@ class ReversalError(ValueError):
     current period happens to be at, so the run stops instead.
     """
 
-    def __init__(self, problems: list[str]) -> None:
-        self.problems = problems
-        super().__init__("\n".join(f"- {p}" for p in problems))
+    code = "unpriced_reversal"
