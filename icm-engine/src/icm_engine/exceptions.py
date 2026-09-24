@@ -25,3 +25,17 @@ class MissingAPIKeyError(Exception):
             "  ANTHROPIC_API_KEY  (for Anthropic, legacy)\n"
             "Or pass --api-key on the CLI."
         )
+
+
+class ReversalError(ValueError):
+    """Negative lines a tiered or accelerator rule cannot price.
+
+    Those rules pay a deal by where it lands in the payee's attainment, so a
+    reversal is only priced correctly from a position that still holds the
+    deal it reverses. Anything else would come back at whatever rate the
+    current period happens to be at, so the run stops instead.
+    """
+
+    def __init__(self, problems: list[str]) -> None:
+        self.problems = problems
+        super().__init__("\n".join(f"- {p}" for p in problems))

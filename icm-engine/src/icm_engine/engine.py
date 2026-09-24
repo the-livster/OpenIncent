@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
+from icm_engine.exceptions import ReversalError
 from icm_engine.filter_parser import compile_filter
 from icm_engine.formula import FormulaEvalError, compile_formula
 from icm_engine.ledger import LedgerEntry
@@ -200,6 +201,7 @@ class _CreditUnit:
     metadata: dict[str, Any]
     credited_margin: Decimal | None = None  # margin after splits; None if no margin data
     credited_quota: Decimal | None = None   # attainment value after splits; None → use credited_amount
+    deal_id: str = ""  # lets a reversal find the deal it reverses
 
 
 def _resolve_credits(transactions: list[Transaction]) -> list[_CreditUnit]:
@@ -224,6 +226,7 @@ def _resolve_credits(transactions: list[Transaction]) -> list[_CreditUnit]:
                 metadata=txn.metadata,
                 credited_margin=(mv * c.split_pct) if mv is not None else None,
                 credited_quota=qv * c.split_pct,
+                deal_id=txn.deal_id,
             ))
     return units
 
@@ -283,6 +286,7 @@ def _resolve_hierarchy_credits(
                 metadata={**cu.metadata, "_hierarchy_depth": str(depth + 1)},
                 credited_margin=manager_margin,
                 credited_quota=manager_quota,
+                deal_id=cu.deal_id,
             ))
 
             seen.add(manager_id)
@@ -434,6 +438,115 @@ def _slice_note(
     )
 
 
+def _reversal_note(
+    piece: Decimal, from_pct: Decimal, to_pct: Decimal, rate: Decimal, is_margin: bool = False,
+) -> str:
+    """Rep-facing explanation of one slice of a reversal coming back off a band."""
+    what = "this reversal's gross profit" if is_margin else "this reversal"
+    return (
+        f"{piece} of {what} came off between {to_pct:.0%} and "
+        f"{from_pct:.0%} of quota -> {rate:.2%}"
+    )
+
+
+_PERIOD_UNIT = {"monthly": "month", "quarterly": "quarter", "annual": "year"}
+
+
+class _ReversalIndex:
+    """Which negative lines a tiered or accelerator rule can price.
+
+    Those rules pay a deal by where it lands in the payee's attainment, so a
+    reversal is only priced correctly in the window the deal was booked in:
+    the same position, on the same scale. From any other window it comes back
+    at whatever rate that window happens to be at - a placement paid at 15%
+    in May and reversed in a quiet June is recovered at 10%. That holds on a
+    year-to-date plan too, because each window is priced against its own
+    year-to-date quota.
+
+    Built once per rule from every line the rule sees, so what it reports
+    does not depend on the order the lines are processed in.
+    """
+
+    def __init__(
+        self,
+        rule_id: str,
+        transactions: list[Transaction],
+        period_type: str,
+        ytd: bool,
+    ) -> None:
+        self._problems: dict[tuple[str, str], list[str]] = {}
+        unit = _PERIOD_UNIT.get(period_type, "period")
+        basis = (
+            f"each {unit} is priced against its own year-to-date quota"
+            if ytd
+            else f"each {unit} is measured on its own"
+        )
+        fix = (
+            "To take back what was paid, re-run the period the deal was booked in "
+            "without it (once that period is locked, the difference is paid back as "
+            "a true-up), or enter the amount as a manual adjustment."
+        )
+
+        # Per (payee, deal): what was booked, and the reversal lines, by window.
+        # An original with no deal_id is found by its own id.
+        booked: dict[tuple[str, str], dict[str, Decimal]] = {}
+        for t in transactions:
+            if t.amount > 0:
+                by_window = booked.setdefault((t.payee_id, t.deal_id or t.id), {})
+                window = _window_key(t.period, period_type)
+                by_window[window] = by_window.get(window, Decimal("0")) + t.amount
+
+        reversals: dict[tuple[str, str], dict[str, list[Transaction]]] = {}
+        for t in transactions:
+            if t.amount >= 0:
+                continue
+            window = _window_key(t.period, period_type)
+            # A blank deal_id defaults to the line's own id, and a line cannot
+            # reverse itself: unless a deal was booked under that id, it names none.
+            if not t.deal_id or (t.deal_id == t.id and (t.payee_id, t.id) not in booked):
+                self._add(t.payee_id, window, (
+                    f"Line {t.id} is negative ({t.amount} credited to {t.payee_id} in "
+                    f"{t.period}) but does not name the deal it reverses. Rule {rule_id} "
+                    f"pays by tier position, so a reversal has to carry the deal_id of "
+                    f"the deal it reverses."
+                ))
+                continue
+            reversals.setdefault((t.payee_id, t.deal_id), {}).setdefault(window, []).append(t)
+
+        for (payee_id, deal), rev_by_window in reversals.items():
+            bookings = booked.get((payee_id, deal), {})
+            for window, lines in sorted(rev_by_window.items()):
+                held = bookings.get(window, Decimal("0"))
+                taken = -sum((t.amount for t in lines), Decimal("0"))
+                if taken <= held:
+                    continue
+                ids = ", ".join(t.id for t in lines)
+                if held == 0:
+                    elsewhere = sorted(w for w in bookings if w != window)
+                    what = (
+                        f"that deal was booked to {payee_id} in {', '.join(elsewhere)}"
+                        if elsewhere
+                        else f"that deal is not booked to {payee_id} anywhere in this run"
+                    )
+                    self._add(payee_id, window, (
+                        f"Line {ids} ({-taken} in {window}) reverses deal {deal}, but "
+                        f"{what}. Rule {rule_id} pays by tier position, and {basis}, so "
+                        f"it cannot tell what rate the deal was paid at. {fix}"
+                    ))
+                else:
+                    self._add(payee_id, window, (
+                        f"Deal {deal} for {payee_id} in {window}: reversals take back "
+                        f"{taken} but only {held} was booked there. Check the amounts, and "
+                        f"that each reversal is split the same way as the deal it reverses."
+                    ))
+
+    def _add(self, payee_id: str, window: str, message: str) -> None:
+        self._problems.setdefault((payee_id, window), []).append(message)
+
+    def problems_for(self, payee_id: str, window: str) -> list[str]:
+        return self._problems.get((payee_id, window), [])
+
+
 def _to_margin_basis(
     rule: Any, synth_txns: list[Transaction], ledger: list[LedgerEntry],
 ) -> list[Transaction]:
@@ -513,6 +626,7 @@ def _make_synthetic_transactions(credits: list[_CreditUnit]) -> list[Transaction
         Transaction(
             id=cu.transaction_id,
             payee_id=cu.payee_id,
+            deal_id=cu.deal_id,
             amount=cu.credited_amount,
             period=cu.period,
             product=cu.product,
@@ -1046,6 +1160,7 @@ class CommissionEngine:
                     fractions=fractions,
                     quota_overrides=quota_overrides,
                     opening_bookings=opening_bookings,
+                    ytd=ytd,
                 )
             elif isinstance(rule, AcceleratorRule):
                 commissions, ledger = self._calc_accelerator(
@@ -1054,6 +1169,7 @@ class CommissionEngine:
                     fractions=fractions,
                     quota_overrides=quota_overrides,
                     opening_bookings=opening_bookings,
+                    ytd=ytd,
                 )
             elif isinstance(rule, FormulaRule):
                 commissions, ledger = self._calc_formula(
@@ -1537,6 +1653,7 @@ class CommissionEngine:
         fractions: dict[tuple[str, str], Decimal] | None = None,
         quota_overrides: dict[tuple[str, str], Decimal] | None = None,
         opening_bookings: dict[tuple[str, str], Decimal] | None = None,
+        ytd: bool = False,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1557,6 +1674,8 @@ class CommissionEngine:
                 matching.append(t)
 
         grouped = self._group_by_payee_period(matching, period_type)
+        reversals = _ReversalIndex(rule.id, matching, period_type, ytd)
+        problems: list[str] = []
 
         for (payee_id, window), txn_group in grouped.items():
             payee = payee_map.get(payee_id)
@@ -1634,11 +1753,20 @@ class CommissionEngine:
                     )
                 continue
 
+            # A zero-quota payee is paid at one rate whatever their position,
+            # so only a real tier position can misprice a reversal.
+            problems.extend(reversals.problems_for(payee_id, window))
+
             sorted_txns = sorted(txn_group, key=_sort_key)
             # YTD carries the prior windows' bookings in; period-basis starts at 0.
             cumulative = (opening_bookings or {}).get((payee_id, window), Decimal("0"))
 
             for txn in sorted_txns:
+                if txn.amount < 0:
+                    cumulative = self._reverse_tiered(
+                        rule, txn, window, quota, cumulative, results, ledger,
+                    )
+                    continue
                 remainder = txn.amount
                 _iter = 0
                 while remainder > 0:
@@ -1757,7 +1885,98 @@ class CommissionEngine:
                     )
                     remainder -= piece
 
+        if problems:
+            raise ReversalError(problems)
         return results, ledger
+
+    def _reverse_tiered(
+        self,
+        rule: TieredRule,
+        txn: Transaction,
+        window: str,
+        quota: Decimal,
+        position: Decimal,
+        results: list[Commission],
+        ledger: list[LedgerEntry],
+    ) -> Decimal:
+        """Take a reversal back down through the bands, top band first.
+
+        The inverse of how a deal climbs: each slice comes off the band it sits
+        in, at that band's rate, so a window's total depends only on its net
+        bookings and a deal booked and reversed in the same window nets to
+        nothing. Below zero the first band's rate carries on, which keeps that
+        true when a reversal is dated ahead of the deal it reverses.
+
+        Returns the position after the reversal.
+        """
+        remaining = -txn.amount
+        _iter = 0
+        while remaining > 0:
+            _iter += 1
+            if _iter > 10000:
+                raise RuntimeError(
+                    f"Tiered reversal exceeded 10000 iterations for payee "
+                    f"{txn.payee_id} - likely a bug in tier thresholds"
+                )
+            prev_pct = position / quota
+            tier, floor = self._band_below(rule.tiers, prev_pct)
+            piece = remaining if floor is None else min(remaining, position - floor * quota)
+            position -= piece
+            new_pct = position / quota
+            commission = -(piece * tier.rate)  # a 0% band gives 0, not "-0.00"
+
+            results.append(
+                Commission(
+                    transaction_id=txn.id,
+                    payee_id=txn.payee_id,
+                    period=window,
+                    rule_id=rule.id,
+                    base_amount=-piece,
+                    rate=tier.rate,
+                    commission_amount=commission,
+                    notes=_reversal_note(
+                        piece, prev_pct, new_pct, tier.rate, rule.base == "margin",
+                    ),
+                )
+            )
+            if floor is not None and floor > 0 and new_pct <= floor < prev_pct:
+                ledger.append(
+                    LedgerEntry(
+                        transaction_id=txn.id,
+                        payee_id=txn.payee_id,
+                        rule_id=rule.id,
+                        event_type="tier_crossed_down",
+                        inputs={
+                            "threshold_pct": str(floor),
+                            "from_pct": str(prev_pct),
+                            "to_pct": str(new_pct),
+                        },
+                        human_readable=(
+                            f"Dropped back below tier {floor}: {prev_pct} -> {new_pct}"
+                        ),
+                    )
+                )
+            ledger.append(
+                LedgerEntry(
+                    transaction_id=txn.id,
+                    payee_id=txn.payee_id,
+                    rule_id=rule.id,
+                    event_type="commission_computed",
+                    inputs={
+                        "amount": str(-piece),
+                        "rate": str(tier.rate),
+                        "cumulative_pct": str(new_pct),
+                        "quota": str(quota),
+                    },
+                    outputs={"commission_amount": str(commission)},
+                    human_readable=(
+                        f"Tiered reversal: -{piece} @ {tier.rate} "
+                        f"(back to {new_pct:.1%} of quota) = {commission}"
+                    ),
+                )
+            )
+            remaining -= piece
+        return position
 
     @staticmethod
     def _find_tier(tiers: list[Tier], current_pct: Decimal) -> Tier | None:
@@ -1765,6 +1984,24 @@ class CommissionEngine:
             if current_pct < tier.threshold_pct:
                 return tier
         return None
+
+    @staticmethod
+    def _band_below(tiers: list[Tier], current_pct: Decimal) -> tuple[Tier, Decimal | None]:
+        """The band just below `current_pct`, and that band's lower bound.
+
+        Mirrors _find_tier from above: bands are (previous threshold,
+        threshold], and above the last threshold the last tier's rate applies,
+        as it does on the way up. At or below zero the first band applies with
+        no lower bound.
+        """
+        if current_pct <= 0:
+            return tiers[0], None
+        lower = Decimal("0")
+        for tier in tiers:
+            if current_pct <= tier.threshold_pct:
+                return tier, lower
+            lower = tier.threshold_pct
+        return tiers[-1], tiers[-1].threshold_pct
 
     @staticmethod
     def _remaining_in_tier(
@@ -1786,6 +2023,7 @@ class CommissionEngine:
         fractions: dict[tuple[str, str], Decimal] | None = None,
         quota_overrides: dict[tuple[str, str], Decimal] | None = None,
         opening_bookings: dict[tuple[str, str], Decimal] | None = None,
+        ytd: bool = False,
     ) -> tuple[list[Commission], list[LedgerEntry]]:
         predicate = compile_filter(rule.filter)
         results: list[Commission] = []
@@ -1806,6 +2044,8 @@ class CommissionEngine:
                 matching.append(t)
 
         grouped = self._group_by_payee_period(matching, period_type)
+        reversals = _ReversalIndex(rule.id, matching, period_type, ytd)
+        problems: list[str] = []
 
         for (payee_id, window), txn_group in grouped.items():
             payee = payee_map.get(payee_id)
@@ -1844,12 +2084,62 @@ class CommissionEngine:
                     ))
                 continue
 
+            problems.extend(reversals.problems_for(payee_id, window))
+
             sorted_txns = sorted(txn_group, key=_sort_key)
             # YTD carries the prior windows' bookings in; period-basis starts at 0.
             cumulative = (opening_bookings or {}).get((payee_id, window), Decimal("0"))
 
             for txn in sorted_txns:
                 threshold_amount = rule.threshold_pct * quota
+                if txn.amount < 0:
+                    # Take back only the part of the position above the
+                    # threshold: the part this rule paid on. A window's total
+                    # then depends only on its net bookings, whatever the order.
+                    above_before = max(Decimal("0"), cumulative - threshold_amount)
+                    above_after = max(Decimal("0"), cumulative + txn.amount - threshold_amount)
+                    taken_back = above_before - above_after
+                    if taken_back > 0:
+                        commission = -(taken_back * rule.rate * rule.multiplier)
+                        results.append(
+                            Commission(
+                                transaction_id=txn.id,
+                                payee_id=txn.payee_id,
+                                period=window,
+                                rule_id=rule.id,
+                                base_amount=-taken_back,
+                                rate=rule.rate * rule.multiplier,
+                                commission_amount=commission,
+                                notes=(
+                                    f"Accelerator {rule.multiplier}x taken back on "
+                                    f"{taken_back} that fell back below {rule.threshold_pct}"
+                                    + (" of quota (gross profit)" if rule.base == "margin" else "")
+                                ),
+                            )
+                        )
+                        ledger.append(
+                            LedgerEntry(
+                                transaction_id=txn.id,
+                                payee_id=txn.payee_id,
+                                rule_id=rule.id,
+                                event_type="commission_computed",
+                                inputs={
+                                    "above_threshold": str(-taken_back),
+                                    "rate": str(rule.rate),
+                                    "multiplier": str(rule.multiplier),
+                                    "cumulative": str(cumulative),
+                                    "quota": str(quota),
+                                },
+                                outputs={"commission_amount": str(commission)},
+                                human_readable=(
+                                    f"Accelerator reversal: -{taken_back} * "
+                                    f"{rule.rate} * {rule.multiplier} = {commission}"
+                                ),
+                            )
+                        )
+                    cumulative += txn.amount
+                    continue
+
                 below_threshold = max(Decimal("0"), threshold_amount - cumulative)
                 above_threshold = max(Decimal("0"), txn.amount - below_threshold)
 
@@ -1894,6 +2184,8 @@ class CommissionEngine:
 
                 cumulative += txn.amount
 
+        if problems:
+            raise ReversalError(problems)
         return results, ledger
 
     # -- formula (flexible calc layer) ----------------------------------------

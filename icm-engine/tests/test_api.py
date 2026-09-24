@@ -624,3 +624,48 @@ class TestCalculatePreflight:
         )
         assert r.status_code == 200, r.text
         assert r.json()["summary"]["AKHAN"] == "1200.00"
+
+
+class TestCalculateRefusedReversal:
+    """A reversal a tiered plan cannot price comes back like a pre-flight
+    problem - a 400 listing the line - so the desktop app shows it, instead of
+    a 500 and a traceback."""
+
+    PLAN = (
+        b"plan_id: rev_demo\nname: D\ncurrency: GBP\nperiod_type: monthly\n"
+        b"rules:\n  - type: tiered\n    id: fee\n    tiers:\n"
+        b"      - threshold_pct: '1.0'\n        rate: '0.10'\n"
+        b"      - threshold_pct: '100.0'\n        rate: '0.15'\n"
+    )
+    ROSTER = b"id,name,quota,plan_id,effective_from\nP1,Priya,20000,rev_demo,2024-01-01\n"
+
+    def _post(self, deals: bytes) -> object:
+        return client.post(
+            f"{V}/calculate",
+            files={
+                "plan": ("p.yaml", self.PLAN, "application/x-yaml"),
+                "transactions": ("d.csv", deals, "text/csv"),
+                "payees": ("r.csv", self.ROSTER, "text/csv"),
+            },
+        )
+
+    def test_fall_off_of_an_earlier_month_is_a_400_naming_the_line(self) -> None:
+        r = self._post(
+            b"id,payee_id,deal_id,period,amount\n"
+            b"PL-2,P1,PL-2,2026-05,7200\n"
+            b"PL-2-CB,P1,PL-2,2026-06,-7200\n"
+        )
+        assert r.status_code == 400, r.text
+        issues = r.json()["detail"]["issues"]
+        assert [i["code"] for i in issues] == ["unpriced_reversal"]
+        assert "PL-2-CB" in issues[0]["message"]
+
+    def test_same_month_fall_off_calculates(self) -> None:
+        r = self._post(
+            b"id,payee_id,deal_id,period,amount\n"
+            b"PL-1,P1,PL-1,2026-05,18000\n"
+            b"PL-2,P1,PL-2,2026-05,7200\n"
+            b"PL-2-CB,P1,PL-2,2026-05,-7200\n"
+        )
+        assert r.status_code == 200, r.text
+        assert Decimal(r.json()["summary"]["P1"]) == Decimal("1800")

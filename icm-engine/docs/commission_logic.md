@@ -238,8 +238,29 @@ total on $12,000          = $660.00
 - **Zero quota:** the **top tier rate is applied to everything** (you can't measure attainment with no
   quota, so the engine pays the highest defined rate rather than nothing). ▶ **Knob.**
 
+**Reversals** (fall-offs, refunds, credit notes). A negative line comes back *down* through the bands, top
+band first, each slice at the rate of the band it comes off. A window's total therefore depends only on its
+net bookings: a deal booked and reversed in the same window pays nothing, whatever order the lines arrive
+in. Below zero the first band's rate carries on.
+
+```
+quota 20,000, tiers [1.0 → 10%, 100.0 → 15%]: 18,000 + 7,200 booked (126%), then the 7,200 reversed
+reversal : 5,200 off 100%→126% @ 15% = -780.00
+           2,000 off  90%→100% @ 10% = -200.00
+month    : 1,800.00  (18,000 @ 10%, as if the 7,200 had never been booked)
+```
+
+A reversal must carry the `deal_id` of the deal it reverses, and that deal must be booked to the same payee
+**in the same window**. From any other window the rule cannot know what rate the deal was paid at (a
+placement paid at 15% in May and reversed in a quiet June would come back at 10%), so the run stops with
+an error naming the line rather than guess. That holds under `attainment_basis: cumulative` too, because
+each window is priced against its own year-to-date quota. To reverse a deal from an earlier period, re-run
+that period without it: once the period is locked, the difference is paid as a true-up ([§8](#8-locking-versioning--payout-adjustments)).
+Or enter the amount as a manual adjustment. Zero-quota payees are exempt, since every deal pays the top rate.
+
 Ledger events: `rule_evaluated` (per payee/window), `tier_crossed` (when a boundary is crossed),
-`commission_computed` (per slice), `rule_skipped` (filtered, or payee not found).
+`tier_crossed_down` (when a reversal drops back below one), `commission_computed` (per slice),
+`rule_skipped` (filtered, or payee not found).
 
 ### 7.3 Accelerator
 
@@ -262,6 +283,9 @@ total                                = $750.00
 
 - **Zero quota:** the accelerator is **skipped** (`rule_skipped`, reason `zero_quota`) — the opposite of
   tiered's zero-quota behavior. ▶ **Knob:** make zero-quota behavior consistent/configurable across rules.
+- **Reversals** take back only the part of the position above the threshold, which is what this rule paid
+  on, so a window's total depends only on its net bookings. The same-window and `deal_id` requirements as
+  tiered apply ([§7.2](#72-tiered-boundary-crossing-marginal)).
 
 Ledger events: `commission_computed`; `rule_skipped` (filtered, payee not found, or zero quota).
 
@@ -318,7 +342,8 @@ This is what makes the headline scenarios correct:
 - **Late deal** — a March deal uploaded in June: March's locked statement is untouched; June receives a
   true-up for exactly the *additional* commission the late deal creates (including any attainment shift it
   causes for other March deals), tagged `origin_period = 2026-03`.
-- **Clawback** — a previously-paid deal removed: a **negative** true-up in the payout period.
+- **Clawback** — a previously-paid deal removed: a **negative** true-up in the payout period. This is how a
+  fall-off from a locked period is recorded on a tiered or accelerator plan ([§7.2](#72-tiered-boundary-crossing-marginal)).
 - **No change** — identical recompute: **no true-up lines** (delta is zero).
 
 Only locked-period deltas become true-ups; open-period deals are never double-counted. (This was a critical
@@ -411,7 +436,8 @@ Adjustments do not pass through rules and do not affect attainment.
 ## 10. Money & rounding
 
 - All amounts are `Decimal`; **negative amounts are allowed** end-to-end (refunds, cancellations,
-  clawbacks).
+  clawbacks). On tiered and accelerator rules a reversal has to sit in the same window as the deal it
+  reverses ([§7.2](#72-tiered-boundary-crossing-marginal)).
 - **No rounding is applied.** A commission is the exact product of its inputs: `0.05 × 1291.90 = 64.595`
   is stored and reported as `64.595`, **not** `$64.60`. There is currently no quantization to a currency's
   minor unit.
@@ -441,6 +467,7 @@ Every figure is backed by one or more of these events (`ledger.jsonl`):
 | `rule_evaluated`      | a tiered/accelerator rule begins for a payee/window        |
 | `rule_skipped`        | a deal is excluded (filter, payee-not-found, or zero-quota) |
 | `tier_crossed`        | cumulative attainment crosses a tier boundary              |
+| `tier_crossed_down`   | a reversal takes attainment back below a tier boundary     |
 | `commission_computed` | a commission slice is produced (the core "why $X" record)  |
 | `true_up`             | a locked-period delta is paid into the payout period       |
 
@@ -474,5 +501,8 @@ should become.
 - **No rounding** by default ([§10](#10-money--rounding)).
 - No caps/floors/draws/guarantees/MBOs/multi-currency yet.
 - Recoverable draws do not interact with locked-period true-up recalculation ([§9.2](#92-draws--guarantees)).
+- On a tiered or accelerator plan, a fall-off from an earlier period cannot be entered as a negative line in
+  the current one; it is recorded by re-running the original period (a true-up) or as a manual adjustment
+  ([§7.2](#72-tiered-boundary-crossing-marginal)).
 - The `100.0`-as-top-tier convention is easy to misread ([§7.2](#72-tiered-boundary-crossing-marginal)).
 - MBOs, multi-currency, and per-category quota attainment remain future work.
