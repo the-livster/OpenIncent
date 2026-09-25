@@ -1,0 +1,48 @@
+plan_id: solar_redline
+name: "Solar - Redline Pay by Milestone"
+period_type: monthly
+currency: USD
+# A solar rep is paid on the price sold above the company's redline, per watt:
+# (price per watt - redline) x system watts, less any adders the rep sold under.
+# Half is paid when the contract is signed (M1), half at install (M2).
+#
+# Each row of the deal file is one milestone of one deal, with columns
+#   ppw        price sold per watt, e.g. 3.40
+#   watts      system size in watts, e.g. 8000
+#   adders     dollars taken off the rep's pay (optional)
+#   milestone  M1, M2, or cancel
+# Setter/closer splits go in the credits column (C-12:0.7;S-04:0.3).
+# A cancel row takes back M1, or whatever its paid_milestones column lists
+# (e.g. M1;M2 for a cancellation after install).
+# Put the contract value in amount on the M1 row only, and 0 elsewhere, if
+# anything reads attainment - otherwise every milestone row counts it again.
+negative_balance: carry_forward   # a month of clawbacks pays 0; the rest comes off later pay
+rules:
+  - id: redline_pay
+    type: redline
+    redline: "2.90"               # dollars per watt
+    price_field: ppw
+    size_field: watts
+    deductions_field: adders
+    milestones: {M1: "0.5", M2: "0.5"}
+assertions:
+  - name: "8 kW sold at $3.40/W pays $2,000 at signing"
+    quota: "1"
+    deals: ["0"]
+    fields: {ppw: "3.40", watts: "8000", milestone: "M1"}
+    expect_total: "2000"          # (3.40 - 2.90) x 8000 x 50%
+  - name: "a $500 adder comes off before the milestone split"
+    quota: "1"
+    deals: ["0"]
+    fields: {ppw: "3.40", watts: "8000", adders: "500", milestone: "M2"}
+    expect_total: "1750"          # (4000 - 500) x 50%
+  - name: "a month with only a cancellation pays 0 and carries the $2,000 forward"
+    quota: "1"
+    deals: ["0"]
+    fields: {ppw: "3.40", watts: "8000", milestone: "cancel"}
+    expect_total: "0"             # -2000 taken back, +2000 carried to later pay
+  - name: "selling below redline pays nothing"
+    quota: "1"
+    deals: ["0"]
+    fields: {ppw: "2.80", watts: "8000", milestone: "M1"}
+    expect_total: "0"

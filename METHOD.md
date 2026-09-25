@@ -1,6 +1,6 @@
 # The OpenIncent Method
 
-**Version 0.1 — 2026-06-28**
+**Version 0.2 — 2026-09-24**
 
 A repeatable way of taking commission from a messy spreadsheet to **paid,
 reconciled, and explainable** — and proving it worked at every step.
@@ -47,8 +47,8 @@ of a shrug.
 ## Contents
 
 1. [Principles](#1-principles) — the five rules everything follows from
-2. [The method](#2-the-method) — the eight steps, messy → paid
-3. [The conformance ladder](#3-the-conformance-ladder) — L0–L3, your proof it worked
+2. [The method](#2-the-method) — setup once, then the same six steps every pay cycle
+3. [The checkpoints](#3-the-checkpoints) — four checks, your proof it worked
 4. [Why this beats the alternatives](#4-why-this-beats-the-alternatives)
 5. [The control library](#5-the-control-library) — the named checks (reference)
 6. [The data spec](#6-the-data-spec) — what each input must look like (reference)
@@ -86,109 +86,128 @@ Five rules everything else follows from.
 
 ## 2. The method
 
-Eight steps take a client from a spreadsheet to a conformant, reconciled, paid
-run. Each step earns a rung on the [conformance ladder](#3-the-conformance-ladder)
-— so at any moment you know exactly how far you've come and what's left to prove.
+Commission is not set up once and left to run. Plans change mid-year, people join
+and leave, deals arrive late or fall through, and payroll does not always pay
+exactly what it was sent. So the method has two parts: **setup**, done once to go
+live, and a **pay cycle** repeated every period after that. Both end in the same
+place: a result compared against what was actually paid.
 
-This is the public method *and* the working process: the same steps whether you
-run it yourself with the free engine, or have someone run it for you. The `icm …`
-commands name the engine step that does the work; do each by hand if you prefer.
+The `icm …` commands name the engine command that does the work; each step can
+also be done by hand.
 
-### Step 1 — Intake
+### Part A — Setup (once)
 
-Collect what you already have: the plan (in whatever form it exists — a PDF, an
-email, the spreadsheet itself), the last full period's deal extract, the payee
-roster, and **a copy of what was actually paid** that period. That last one is the
-target you will reconcile against; without it, you can compute a number but you
-cannot prove it.
+Setup takes a business from its current process to its first trusted run.
 
-### Step 2 — Map to the spec → reaches **L0**
+**A1. Gather your files.** The plan in whatever form it exists (a PDF, an email,
+the spreadsheet itself), the payee roster, one full period of deals, and **what
+was actually paid** for that period. That last file is the target the setup has
+to match; without it you can compute a number but not prove it.
 
-Map the source columns onto the [canonical fields](#6-the-data-spec). The engine
-fuzzy-maps common headers (`icm map` previews the inferred mapping); review and
-lock it. When all three inputs load, you are at **L0: it parses.**
+**A2. Read your data** → *checkpoint 1: files readable.* Match the source
+columns to the [standard fields](#6-the-data-spec) (`icm map` previews the
+match; review and save it) until all three inputs load.
 
-### Step 3 — Validate the data → reaches **L1**
+**A3. Check the data** → *checkpoint 2: data clean.* Run the
+[data controls](#5-the-control-library) (`icm validate`). Fix every error.
+Review every warning with the owner of the data: a near-duplicate or a deal
+dated after someone left is either a defect or a deliberate exception, and you
+record which.
 
-Run the [data controls](#5-the-control-library) (`icm validate`). Resolve every
-**error**. Review every **warning** with the owner of the data — a flagged
-near-duplicate or a deal credited after someone's leaving date is either a real
-defect or a conscious exception, and you record which. When the data is clean or
-every exception is signed off, you are at **L1: validated.**
+**A4. Write down the plan** → *checkpoint 3: plan tested.* Turn the plan into
+exact rules in the [plan format](#61-the-plan), or start from a
+[template](icm-engine/examples/templates/). Where the wording can be read two
+ways, **do not guess**: get a written answer and encode that. Add
+[test cases](#612-assertions), such as "at 100% of target this rep earns exactly
+their on-target pay". Run `icm lint` and `icm check-plan` until both are clean.
 
-### Step 4 — Encode the plan as code → reaches **L2**
+> This is where knowledge in one person's head becomes a versioned file. It is
+> the most valuable step and the one that cannot be automated.
 
-Translate the plan into the [plan spec](#61-the-plan) — or start from a
-[template](icm-engine/examples/templates/) for a common pattern (perm placement,
-contract margin, SaaS AE, SDR pipeline) and change the rates to yours. Where the
-prose is ambiguous, **do not guess** — get a written answer and encode that. Add
-[assertions](#612-assertions): tiny "at 100% of quota this rep earns exactly their
-OTE" scenarios that turn the annual plan rebuild from *pray* into *compile*. Run
-`icm lint` (static health checks) and `icm check-plan` (runs each assertion
-through the real engine) until both are clean. You are at **L2: plan-verified.**
+**A5. Calculate pay.** Run the calculation
+(`icm --plan … --transactions … --payees …`), produce a statement per payee
+(`icm statements`), and spot-check a few payouts back to their deal and rule
+(`icm trace`).
 
-> This is where institutional knowledge gets extracted from someone's head into a
-> versioned artifact. It is the most valuable step and the one that cannot be
-> automated.
+**A6. Compare with what was paid** → *checkpoint 4: matches payroll.* Compare
+the calculation with what was actually paid under the old process
+(`icm reconcile`). Every difference is one of three things:
 
-### Step 5 — Calculate
+- an **underpayment** the old process missed, to be surfaced, not hidden;
+- an **overpayment**, a control the old process lacked;
+- a **missing or unexpected line**, a data or eligibility gap to close.
 
-Run the calculation (`icm calculate`). Produce per-rep statements
-(`icm statements`) and the full audit ledger. Spot-check a handful of payouts with
-`icm trace` to confirm each number explains itself ([Principle 2](#1-principles)).
+Repeat A4 to A6 until every line matches or every remaining difference is
+explained and signed off. Only then go live.
 
-### Step 6 — Reconcile → reaches **L3** (acceptance)
+### Part B — Every pay cycle
 
-Diff the computed run against **what was actually paid** (`icm reconcile`).
-Investigate every discrepancy:
+**B1. Confirm last cycle.** Before calculating anything new, compare what
+payroll **actually paid** last cycle with the payroll file it was sent
+(`icm reconcile` against payroll's own export). A manual override, a missed
+person or a keying error shows up here. Each difference becomes a named
+adjustment in this cycle, with its reason, so it is corrected once and on the
+record. ([CTRL-RECON-02](#reconciliation))
 
-- An **underpayment** the old process missed is a *win to surface*, not a bug to
-  hide.
-- An **overpayment** is a control the old process lacked.
-- A **missing or unexpected line** is a mapping or eligibility gap to close.
+**B2. Take in changes.** Before the cycle's data:
 
-Iterate Steps 4–6 until the diff is clean, or every remaining difference is
-explained and signed off. When the run matches reality line for line, you are at
-**L3: reconciled** — the highest rung, and the only honest place to go live.
+- **People:** starters, leavers, new splits, new managers and territories.
+- **Plan changes:** a change is a new, dated version of the plan, never an edit
+  to the old one. Write it down with its start period and the reason
+  ([`changes`](#61-the-plan)), add test cases for it, and run a before and after
+  on a recent cycle: "under the new plan, last month would have paid X instead of
+  Y". That comparison is what the business signs off.
+  ([CTRL-PLAN-11](#plan-structure))
+- **Backdated changes and late information:** a late deal, a cancellation, or a
+  plan change that reaches back into a closed period is handled in B4 as a
+  correction. It never reopens the closed period.
 
-### Step 7 — Lock & hand over
+**B3. Read and check the cycle's data.** Checkpoints 1 and 2 again, on the new
+data. If the plan changed in B2, checkpoint 3 as well.
 
-Lock the period, which pins the official run and generates the finance payout
-register. Distribute statements (safe by default — nothing sends without an
-explicit instruction). The client owns the plan, the config, and the data. There
-is no lock-in: the plan is a text file and the engine is free.
+**B4. Calculate the cycle and its corrections.** Calculate the cycle, and
+re-run any closed period that received late deals, cancellations or a backdated
+change. The difference is paid in this cycle as a correction, tagged with the
+period it belongs to, and each period is priced under the plan version in force
+for it. ([CTRL-CORR-01](#reconciliation))
 
-### Step 8 — Run the cadence
+**B5. Review.** Draft statements and a short list of exceptions go to whoever
+approves pay: anything checkpoint 2 flagged, every correction to a closed
+period, and every B1 adjustment. Nothing is final until it is approved.
 
-Each subsequent period repeats Steps 2–7 on new data against the now-fixed plan.
-Late deals flow through as period-locked true-ups with origin tracking, so a deal
-that arrives two months late is paid correctly *and* traceably, without
-rewriting history.
+**B6. Close the cycle.** Lock the period, which pins the approved calculation.
+Produce the payroll file (`icm register`) and send statements
+(`icm distribute`, safe by default: nothing sends without `--send`). The client
+keeps the plan, the configuration and the data; there is no lock-in.
+
+Then the next cycle starts at B1, with this cycle's payroll file as the thing to
+confirm.
+
+> Locking is done through the engine's HTTP API today; the command line has no
+> lock command yet.
 
 ---
 
-## 3. The conformance ladder
+## 3. The checkpoints
 
-Conformance is a ladder, not a checkbox. Each level is the acceptance gate for the
-next — you cannot honestly claim a rung until the one below it holds. **L3 is the
-only level at which you should pay real people real money.**
+Four checkpoints, each depending on the one before it: clean data means nothing
+if the files were read wrongly, and a tested plan means nothing if the data is
+dirty. **Only a calculation that passes checkpoint 4 is used to pay people.**
 
-| Level | Name | What it means | Proven by |
-|---|---|---|---|
-| **L0** | Parses | All three inputs load cleanly against the [data spec](#6-the-data-spec). | A calculation runs without a load error. |
-| **L1** | Validated | No **error**-severity findings from the data controls; warnings reviewed and accepted. | `icm validate` clean. |
-| **L2** | Plan-verified | The plan is structurally sound and every assertion produces its stated payout. | `icm lint` (no errors) + `icm check-plan` (all pass). |
-| **L3** | Reconciled | The run matches the last real pay cycle, **line for line.** | `icm reconcile` clean ([CTRL-RECON-01](#reconciliation)). |
+| # | Checkpoint | Code | What it means | Proven by |
+|---|---|---|---|---|
+| 1 | Files readable | L0 | The plan, payees and deals all load against the [data spec](#6-the-data-spec). | A calculation runs without a load error. |
+| 2 | Data clean | L1 | No error-level findings from the data controls; every warning reviewed and accepted. | `icm validate` clean. |
+| 3 | Plan tested | L2 | The plan, and every dated version of it, is structurally sound, and every test case pays what it states. | `icm lint` (no errors) + `icm check-plan` (all pass). |
+| 4 | Matches payroll | L3 | At setup, the calculation matches the last real pay cycle line for line. In every cycle after, what payroll paid matches the payroll file. | `icm reconcile` clean ([CTRL-RECON-01, -02](#reconciliation)). |
 
-A run's conformance claim should cite the level and the method version it was
-checked against — e.g. *"L3 conformant, OpenIncent Method v0.1."* It is a claim
-anyone can re-check, because the inputs, the engine, and this document are all
-open.
+Checkpoints 1 and 2 run every cycle. Checkpoint 3 runs at setup and whenever
+the plan changes. Checkpoint 4 runs at setup against the old process, and every
+cycle after in B1 against payroll.
 
-This is also the buyer's vocabulary. *"Does your commission process produce
-L3-reconcilable output, with a ledger that traces every line?"* is a question you
-can put to a spreadsheet, to a six-figure ICM platform, or to a vendor — and most
-of them cannot answer yes.
+A conformance claim cites the checkpoint and the method version, e.g.
+*"checkpoint 4 (L3), OpenIncent Method v0.2"*. Anyone can re-check it, because
+the inputs, the engine, and this document are all open.
 
 ---
 
@@ -200,10 +219,10 @@ you cannot *prove* the number — and they leave it from opposite directions.
 
 | | The spreadsheet | The black-box platform | **The OpenIncent Method** |
 |---|---|---|---|
-| **Can it explain a payout?** | Only by re-reading formulas by hand. | "The system calculated it." | **Yes — every line traces to its exact rule and deal.** |
-| **Is the plan versioned?** | No — it *is* the spreadsheet. | Inside the vendor, hard to diff. | **Yes — plain text, in version control.** |
+| **Can it explain a payout?** | Only by re-reading formulas by hand. | Inside the vendor's tools, for those licensed to use them. | **Yes — every line traces to its exact rule and deal, in files you keep.** |
+| **Is the plan versioned?** | No — it *is* the spreadsheet. | Inside the vendor, hard to diff. | **Yes — plain text, with dated versions and the reason for each change.** |
 | **Does it self-check?** | No. Silent errors until a rep finds one. | Some validation, opaque. | **Yes — named controls + plan assertions before payday.** |
-| **Is "is it right?" provable?** | No. | No — no reconciliation gate. | **Yes — L3 reconciles line-for-line to what you actually paid.** |
+| **Is "is it right?" provable?** | No. | At implementation, through a parallel run; rarely every cycle. | **Yes — checked against what was actually paid at setup and again every cycle.** |
 | **Who can run it?** | The one person who built it. | A full-time admin / the vendor. | **Anyone who follows the method.** |
 | **Where does your data live?** | Your machine. | The vendor's cloud. | **Your machine. It never has to leave.** |
 | **What does it cost?** | "Free" + hidden risk + evenings. | Per-seat, forever, climbing. | **The engine is free. You pay only for someone to run it, if you want that.** |
@@ -256,6 +275,7 @@ Checked by `icm lint` (static, no data) and by model validation at load time.
 | **CTRL-PLAN-08** | `payout_cap` is not below stated `ote` (on-target reps would be capped). | warning | `icm lint` (`cap_below_ote`). |
 | **CTRL-PLAN-09** | A min-attainment gate is not above 100% unless intended. | warning | `icm lint` (`gate_above_target`). |
 | **CTRL-PLAN-10** | Plan declares assertions (so transcription errors are caught). | info | `icm lint` (`no_assertions`). |
+| **CTRL-PLAN-11** | A plan change is a new dated version (`changes`: `effective_from`, `reason`), starting on a period boundary; earlier periods keep their version. | error | Plan validation at load. |
 
 ### Plan correctness (assertions)
 
@@ -298,6 +318,8 @@ Checked by `icm validate`.
 | Code | Property | Severity | Enforcement |
 |---|---|---|---|
 | **CTRL-RECON-01** | Every computed payout matches what was actually paid, for one full real pay cycle (no underpaid / overpaid / missing / unexpected lines). | error (acceptance gate) | `icm reconcile`. |
+| **CTRL-RECON-02** | Each cycle, what payroll actually paid matches the payroll file sent for the previous cycle; every difference becomes a named adjustment with a reason in the current cycle. | error | `icm reconcile` against payroll's export (B1). |
+| **CTRL-CORR-01** | A late deal, cancellation or backdated plan change for a closed period is paid as a correction in the current period, tagged with its original period and priced under that period's plan version. A closed period is never reopened. | error | Period locking + true-ups; plan versions route each period. |
 
 ---
 
@@ -339,6 +361,9 @@ version control.
 | `rounding` | rounding object | | Display-boundary rounding. Default: exact (no rounding). |
 | `ote` | decimal ≥ 0 | | Stated on-target earnings. Metadata, but powers [CTRL-PLAN-08](#plan-structure) and the canonical OTE assertion. |
 | `assertions` | list of assertion | | Executable invariants — see [§6.1.2](#612-assertions). Strongly recommended. |
+| `attainment_basis` | `period` \| `cumulative` | | `cumulative` measures attainment year to date. Default `period`. |
+| `negative_balance` | `pay` \| `carry_forward` | | `carry_forward` pays 0 in a period of net clawbacks and recovers the deficit later. Default `pay`. |
+| `changes` | list of change | | Dated versions of the plan, oldest first. Each has `effective_from` (YYYY-MM, a period start), a required `reason`, and replaces any of `rules`, `payout_cap`, `draw`, `negative_balance` from that period on ([CTRL-PLAN-11](#plan-structure)). Test each version with an assertion whose `period` falls inside it. |
 
 ¹ Structurally optional so a skeleton plan loads, but a plan with no rules is a
 defect ([CTRL-PLAN-01](#plan-structure)).
@@ -472,11 +497,16 @@ The method is versioned independently of the engine.
 - **Major** (x.0) — breaking changes to the data spec or conformance ladder.
 
 The engine version that performed a check is recorded in the audit ledger, so a
-conformance claim ("L3 conformant, OpenIncent Method v0.1") is always
+conformance claim ("checkpoint 4, OpenIncent Method v0.2") is always
 reproducible.
 
-Status of v0.1: **the spec and control library track the current engine; the
-conformance ladder and the method are stable in shape.** Gaps explicitly named
+Changes in v0.2: the method is split into setup and a repeating pay cycle;
+each cycle starts by confirming what payroll actually paid (CTRL-RECON-02);
+plan changes are dated versions (CTRL-PLAN-11); corrections to closed periods are
+tagged with their original period (CTRL-CORR-01); the checkpoints have plain
+names alongside their codes.
+
+Status of v0.2: **the spec and control library track the current engine.** Gaps explicitly named
 above (full payroll-handoff reconciliation, non-monthly period verification) are
 tracked in the [engine roadmap](icm-engine/ROADMAP.md).
 

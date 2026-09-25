@@ -90,9 +90,15 @@ a rule's base the referenced rule's payout on the same credited deal, after that
 rule's cap. References must point at an earlier rule, which makes cycles
 impossible and keeps the plan readable top to bottom.
 
+### 9. Mid-year plan changes ✅
+
+Plans change during the year, sometimes backdated. **Shipped:** a plan carries dated `changes`, each
+replacing the rules, cap, draw or negative-balance setting from its `effective_from` period, with a
+required reason. Every period is paid under its own version, late deals for closed periods are priced
+under the old version, and year-to-date attainment and draw balances carry across the change.
+
 ## On the radar (built on demand / on customer pull)
 
-- Plan effective-date versioning (Plan A Jan–Mar, Plan B from Apr) without manual partitioning.
 - What-if / sensitivity modeling and org-level reporting.
 
 ## Deliberate non-goals (for now)

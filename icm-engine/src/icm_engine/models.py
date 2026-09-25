@@ -455,8 +455,74 @@ class FormulaRule(BaseModel):
         return self
 
 
+class RedlineRule(BaseModel):
+    """Pay on price sold above a redline, per unit of system size (solar sales).
+
+    Per credited deal: (price - redline) x size - deductions, read from the
+    deal's own columns, then scaled by the credit's share (a 60/40 setter and
+    closer split pays 60% and 40%). It depends on nothing but the deal, so a
+    cancellation can be priced in any later period.
+
+    With `milestones`, each row names the milestone it pays (`M1: 0.5` at
+    signing, `M2: 0.5` at install) and pays that share. A row whose milestone
+    is `cancel_value` takes back the share already paid: the milestones listed
+    in the row's `paid_milestones` column, else `clawback_on_cancel`, else the
+    first milestone.
+    """
+
+    type: Literal["redline"]
+    id: str
+    filter: str | None = None
+    redline: Decimal | None = Field(default=None, ge=Decimal("0"))  # price per unit, same for every deal
+    redline_field: str | None = None      # or a column carrying each deal's redline
+    price_field: str = "ppw"              # price sold per unit (e.g. $/W)
+    size_field: str = "watts"             # units sold (e.g. system watts)
+    deductions_field: str | None = None   # optional column of amounts taken off (adders, dealer fees)
+    floor_at_zero: bool = True            # sold below redline pays 0 rather than a negative amount
+    milestone_field: str = "milestone"
+    milestones: dict[str, Decimal] | None = None
+    cancel_value: str = "cancel"
+    clawback_on_cancel: list[str] | None = None
+    cap: Decimal | None = Field(default=None, ge=Decimal("0"))
+
+    @model_validator(mode="after")
+    def _check(self) -> RedlineRule:
+        if (self.redline is None) == (self.redline_field is None):
+            raise ValueError(
+                f"redline rule '{self.id}' needs exactly one of `redline` (one price for "
+                f"every deal) or `redline_field` (a column with each deal's redline)"
+            )
+        if self.milestones is not None:
+            if not self.milestones:
+                raise ValueError(f"redline rule '{self.id}' has an empty milestones list")
+            if any(v < 0 for v in self.milestones.values()):
+                raise ValueError(f"redline rule '{self.id}': milestone shares cannot be negative")
+            total = sum(self.milestones.values(), Decimal("0"))
+            if abs(total - Decimal("1")) > Decimal("1e-9"):
+                raise ValueError(
+                    f"redline rule '{self.id}': milestone shares must add up to 1, got {total}"
+                )
+            if self.cancel_value in self.milestones:
+                raise ValueError(
+                    f"redline rule '{self.id}': '{self.cancel_value}' is the cancellation "
+                    f"marker and cannot also be a milestone"
+                )
+            unknown = [m for m in self.clawback_on_cancel or [] if m not in self.milestones]
+            if unknown:
+                raise ValueError(
+                    f"redline rule '{self.id}': clawback_on_cancel names {unknown}, which "
+                    f"are not milestones ({', '.join(self.milestones)})"
+                )
+        elif self.clawback_on_cancel:
+            raise ValueError(
+                f"redline rule '{self.id}' sets clawback_on_cancel without milestones; "
+                f"without milestones a cancellation takes back the whole deal"
+            )
+        return self
+
+
 Rule = Annotated[
-    FlatRateRule | TieredRule | AcceleratorRule | FormulaRule,
+    FlatRateRule | TieredRule | AcceleratorRule | FormulaRule | RedlineRule,
     Discriminator("type"),
 ]
 
@@ -486,8 +552,28 @@ class PlanAssertion(BaseModel):
     deals: list[Decimal] = Field(min_length=1)    # deal values for one synthetic payee
     expect_total: Decimal                          # expected total commission
     base: Literal["amount", "margin"] = "amount"   # treat the deal values as amount or margin
+    # Extra columns set on every deal, for rules priced from a deal's own
+    # columns - e.g. {ppw: "3.40", watts: "8000", milestone: "M1"} for redline.
+    fields: dict[str, str] = Field(default_factory=dict)
     period: str = Field(default="2026-01", pattern=r"^\d{4}-\d{2}$")
     tolerance: Decimal = Field(default=Decimal("0.01"), ge=Decimal("0"))
+
+
+class PlanChange(BaseModel):
+    """A dated change to a plan: what replaces what, from which period on.
+
+    The plan's own fields apply from the start. Each change applies from its
+    `effective_from` period until the next change, and replaces only the
+    fields it sets. The reason is required, because a plan change nobody can
+    explain later is the dispute this tool exists to prevent.
+    """
+
+    effective_from: str = Field(pattern=r"^\d{4}-\d{2}$")
+    reason: str = Field(min_length=1)
+    rules: list[Rule] | None = None
+    payout_cap: Decimal | None = Field(default=None, ge=Decimal("0"))
+    draw: Draw | None = None
+    negative_balance: Literal["pay", "carry_forward"] | None = None
 
 
 class Plan(BaseModel):
@@ -505,10 +591,61 @@ class Plan(BaseModel):
     rules: list[Rule] = Field(default_factory=list)
     payout_cap: Decimal | None = Field(default=None, ge=Decimal("0"))
     draw: Draw | None = None
+    # "pay": a period whose clawbacks exceed its earnings pays a negative amount.
+    # "carry_forward": that period pays 0 and the deficit is recovered from later
+    # commission, the same way a recoverable draw is. A payee with a draw is
+    # handled by the draw.
+    negative_balance: Literal["pay", "carry_forward"] = "pay"
     pro_rating: str = Field(default="full", pattern=r"^(full|daily|zero)$")
     rounding: RoundingPolicy | None = None  # None = exact (no display rounding)
     ote: Decimal | None = Field(default=None, ge=Decimal("0"))  # stated on-target earnings (metadata)
     assertions: list[PlanAssertion] = Field(default_factory=list)
+    # Dated versions of the plan, oldest first. See PlanChange.
+    changes: list[PlanChange] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_changes(self) -> Plan:
+        """Changes run oldest first, start on a period boundary, and each
+        resulting version must be a valid plan in its own right."""
+        starts = [c.effective_from for c in self.changes]
+        if starts != sorted(starts) or len(set(starts)) != len(starts):
+            raise ValueError(
+                f"plan '{self.plan_id}': changes must be listed oldest first, one per "
+                f"period, got {starts}"
+            )
+        first_months = {"monthly": None, "quarterly": {1, 4, 7, 10}, "annual": {1}}
+        allowed = first_months.get(self.period_type)
+        for start in starts:
+            month = int(start[5:])
+            if allowed is not None and month not in allowed:
+                raise ValueError(
+                    f"plan '{self.plan_id}': a change starting {start} falls inside a "
+                    f"{self.period_type} period. Start it on the first month of a period."
+                )
+        for start in starts:
+            self.version_for(start)  # raises if that version is not a valid plan
+        return self
+
+    def version_for(self, period: str) -> Plan:
+        """The plan as it applies to `period` (YYYY-MM), with no changes left."""
+        if not self.changes:
+            return self
+        merged = self.model_dump(exclude={"changes"})
+        for change in self.changes:
+            if change.effective_from > period:
+                break
+            for field in ("rules", "payout_cap", "draw", "negative_balance"):
+                if field in change.model_fields_set:
+                    merged[field] = change.model_dump()[field]
+        return Plan.model_validate(merged)
+
+    def version_start(self, period: str) -> str | None:
+        """When the version that applies to `period` began (None: from the start)."""
+        start = None
+        for change in self.changes:
+            if change.effective_from <= period:
+                start = change.effective_from
+        return start
 
     @model_validator(mode="after")
     def _check_rule_composition(self) -> Plan:

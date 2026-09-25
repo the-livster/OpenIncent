@@ -238,8 +238,29 @@ total on $12,000          = $660.00
 - **Zero quota:** the **top tier rate is applied to everything** (you can't measure attainment with no
   quota, so the engine pays the highest defined rate rather than nothing). ▶ **Knob.**
 
+**Reversals** (fall-offs, refunds, credit notes). A negative line comes back *down* through the bands, top
+band first, each slice at the rate of the band it comes off. A window's total therefore depends only on its
+net bookings: a deal booked and reversed in the same window pays nothing, whatever order the lines arrive
+in. Below zero the first band's rate carries on.
+
+```
+quota 20,000, tiers [1.0 → 10%, 100.0 → 15%]: 18,000 + 7,200 booked (126%), then the 7,200 reversed
+reversal : 5,200 off 100%→126% @ 15% = -780.00
+           2,000 off  90%→100% @ 10% = -200.00
+month    : 1,800.00  (18,000 @ 10%, as if the 7,200 had never been booked)
+```
+
+A reversal must carry the `deal_id` of the deal it reverses, and that deal must be booked to the same payee
+**in the same window**. From any other window the rule cannot know what rate the deal was paid at (a
+placement paid at 15% in May and reversed in a quiet June would come back at 10%), so the run stops with
+an error naming the line rather than guess. That holds under `attainment_basis: cumulative` too, because
+each window is priced against its own year-to-date quota. To reverse a deal from an earlier period, re-run
+that period without it: once the period is locked, the difference is paid as a true-up ([§8](#8-locking-versioning--payout-adjustments)).
+Or enter the amount as a manual adjustment. Zero-quota payees are exempt, since every deal pays the top rate.
+
 Ledger events: `rule_evaluated` (per payee/window), `tier_crossed` (when a boundary is crossed),
-`commission_computed` (per slice), `rule_skipped` (filtered, or payee not found).
+`tier_crossed_down` (when a reversal drops back below one), `commission_computed` (per slice),
+`rule_skipped` (filtered, or payee not found).
 
 ### 7.3 Accelerator
 
@@ -262,6 +283,9 @@ total                                = $750.00
 
 - **Zero quota:** the accelerator is **skipped** (`rule_skipped`, reason `zero_quota`) — the opposite of
   tiered's zero-quota behavior. ▶ **Knob:** make zero-quota behavior consistent/configurable across rules.
+- **Reversals** take back only the part of the position above the threshold, which is what this rule paid
+  on, so a window's total depends only on its net bookings. The same-window and `deal_id` requirements as
+  tiered apply ([§7.2](#72-tiered-boundary-crossing-marginal)).
 
 Ledger events: `commission_computed`; `rule_skipped` (filtered, payee not found, or zero quota).
 
@@ -296,6 +320,81 @@ Examples: `product == "Enterprise"`, `amount >= 50000`,
 
 ---
 
+### 7.5 Redline (solar and price-above-floor pay)
+
+Pays the price sold above a redline, per unit of size, read from each deal's own columns:
+
+`pay = (price − redline) × size − deductions`, then × the credit's share (setter/closer splits).
+
+| Field | Default | Meaning |
+|---|---|---|
+| `redline` / `redline_field` | — | one value for every deal, or a column carrying each deal's redline (exactly one) |
+| `price_field` | `ppw` | price sold per unit, e.g. $/W |
+| `size_field` | `watts` | units sold, e.g. system watts |
+| `deductions_field` | none | column of amounts taken off (adders, dealer fees) |
+| `floor_at_zero` | `true` | selling below redline pays 0; `false` charges the difference |
+| `milestones` | none | shares adding up to 1, e.g. `{M1: 0.5, M2: 0.5}` |
+| `milestone_field` | `milestone` | the column naming each row's milestone |
+| `cancel_value` | `cancel` | the milestone value that marks a cancellation |
+| `clawback_on_cancel` | first milestone | milestones a cancellation takes back |
+
+With milestones, each row of the deal file is one milestone of one deal and pays that milestone's share,
+in that row's period. A `cancel` row takes back the milestones in its `paid_milestones` column (`M1;M2`),
+else `clawback_on_cancel`, else the first milestone. Without milestones a row pays the whole deal and a
+cancellation takes all of it back.
+
+**Worked example** — redline $2.90/W, `M1: 0.5, M2: 0.5`, an 8,000 W system sold at $3.40/W, split 70/30
+closer/setter:
+
+```
+deal pay : (3.40 − 2.90) × 8,000 = 4,000.00
+July  M1 : closer 4,000 × 70% × 50% = 1,400.00   setter 600.00
+Sept  cancel (before install)       = −1,400.00   setter −600.00
+```
+
+Because the pay depends only on the deal, a cancellation is priced exactly in any later period, unlike a
+reversal on a tiered rule ([§7.2](#72-tiered-boundary-crossing-marginal)). A row the rule cannot price
+(no price, size or redline; a milestone the rule does not define; a milestone on a rule without milestones,
+which would pay the whole deal on every row) stops the run with an error naming the line.
+
+Put the contract value in `amount` on one row per deal (and 0 on the others) if anything reads attainment,
+or each milestone row counts it again. Plan assertions can set deal columns with `fields:` —
+see `examples/templates/solar_redline.yaml`.
+
+Ledger events: `commission_computed` (price, redline, size, deductions, split, milestone, share);
+`rule_skipped` (filtered).
+
+### 7.6 Mid-year plan changes
+
+A plan changes during the year without starting a new plan file. The plan's own fields apply from the
+start; each entry under `changes` applies from its `effective_from` period and replaces only the fields
+it sets (`rules`, `payout_cap`, `draw`, `negative_balance`). A `reason` is required.
+
+```yaml
+rules:
+  - {type: flat_rate, id: fee, rate: "0.10"}
+changes:
+  - effective_from: "2026-07"
+    reason: "Q3 rate rise approved 20 June"
+    rules:
+      - {type: flat_rate, id: fee, rate: "0.12"}
+```
+
+- **Each period is paid under the version in force for it.** Deals, manual adjustments, MBOs, locked
+  periods and their prior results are routed by period.
+- **A late deal for a closed period is priced under that period's version**, then paid as a correction in
+  the current period ([§8](#8-locking-versioning--payout-adjustments)). A backdated change works the same
+  way: re-run the affected closed periods and the difference is paid now.
+- **Year-to-date attainment carries across a change.** On `attainment_basis: cumulative`, deals before the
+  change still count toward the position the new rates start from; a July rate change does not reset
+  anyone against an annual quota.
+- **Draw and carried-forward balances carry across a change.**
+- A change starts on the first month of a period (any month for monthly plans; January, April, July or
+  October for quarterly), changes are listed oldest first, and each resulting version must be a valid
+  plan. Plan assertions pick a version with `period:`.
+
+Ledger event: `plan_version`, one per version used in a run, with its start and reason.
+
 ## 8. Locking, versioning & payout adjustments
 
 **Versioning.** Every calculation run is versioned per `(plan_id, period)`. Re-running creates a new draft
@@ -303,6 +402,10 @@ version; nothing is overwritten.
 
 **Locking.** Closing a period **locks** it to one official calculation (the pinned version). A lock holds
 until you deliberately unlock; re-running a locked period creates a new *draft* without disturbing the lock.
+
+**Per plan.** A run that covers several plans saves one calculation per `(plan_id, period)`, holding only
+that plan's payees, and each is locked on its own (`POST /v1/periods/{plan_id}/{period}/lock`). Lock every
+plan that paid the month before re-running it: a plan whose month is not locked is recalculated as a draft.
 
 **Recalculation of a locked period (true-ups).** When a new run includes transactions whose window is
 locked, the engine does **not** rewrite the locked statement. Instead:
@@ -318,7 +421,8 @@ This is what makes the headline scenarios correct:
 - **Late deal** — a March deal uploaded in June: March's locked statement is untouched; June receives a
   true-up for exactly the *additional* commission the late deal creates (including any attainment shift it
   causes for other March deals), tagged `origin_period = 2026-03`.
-- **Clawback** — a previously-paid deal removed: a **negative** true-up in the payout period.
+- **Clawback** — a previously-paid deal removed: a **negative** true-up in the payout period. This is how a
+  fall-off from a locked period is recorded on a tiered or accelerator plan ([§7.2](#72-tiered-boundary-crossing-marginal)).
 - **No change** — identical recompute: **no true-up lines** (delta is zero).
 
 Only locked-period deltas become true-ups; open-period deals are never double-counted. (This was a critical
@@ -395,6 +499,12 @@ calculation path only. Recalculation of locked periods with draw balances is not
 logic runs before true-ups and does not interact with locked-period delta emission. Contact the maintainer
 if this is a requirement.
 
+**Negative balances.** `negative_balance: carry_forward` on the plan floors each period's payout at 0
+when clawbacks exceed commission and recovers the deficit from later commission. It is a recoverable draw
+of 0: a `balance` line adds back the shortfall ("Carried Forward" on the statement), and later periods take
+it back ("Balance Recovered"), with the balance saved between runs like a draw's. A payee with a draw is
+handled by the draw. The default, `pay`, lets a period go negative.
+
 ### 9.3 Manual adjustments
 
 `ManualAdjustment` objects represent a manual override — e.g., a discretionary bonus, a one-off clawback,
@@ -411,7 +521,8 @@ Adjustments do not pass through rules and do not affect attainment.
 ## 10. Money & rounding
 
 - All amounts are `Decimal`; **negative amounts are allowed** end-to-end (refunds, cancellations,
-  clawbacks).
+  clawbacks). On tiered and accelerator rules a reversal has to sit in the same window as the deal it
+  reverses ([§7.2](#72-tiered-boundary-crossing-marginal)).
 - **No rounding is applied.** A commission is the exact product of its inputs: `0.05 × 1291.90 = 64.595`
   is stored and reported as `64.595`, **not** `$64.60`. There is currently no quantization to a currency's
   minor unit.
@@ -441,8 +552,11 @@ Every figure is backed by one or more of these events (`ledger.jsonl`):
 | `rule_evaluated`      | a tiered/accelerator rule begins for a payee/window        |
 | `rule_skipped`        | a deal is excluded (filter, payee-not-found, or zero-quota) |
 | `tier_crossed`        | cumulative attainment crosses a tier boundary              |
+| `tier_crossed_down`   | a reversal takes attainment back below a tier boundary     |
 | `commission_computed` | a commission slice is produced (the core "why $X" record)  |
 | `true_up`             | a locked-period delta is paid into the payout period       |
+| `balance`             | a deficit is carried forward or recovered (carry_forward)  |
+| `plan_version`        | a dated version of the plan applies to part of the run     |
 
 ---
 
@@ -473,6 +587,9 @@ should become.
 - Non-monthly **locking** is not fully verified ([§3](#3-periods--windows)).
 - **No rounding** by default ([§10](#10-money--rounding)).
 - No caps/floors/draws/guarantees/MBOs/multi-currency yet.
-- Recoverable draws do not interact with locked-period true-up recalculation ([§9.2](#92-draws--guarantees)).
+- Recoverable draws and carried-forward deficits do not interact with locked-period true-up recalculation ([§9.2](#92-draws--guarantees)).
+- On a tiered or accelerator plan, a fall-off from an earlier period cannot be entered as a negative line in
+  the current one; it is recorded by re-running the original period (a true-up) or as a manual adjustment
+  ([§7.2](#72-tiered-boundary-crossing-marginal)).
 - The `100.0`-as-top-tier convention is easy to misread ([§7.2](#72-tiered-boundary-crossing-marginal)).
 - MBOs, multi-currency, and per-category quota attainment remain future work.

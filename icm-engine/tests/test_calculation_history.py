@@ -144,11 +144,18 @@ def test_stored_result_applies_each_plans_own_rounding(client):
     assert response.status_code == 200, response.text
     live = response.json()
 
-    stored = client.get("/v1/calculations/" + only_id(live) + "/result").json()
-    assert stored["summary"] == live["summary"]
-    assert stored["payout_totals"] == live["payout_totals"]
+    # Each plan's month is saved as its own calculation, so each can be locked.
+    assert set(live["calculation_ids"]) == {"A:2026-01", "B:2026-01"}
+    summary: dict[str, str] = {}
+    payout_totals: dict[str, str] = {}
+    for calculation_id in live["calculation_ids"].values():
+        stored = client.get("/v1/calculations/" + calculation_id + "/result").json()
+        summary.update(stored["summary"])
+        payout_totals.update(stored["payout_totals"])
+    assert summary == live["summary"]
+    assert payout_totals == live["payout_totals"]
     # floor and half-up must differ here, or the test proves nothing about rounding.
-    assert stored["summary"]["PA"] != stored["summary"]["PB"]
+    assert summary["PA"] != summary["PB"]
 
 
 def test_calculation_inputs_return_the_linked_transactions(client):

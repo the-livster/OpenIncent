@@ -104,3 +104,34 @@ def test_statements_requires_a_plan(tmp_path: Path) -> None:
         "--output", str(tmp_path / "x"),
     ])
     assert result.exit_code == 1
+
+
+def test_unpriceable_reversal_is_an_error_not_a_traceback(tmp_path: Path) -> None:
+    # A June fall-off of a May placement on a tiered plan: the engine refuses
+    # to price it, and the CLI says which line and what to do about it.
+    plan = tmp_path / "plan.yaml"
+    plan.write_text(
+        "plan_id: perm\nname: Perm\ncurrency: GBP\nperiod_type: monthly\n"
+        "rules:\n  - type: tiered\n    id: fee\n    tiers:\n"
+        "      - threshold_pct: '1.0'\n        rate: '0.10'\n"
+        "      - threshold_pct: '100.0'\n        rate: '0.15'\n"
+    )
+    payees = tmp_path / "payees.csv"
+    payees.write_text("id,name,quota,plan_id,effective_from\nP1,Priya,20000,perm,2024-01-01\n")
+    txns = tmp_path / "deals.csv"
+    txns.write_text(
+        "id,payee_id,deal_id,period,amount\n"
+        "PL-2,P1,PL-2,2026-05,7200\n"
+        "PL-2-CB,P1,PL-2,2026-06,-7200\n"
+    )
+
+    for command in (
+        ["--plan", str(plan), "--output", str(tmp_path / "out"), "--no-db"],
+        ["statements", "--plan", str(plan), "--output", str(tmp_path / "stmts")],
+    ):
+        result = runner.invoke(app, [*command, "--transactions", str(txns), "--payees", str(payees)])
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit), result.exception
+        output = " ".join(result.output.split())  # Rich wraps at the terminal width
+        assert "Error: Line PL-2-CB" in output
+        assert "was booked to P1 in 2026-05" in output

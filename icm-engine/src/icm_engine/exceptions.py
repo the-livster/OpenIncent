@@ -25,3 +25,29 @@ class MissingAPIKeyError(Exception):
             "  ANTHROPIC_API_KEY  (for Anthropic, legacy)\n"
             "Or pass --api-key on the CLI."
         )
+
+
+class PlanDataError(ValueError):
+    """Deal lines a rule refuses to price, each with what to do about it.
+
+    Raised mid-run by the engine; the CLI prints the problems and the API
+    returns them in the pre-flight `issues` shape under `code`.
+    """
+
+    code = "unpriceable_line"
+
+    def __init__(self, problems: list[str]) -> None:
+        self.problems = problems
+        super().__init__("\n".join(f"- {p}" for p in problems))
+
+
+class ReversalError(PlanDataError):
+    """Negative lines a tiered or accelerator rule cannot price.
+
+    Those rules pay a deal by where it lands in the payee's attainment, so a
+    reversal is only priced correctly from a position that still holds the
+    deal it reverses. Anything else would come back at whatever rate the
+    current period happens to be at, so the run stops instead.
+    """
+
+    code = "unpriced_reversal"

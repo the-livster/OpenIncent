@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from icm_engine.formula import compile_formula
-from icm_engine.models import AcceleratorRule, FlatRateRule, FormulaRule, Plan, TieredRule
+from icm_engine.models import AcceleratorRule, FlatRateRule, FormulaRule, Plan, RedlineRule, TieredRule
 
 
 @dataclass
@@ -36,7 +36,9 @@ def lint_plan(plan: Plan) -> list[LintFinding]:
             out.append(LintFinding("error", "duplicate_rule_id", f"Duplicate rule id {r.id!r}."))
         seen.add(r.id)
 
-    has_base = any(isinstance(r, FlatRateRule | TieredRule | FormulaRule) for r in plan.rules)
+    has_base = any(
+        isinstance(r, FlatRateRule | TieredRule | FormulaRule | RedlineRule) for r in plan.rules
+    )
 
     for r in plan.rules:
         rate = getattr(r, "rate", None)

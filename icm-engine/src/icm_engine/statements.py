@@ -245,6 +245,10 @@ def _adj_label(c: Any, pid: str) -> str:
         if amount < 0:
             return "Draw Recovery"
         return "Draw Top-up"
+    if rule_id == "balance":
+        if amount < 0:
+            return "Balance Recovered"
+        return "Carried Forward"
 
     # Heuristics from notes/content
     if amount < 0:

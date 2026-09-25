@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import logging
 from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date as _date
 from decimal import Decimal
 from pathlib import Path
@@ -14,7 +16,7 @@ from rich.table import Table
 
 from icm_engine.database import Database, default_db_path
 from icm_engine.engine import CalculationResult, CommissionEngine
-from icm_engine.exceptions import MissingAPIKeyError, PlanGenerationError
+from icm_engine.exceptions import MissingAPIKeyError, PlanDataError, PlanGenerationError
 from icm_engine.ledger import write_ledger_jsonl
 from icm_engine.loader import load_payees, load_plan, load_transactions
 from icm_engine.models import Commission, Payee, Plan, Transaction
@@ -24,6 +26,24 @@ app = typer.Typer(pretty_exceptions_enable=False)
 db_app = typer.Typer(help="Database operations")
 app.add_typer(db_app, name="db")
 console = Console()
+
+
+@contextmanager
+def _refused_lines() -> Iterator[None]:
+    """Report deal lines the engine refuses to price, not a traceback.
+
+    Same shape as the pre-flight errors: the reader is a comp manager holding
+    a deal file, and each message says which line and what to do about it.
+    """
+    try:
+        yield
+    except PlanDataError as e:
+        for problem in e.problems:
+            console.print(f"[red]Error:[/red] {problem}")
+        console.print(
+            f"[red]{len(e.problems)} blocking problem(s). Fix the deal file and re-run.[/red]"
+        )
+        raise typer.Exit(code=1) from e
 
 
 @app.callback(invoke_without_command=True)
@@ -232,16 +252,17 @@ def main(
     if no_db or db is None:
         # No-DB mode: direct engine call, no locking or persistence
         engine = CommissionEngine()
-        if use_multi_plan:
-            result = engine.calculate_run(
-                plan_library, txns, payee_list,
-                adjustments=adjustments_list, mbos=mbos_list,
-            )
-        else:
-            result = engine.calculate(
-                list(plan_library.values())[0], txns, payee_list,
-                adjustments=adjustments_list, mbos=mbos_list,
-            )
+        with _refused_lines():
+            if use_multi_plan:
+                result = engine.calculate_run(
+                    plan_library, txns, payee_list,
+                    adjustments=adjustments_list, mbos=mbos_list,
+                )
+            else:
+                result = engine.calculate(
+                    list(plan_library.values())[0], txns, payee_list,
+                    adjustments=adjustments_list, mbos=mbos_list,
+                )
     else:
         # Full pipeline via shared run orchestration
         ctx = RunContext(
@@ -271,7 +292,8 @@ def main(
                 f"Late transactions will be attributed to {ctx.effective_period}.[/yellow]"
             )
 
-        result = execute(ctx)
+        with _refused_lines():
+            result = execute(ctx)
         calc_ids = persist(ctx, result)
 
         console.print("[green]Saved to database[/green]")
@@ -518,14 +540,15 @@ def _reconcile_compute(
     txns, _ = load_transactions(transactions)
     payee_list, _ = load_payees(payees)
     engine = CommissionEngine()
-    if plan:
-        result = engine.calculate(load_plan(plan), txns, payee_list)
-    else:
-        plan_library: dict[str, Plan] = {}
-        for pp in plans or []:
-            po = load_plan(pp)
-            plan_library[po.plan_id] = po
-        result = engine.calculate_run(plan_library, txns, payee_list)
+    with _refused_lines():
+        if plan:
+            result = engine.calculate(load_plan(plan), txns, payee_list)
+        else:
+            plan_library: dict[str, Plan] = {}
+            for pp in plans or []:
+                po = load_plan(pp)
+                plan_library[po.plan_id] = po
+            result = engine.calculate_run(plan_library, txns, payee_list)
     return commissions_to_totals(result.commissions)
 
 
@@ -977,16 +1000,17 @@ def statements_command(
         from icm_engine.loader import load_mbos
         mbos_list = load_mbos(mbos_file)
 
-    if len(plan_library) > 1:
-        result = CommissionEngine().calculate_run(
-            plan_library, txn_list, payee_list,
-            adjustments=adjustments_list, mbos=mbos_list,
-        )
-    else:
-        result = CommissionEngine().calculate(
-            plan_obj, txn_list, payee_list,
-            adjustments=adjustments_list, mbos=mbos_list,
-        )
+    with _refused_lines():
+        if len(plan_library) > 1:
+            result = CommissionEngine().calculate_run(
+                plan_library, txn_list, payee_list,
+                adjustments=adjustments_list, mbos=mbos_list,
+            )
+        else:
+            result = CommissionEngine().calculate(
+                plan_obj, txn_list, payee_list,
+                adjustments=adjustments_list, mbos=mbos_list,
+            )
 
     fmt_tuple = tuple(f.strip() for f in formats.split(","))
     out_dir = Path(output)

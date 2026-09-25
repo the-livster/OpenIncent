@@ -21,6 +21,7 @@ from slowapi.util import get_remote_address
 
 from icm_engine.database import Database, default_db_path
 from icm_engine.engine import CommissionEngine
+from icm_engine.exceptions import PlanDataError
 from icm_engine.ledger import LedgerEntry
 from icm_engine.loader import load_payees, load_plan, load_transactions
 from icm_engine.models import Commission, Payee, Plan
@@ -112,6 +113,21 @@ def _serialize(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_serialize(v) for v in obj]
     return obj
+
+
+def _refused_lines(e: PlanDataError) -> HTTPException:
+    """Deal lines the engine refuses to price, in the pre-flight shape.
+
+    A 400 with an `issues` list, like the pre-flight checks, so the desktop app
+    shows each line and what to do about it rather than a 500 and a traceback.
+    """
+    return HTTPException(status_code=400, detail={
+        "error": "Input problems must be resolved before calculating",
+        "issues": [
+            {"severity": "error", "code": e.code, "message": p}
+            for p in e.problems
+        ],
+    })
 
 
 def _present(
@@ -392,6 +408,8 @@ async def calculate(
         try:
             result = execute(ctx)
             calc_ids = persist(ctx, result)
+        except PlanDataError as e:
+            raise _refused_lines(e) from e
         except Exception as e:
             import traceback as _tb
             raise HTTPException(status_code=500, detail={
@@ -718,8 +736,8 @@ def get_calculation_result(
         "payouts": payouts,
         "payout_totals": {k: str(v) for k, v in payout_totals.items()},
         "sample": sample,
-        # Keyed by period, matching persist(), so the export endpoint and the
-        # UI's export helper accept this response unchanged.
+        # Keyed as persist() keys a single-plan run. The export endpoint and
+        # the UI's export helper read only the ids, so either keying works.
         "calculation_ids": {period: calculation_id},
         "commissions": commissions,
         "ledger": ledger,
@@ -1344,6 +1362,8 @@ async def export_statements(
                 plan_obj, txn_list, payee_list,
                 adjustments=adjustments_list, mbos=mbos_list,
             )
+        except PlanDataError as e:
+            raise _refused_lines(e) from e
         except Exception as e:
             import traceback as _tb2
             raise HTTPException(status_code=500, detail={

@@ -106,7 +106,7 @@ Every calculation run is versioned per `(plan_id, period)`. When you close a per
 - **Draft versions** — each recalculation creates a new version. Locks stay on the previously pinned version until you deliberately re-lock.
 - **Origin tracking** — commission lines carry an `origin_period` field showing which period the deal actually closed in, distinct from the payout period.
 
-Lock and unlock via the HTTP API or the CLI (`icm db` subcommands). Recalculation on locked periods is allowed by default; use `--no-allow-recalculate-locked` to enforce strict mode.
+Lock and unlock through the HTTP API (`POST` / `DELETE /v1/periods/{plan_id}/{period}/lock`); the CLI has no lock command yet. A run that covers several plans saves each plan's month as its own calculation, so lock each plan that paid the month. Recalculation on locked periods is allowed by default; use `--no-allow-recalculate-locked` to enforce strict mode.
 
 | Flag | Default | Purpose |
 |------|---------|---------|
@@ -154,10 +154,11 @@ Shipped:
 - ~~Multi-plan runs~~ ✅ — route each payee through their assigned plan in a single run
 - ~~Manager hierarchy~~ ✅ — auto-generate upline overrides from `manager_id` + `manager_override`
 - ~~Finance payout register~~ ✅ — rounded-to-cents XLSX auto-generated on period lock
+- ~~Mid-year plan changes (dated versions)~~ ✅
 - ~~Commission on gross profit (margin)~~ ✅ · ~~Plan assertions (`check-plan`)~~ ✅ · ~~Ingestion validation (`validate`)~~ ✅ · ~~Reconciliation (`reconcile`)~~ ✅
 
 Next:
-- **Plan effective-dating**, what-if modeling, and org-level reporting
+- What-if modeling and org-level reporting
 
 See [`ROADMAP.md`](./ROADMAP.md) for the field-validated priorities and their current status.
 
