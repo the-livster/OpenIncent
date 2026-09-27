@@ -1,3 +1,4 @@
+import ssl
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -63,6 +64,22 @@ class TestBuildMessages:
         assert messages[0].subject == "Statement for Alice - Q1"
         assert "Hi Alice" in messages[0].body
 
+    def test_total_quoted_only_when_known(self) -> None:
+        """Each email quotes that person's own total, and never a made-up $0."""
+        payees = [
+            _payee(id="P1", name="Alice", email="alice@example.com"),
+            _payee(id="P2", name="Bob", email="bob@example.com"),
+        ]
+        files = [
+            {"payee_id": "P1", "period": "2026-01", "path": "stmt_P1.html"},
+            {"payee_id": "P2", "period": "2026-01", "path": "stmt_P2.html"},
+        ]
+        messages, _ = build_messages(files, payees, totals={"P1": "GBP 2,480.00"})
+        alice, bob = sorted(messages, key=lambda m: m.payee_id)
+        assert "Your total is GBP 2,480.00." in alice.body
+        assert "total" not in bob.body.lower()
+        assert "$" not in bob.body
+
     def test_deterministic(self) -> None:
         """Same inputs produce identical output."""
         payees = [_payee(id="P1", name="Alice", email="a@b.com")]
@@ -80,6 +97,15 @@ class TestSendViaSmtp:
         results = send_via_smtp([msg], SmtpConfig(host="localhost"), dry_run=True)
         assert len(results) == 1
         assert results[0].status == "sent"
+
+    def test_direct_tls_still_verifies_the_server(self) -> None:
+        """Without STARTTLS (port 465), the connection still checks the certificate."""
+        msg = OutgoingMessage(payee_id="P1", to="a@b.com", subject="S", body="B")
+        with mock.patch("icm_engine.distribute.smtplib.SMTP_SSL") as mock_ssl:
+            send_via_smtp([msg], SmtpConfig(host="mail.example.com", port=465, use_tls=False))
+        context = mock_ssl.call_args.kwargs["context"]
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname
 
     def test_isolation_per_recipient(self) -> None:
         """Each recipient receives exactly one message with only their own data."""

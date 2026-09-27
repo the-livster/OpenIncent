@@ -20,6 +20,8 @@ from email.utils import formatdate
 from pathlib import Path
 from typing import Any
 
+DEFAULT_BODY = "Hi {name},\n\nHere is your commission statement for {period}.{total_line}\n\n- OpenIncent"
+
 
 @dataclass
 class OutgoingMessage:
@@ -56,16 +58,19 @@ def build_messages(
     payees: list[Any],
     *,
     subject_template: str = "Your commission statement for {period}",
-    body_template: str = (
-        "Hi {name},\n\nHere is your commission statement for {period}."
-        " Total: ${total}\n\n- OpenIncent"
-    ),
+    body_template: str = DEFAULT_BODY,
     generated_on: date | None = None,
+    totals: dict[str, str] | None = None,
 ) -> tuple[list[OutgoingMessage], list[SendResult]]:
     """Build OutgoingMessages pairing each payee's file(s) with their email.
 
     A payee with no email produces a SendResult(status="skipped", reason="no_email").
     Each message contains ONLY that payee's files and is addressed ONLY to them.
+
+    Templates may use {name}, {period}, {total} and {total_line}. `totals`
+    maps payee id to the figure to quote, currency included ("GBP 2,480.00");
+    without it {total} is empty and {total_line} says nothing, rather than
+    telling everyone they earned 0.
     """
     payee_map: dict[str, Any] = {}
     for p in payees:
@@ -92,11 +97,11 @@ def build_messages(
         files = by_payee[pid]
         period = _get(files[0], "period", "all") if files else "all"
 
-        # Compute total from statement filenames (or sum commission_amounts if available)
-        total = "0"
-        # Just use the period from the first file
-        subject = subject_template.format(name=name, period=period, total=total)
-        body = body_template.format(name=name, period=period, total=total)
+        total = (totals or {}).get(pid, "")
+        total_line = f" Your total is {total}." if total else ""
+        fields = {"name": name, "period": period, "total": total, "total_line": total_line}
+        subject = subject_template.format(**fields)
+        body = body_template.format(**fields)
         if generated_on:
             body += f"\n\nGenerated on: {generated_on}"
 
@@ -131,7 +136,9 @@ def send_via_smtp(
         return [SendResult(payee_id=m.payee_id, status="sent" if m.to else "skipped") for m in messages]
 
     results: list[SendResult] = []
-    context = ssl.create_default_context() if smtp_config.use_tls else None
+    # Check the server's certificate either way: SMTP_SSL given no context
+    # falls back to one that verifies nothing.
+    context = ssl.create_default_context()
 
     for msg in messages:
         try:
