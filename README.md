@@ -86,14 +86,16 @@ uv run icm --plan plan.yaml --transactions deals.csv --payees reps.csv --output 
 - **Audit ledger:** every decision point recorded — dispute resolution without recomputation
 - **Reconciliation:** diff a run against what was actually paid — surfaces underpaid, overpaid, and missed lines
 - **AI plan builder:** describe your comp plan in plain English, get validated YAML
+- **Ask an assistant (MCP):** `icm mcp` connects Claude Desktop, Claude Code or any MCP client. Ask about anyone's pay, trace a deal, or try a what-if deal; admins can also calculate, lock, export and email statements, with a preview and a confirmation for every change. Give each rep their own access (`icm access grant`) and they sign in from their own chat app to see their own pay, and nobody else's
 
 ## Architecture
 
 - **Engine:** Python 3.11+, pydantic v2, Decimal everywhere (no floats), deterministic
 - **CLI:** Typer + Rich
 - **API:** FastAPI (local only by default)
+- **Assistant:** MCP server on the official Python SDK, over stdio, or HTTP with per-person OAuth sign-in
 - **Desktop app:** React 19 + TypeScript + Vite + Tailwind, packaged via PyInstaller + pywebview
-- **Database:** SQLite (local), schema v10
+- **Database:** SQLite (local), schema v12
 - **Auto-updater:** Ed25519-signed manifest from GitHub Releases
 
 ## License

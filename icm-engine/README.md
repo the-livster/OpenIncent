@@ -106,7 +106,7 @@ Every calculation run is versioned per `(plan_id, period)`. When you close a per
 - **Draft versions** — each recalculation creates a new version. Locks stay on the previously pinned version until you deliberately re-lock.
 - **Origin tracking** — commission lines carry an `origin_period` field showing which period the deal actually closed in, distinct from the payout period.
 
-Lock and unlock through the HTTP API (`POST` / `DELETE /v1/periods/{plan_id}/{period}/lock`); the CLI has no lock command yet. A run that covers several plans saves each plan's month as its own calculation, so lock each plan that paid the month. Recalculation on locked periods is allowed by default; use `--no-allow-recalculate-locked` to enforce strict mode.
+Lock and unlock through the HTTP API (`POST` / `DELETE /v1/periods/{plan_id}/{period}/lock`), or ask the assistant to lock ([below](#ask-an-assistant-mcp)); the CLI has no lock command yet. A lock pins one calculation of that plan and period: naming a run from another plan or month is refused. A run that covers several plans saves each plan's month as its own calculation, so lock each plan that paid the month. Recalculation on locked periods is allowed by default; use `--no-allow-recalculate-locked` to enforce strict mode.
 
 | Flag | Default | Purpose |
 |------|---------|---------|
@@ -125,9 +125,58 @@ Lock and unlock through the HTTP API (`POST` / `DELETE /v1/periods/{plan_id}/{pe
 
 ## Interfaces
 
-- **CLI** — `uv run icm …` (calculate, `statements`, `trace`, `reconcile`, `validate`, `check-plan`, `distribute`, `plan-from-text`, `db` subcommands)
+- **CLI** — `uv run icm …` (calculate, `statements`, `trace`, `reconcile`, `validate`, `check-plan`, `distribute`, `plan-from-text`, `mcp`, `access`, `db` subcommands)
 - **HTTP API** — `icm serve`
+- **MCP server** — `icm mcp` for AI assistants, and `icm mcp --http` with `icm access` to give each person their own ([below](#ask-an-assistant-mcp))
 - **Desktop app** — a local native window (with auto-update; see [`RELEASING.md`](./RELEASING.md))
+
+## Ask an assistant (MCP)
+
+`icm mcp` connects OpenIncent to an AI assistant that speaks the Model Context Protocol, such as Claude Desktop, Claude Code or Cursor. Ask in plain English: *"What did Priya earn in May, and why?"*, *"Trace deal PL-1087"*, *"What would a £10,000 deal do to my May pay?"* The tools return figures already calculated and formatted, and the assistant is told to quote them rather than do its own arithmetic, so its answers match the statements.
+
+```bash
+uv sync --extra mcp
+uv run icm mcp --print-config    # the entry for your client's config, and the `claude mcp add` line
+```
+
+This runs on your machine, for you, and reads the same database as the app (`--db PATH`, else `ICM_DB_PATH`, else the app's own). To give other people access, see [below](#give-each-person-their-own-access). What the assistant reads goes to the model behind it, so connect only an assistant you're allowed to share pay data with.
+
+| Command | What it can do |
+|---------|----------------|
+| `icm mcp` | Answer about anyone; calculate a period, lock it, export statements, email them |
+| `icm mcp --read-only` | Answer about anyone; change nothing |
+| `icm mcp --payee P-101` | Answer only as that payee would see it, to check what they'll get |
+
+Tools: `get_overview`, `find_payees`, `list_runs`, `get_run`, `get_pay`, `explain_pay`, `trace_deal`, `get_plan` and `simulate_deal` (a what-if deal, never saved). Admins also get `calculate_period`, `lock_period`, `export_statements` and `send_statements`.
+
+**Every change is confirmed.** A pay-cycle tool first returns a preview and a `confirm_token`. Nothing changes until the assistant calls it again with that token, which it's told to do only after you agree. A token fits only its own preview: if the files or the saved results change in between, it's refused.
+
+**Email** goes out over SMTP once `ICM_SMTP_HOST`, `ICM_SMTP_PORT`, `ICM_SMTP_USER`, `ICM_SMTP_PASS` and `ICM_SMTP_FROM` are set (`ICM_SMTP_TLS=0` connects over TLS from the start, as port 465 expects, instead of STARTTLS), the same settings as `icm distribute --smtp-from-env`. Without them, the assistant can write one `.eml` per person to a folder for you to send.
+
+### Give each person their own access
+
+Don't hand out the database: whoever can open that file can read everyone's pay. Instead, run the assistant as a small web service beside it and give each person their own access code. They sign in from their own chat app and see only what their access allows: a payee, their own pay and nobody else's; an administrator, everyone's. Nobody can change anything this way.
+
+1. **Grant access.** Each command prints that person's code once. Send it to them privately.
+
+   ```bash
+   icm access grant P-101                          # Priya: their own pay only (a name works too)
+   icm access grant --admin --label "Sam (finance)"  # everyone's pay, read-only
+   ```
+
+2. **Serve it** where their chat apps can reach it, over HTTPS:
+
+   ```bash
+   icm mcp --http --public-url https://comp.example.com
+   ```
+
+   It listens on `127.0.0.1:8765` (`--host`, `--port`). Put it behind anything that provides HTTPS at that address, such as Caddy, nginx or a Cloudflare tunnel. Sign-in refuses plain HTTP except on the same computer.
+
+3. **Each person connects.** In Claude: Settings > Connectors > Add custom connector, with `https://comp.example.com/mcp`. A sign-in page opens; they paste their code, and that's it. In Claude Code: `claude mcp add --transport http openincent https://comp.example.com/mcp`, then `/mcp` to sign in. A client that sends headers can use the code directly: `Authorization: Bearer <code>`.
+
+`icm access list` shows who has access and when they last used it. `icm access revoke <id>` ends someone's access at once, including every chat app they signed in with. Codes and tokens are stored only as hashes; a signed-in app holds a token that lasts an hour and renews itself while the person's access stands.
+
+The pay cycle stays with `icm mcp` on your machine: its tools read and write files where they run, so the web service never offers them.
 
 ## Install
 
@@ -135,14 +184,14 @@ Requires Python 3.11+. Using [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv sync                 # core engine + CLI
-uv sync --extra all     # + Excel, Parquet, PDF, and AI features
+uv sync --extra all     # + Excel, Parquet, PDF, AI and MCP features
 ```
 
-Optional extras: `excel` (xlsx + fuzzy mapping), `parquet` (warehouse exports), `pdf` (PDF statements), `ai` (generate a plan from a plain-English description).
+Optional extras: `excel` (xlsx + fuzzy mapping), `parquet` (warehouse exports), `pdf` (PDF statements), `ai` (generate a plan from a plain-English description), `mcp` (serve to an AI assistant).
 
 ## Status
 
-Pre-1.0. The calculation core is well-tested (520+ tests, type-checked) and covers a full single- and multi-plan comp workflow. The plan format and API may still change. Use it, file issues, and tell us what your plans need — that's what shapes the roadmap.
+Pre-1.0. The calculation core is well-tested (800+ tests, type-checked) and covers a full single- and multi-plan comp workflow. The plan format and API may still change. Use it, file issues, and tell us what your plans need — that's what shapes the roadmap.
 
 ## Roadmap
 
@@ -156,9 +205,10 @@ Shipped:
 - ~~Finance payout register~~ ✅ — rounded-to-cents XLSX auto-generated on period lock
 - ~~Mid-year plan changes (dated versions)~~ ✅
 - ~~Commission on gross profit (margin)~~ ✅ · ~~Plan assertions (`check-plan`)~~ ✅ · ~~Ingestion validation (`validate`)~~ ✅ · ~~Reconciliation (`reconcile`)~~ ✅
+- ~~Assistant access over MCP~~ ✅ — ask about pay, trace deals, try a what-if deal, and run the pay cycle with a confirmation for each change; each person signs in to see their own pay
 
 Next:
-- What-if modeling and org-level reporting
+- Broader what-if modeling and org-level reporting
 
 See [`ROADMAP.md`](./ROADMAP.md) for the field-validated priorities and their current status.
 

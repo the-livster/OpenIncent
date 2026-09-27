@@ -109,6 +109,13 @@ class RunContext:
                     self.prior_draw_balances[p.id] = bal
 
 
+def _dump(obj: Any) -> dict[str, Any]:
+    """A pydantic input (adjustment, MBO) as JSON-safe data."""
+    if hasattr(obj, "model_dump"):
+        return dict(obj.model_dump(mode="json"))
+    return {k: str(v) for k, v in vars(obj).items()}
+
+
 class LockedPeriodError(Exception):
     """Raised when locked periods are present and recalculation is not allowed."""
 
@@ -240,8 +247,9 @@ def persist(
     calc_ids: dict[str, str] = {}
     # Freeze the statement context with the run. Later edits to a roster or
     # library must never change an export of results already reviewed.
+    run_id = uuid.uuid4().hex
     snapshot = {
-        "run_id": uuid.uuid4().hex,
+        "run_id": run_id,
         "payees": [p.model_dump(mode="json") for p in ctx.payees],
         "plans": {key: p.model_dump(mode="json") for key, p in ctx.plan_library.items()},
         "multi_plan": ctx.multi_plan,
@@ -251,6 +259,15 @@ def persist(
             for a in result.attainment
         ],
     }
+    # The run's exact inputs, once per run, so it can be re-run as it was (a
+    # what-if on a past period) after later uploads have moved on.
+    ctx.db.save_run_inputs(
+        run_id,
+        transactions=[t.model_dump(mode="json") for t in ctx.transactions],
+        adjustments=[_dump(a) for a in ctx.adjustments or []],
+        mbos=[_dump(m) for m in ctx.mbos or []],
+    )
+
     # The deal details a statement shows (deal id, product, close date), frozen
     # per calculation for its own lines only. The transactions table is
     # overwritten by every upload, so reading it back later could relabel a

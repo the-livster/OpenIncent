@@ -16,6 +16,7 @@ import os
 import secrets
 import sqlite3
 import sys
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -27,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from icm_engine.models import Payee
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 12
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS _schema_version (
@@ -173,6 +174,19 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
     human_readable TEXT NOT NULL DEFAULT ''
 );
 
+-- A run's exact inputs, once per run (v11). The transactions table keeps only
+-- a few columns and each upload overwrites it; re-running a past run (a what-if)
+-- needs splits, margins, units, adjustments and MBOs as they were.
+CREATE TABLE IF NOT EXISTS run_inputs (
+    run_id TEXT NOT NULL,
+    org_id TEXT NOT NULL DEFAULT 'default',
+    transactions TEXT NOT NULL DEFAULT '[]',
+    adjustments TEXT NOT NULL DEFAULT '[]',
+    mbos TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (run_id, org_id)
+);
+
 CREATE TABLE IF NOT EXISTS api_keys (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL DEFAULT 'default',
@@ -182,6 +196,38 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_used_at TEXT
 );
 
+-- Who may use the assistant over the network, read-only. payee_id set: that
+-- person's own pay only. payee_id NULL: an administrator, who sees everyone's.
+CREATE TABLE IF NOT EXISTS access_grants (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL DEFAULT 'default',
+    payee_id TEXT,
+    label TEXT NOT NULL DEFAULT '',
+    code_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT,
+    revoked_at TEXT
+);
+
+-- Chat apps that registered to sign people in (OAuth dynamic registration).
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    client_id TEXT PRIMARY KEY,
+    info TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Authorization codes, access and refresh tokens, stored as hashes, each tied
+-- to the grant it was issued under: revoking the grant ends them all.
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    token_hash TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    grant_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '{}',
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_payees_plan ON payees(plan_id, org_id);
 CREATE INDEX IF NOT EXISTS idx_calculations_plan ON calculations(plan_id, org_id);
 CREATE INDEX IF NOT EXISTS idx_calculations_created ON calculations(created_at);
@@ -189,6 +235,7 @@ CREATE INDEX IF NOT EXISTS idx_ledger_payee ON ledger_entries(org_id, payee_id, 
 CREATE INDEX IF NOT EXISTS idx_ledger_calculation ON ledger_entries(calculation_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_timestamp ON ledger_entries(org_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_grant ON oauth_tokens(grant_id, client_id);
 CREATE INDEX IF NOT EXISTS idx_calculations_period ON calculations(org_id, plan_id, period, version);
 CREATE INDEX IF NOT EXISTS idx_commission_lines_calc ON commission_lines(calculation_id);
 CREATE INDEX IF NOT EXISTS idx_commission_lines_payee ON commission_lines(org_id, payee_id, period);
@@ -866,6 +913,129 @@ class Database:
         return cur.rowcount > 0
 
     # ------------------------------------------------------------------
+    # Assistant access: who may use the assistant over the network
+    # ------------------------------------------------------------------
+
+    def create_access_grant(self, *, payee_id: str | None, label: str = "") -> tuple[dict[str, Any], str]:
+        """Give one person access. Returns the grant and its access code. Only
+        a hash of the code is kept, so this is the one time it can be shown."""
+        if payee_id is not None and not payee_id.strip():
+            raise ValueError("A payee's access needs their payee id; an administrator's has none.")
+        code = ACCESS_CODE_PREFIX + secrets.token_urlsafe(32)
+        grant_id = uuid.uuid4().hex[:12]
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO access_grants (id, org_id, payee_id, label, code_hash)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (grant_id, self.org_id, payee_id, label, _hash_key(code)),
+            )
+        grant = self.get_access_grant(grant_id)
+        if grant is None:  # pragma: no cover - just inserted
+            raise RuntimeError("access grant was not saved")
+        return grant, code
+
+    def get_access_grant(self, grant_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                f"SELECT {_GRANT_COLUMNS} FROM access_grants WHERE id=? AND org_id=?",
+                (grant_id, self.org_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_access_grants(self, *, include_revoked: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_revoked else " AND revoked_at IS NULL"
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT {_GRANT_COLUMNS} FROM access_grants WHERE org_id=?{where} ORDER BY created_at, id",
+                (self.org_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def find_access_grant(self, code: str) -> dict[str, Any] | None:
+        """The live grant an access code belongs to, or None."""
+        with self._conn() as conn:
+            row = conn.execute(
+                f"""SELECT {_GRANT_COLUMNS} FROM access_grants
+                    WHERE code_hash=? AND org_id=? AND revoked_at IS NULL""",
+                (_hash_key(code.strip()), self.org_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def touch_access_grant(self, grant_id: str) -> None:
+        """Note that a grant was used; at most every few minutes, so busy chats don't write on every call."""
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE access_grants SET last_used_at=datetime('now')
+                   WHERE id=? AND (last_used_at IS NULL OR last_used_at < datetime('now', '-5 minutes'))""",
+                (grant_id,),
+            )
+
+    def revoke_access_grant(self, grant_id: str) -> bool:
+        """Cut someone off: their code stops working, and so does every chat app
+        they signed in with it."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                """UPDATE access_grants SET revoked_at=datetime('now')
+                   WHERE id=? AND org_id=? AND revoked_at IS NULL""",
+                (grant_id, self.org_id),
+            )
+            if cur.rowcount:
+                conn.execute("DELETE FROM oauth_tokens WHERE grant_id=?", (grant_id,))
+        return cur.rowcount > 0
+
+    def save_oauth_client(self, client_id: str, info: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO oauth_clients (client_id, info) VALUES (?, ?)", (client_id, info),
+            )
+
+    def get_oauth_client(self, client_id: str) -> str | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT info FROM oauth_clients WHERE client_id=?", (client_id,)).fetchone()
+        return str(row["info"]) if row else None
+
+    def save_oauth_token(
+        self, token: str, *, kind: str, grant_id: str, client_id: str,
+        details: dict[str, Any], expires_at: int,
+    ) -> None:
+        """Keep an issued code or token (as a hash), clearing out expired ones."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM oauth_tokens WHERE expires_at < ?", (int(time.time()),))
+            conn.execute(
+                """INSERT INTO oauth_tokens (token_hash, kind, grant_id, client_id, details, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (_hash_key(token), kind, grant_id, client_id, json.dumps(details), expires_at),
+            )
+
+    def get_oauth_token(self, token: str, kind: str) -> dict[str, Any] | None:
+        """An unexpired code or token of this kind, with the grant behind it,
+        or None if either has expired or been revoked."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT t.grant_id, t.client_id, t.details, t.expires_at, g.payee_id, g.label
+                   FROM oauth_tokens t JOIN access_grants g ON g.id = t.grant_id
+                   WHERE t.token_hash=? AND t.kind=? AND t.expires_at >= ?
+                     AND g.org_id=? AND g.revoked_at IS NULL""",
+                (_hash_key(token), kind, int(time.time()), self.org_id),
+            ).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        out["details"] = json.loads(out["details"])
+        return out
+
+    def delete_oauth_token(self, token: str) -> bool:
+        """Use up a single-use code or refresh token. False if it was already used."""
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM oauth_tokens WHERE token_hash=?", (_hash_key(token),))
+        return cur.rowcount > 0
+
+    def delete_oauth_tokens(self, grant_id: str, client_id: str) -> None:
+        """Sign one chat app out: every code and token it holds under this grant."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM oauth_tokens WHERE grant_id=? AND client_id=?", (grant_id, client_id))
+
+    # ------------------------------------------------------------------
     # Period locks
     # ------------------------------------------------------------------
 
@@ -983,6 +1153,30 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def save_run_inputs(
+        self, run_id: str, *, transactions: list[dict[str, Any]],
+        adjustments: list[dict[str, Any]] | None = None, mbos: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Keep exactly what a run was calculated from, once per run."""
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO run_inputs (run_id, org_id, transactions, adjustments, mbos)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (run_id, self.org_id, json.dumps(transactions), json.dumps(adjustments or []),
+                 json.dumps(mbos or [])),
+            )
+
+    def get_run_inputs(self, run_id: str) -> dict[str, list[dict[str, Any]]] | None:
+        """A run's inputs as saved, or None for runs saved before inputs were kept."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT transactions, adjustments, mbos FROM run_inputs WHERE run_id=? AND org_id=?",
+                (run_id, self.org_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {key: json.loads(row[key]) for key in ("transactions", "adjustments", "mbos")}
+
     def list_transactions(
         self, period: str | None = None, limit: int = 1000,
     ) -> list[dict[str, Any]]:
@@ -1007,6 +1201,11 @@ class Database:
 
 def _hash_key(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
+
+
+ACCESS_CODE_PREFIX = "oia_"
+
+_GRANT_COLUMNS = "id, payee_id, label, created_at, last_used_at, revoked_at"
 
 
 def _unpack_mapping(row: sqlite3.Row) -> dict[str, Any]:

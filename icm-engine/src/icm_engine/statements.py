@@ -159,24 +159,9 @@ def generate_statements(
     files: list[StatementFile] = []
     period_label = period or "all"
 
-    # A single display formatter: convert (if a reporting currency is set)
-    # then round to the configured mode/places. Passed into every writer so
-    # statements honour the plan's rounding policy and reconcile line-to-total.
-    _rm = rounding_mode
-    _places = rounding_places
-    _rates = dict(rates or {})
-    _rc = (reporting_currency or "").strip().upper()
-    _sc = (source_currency or "").strip().upper()
-
-    def _round_disp(amount: Decimal) -> Decimal:
-        from icm_engine.currency import convert as _convert
-        amt = amount
-        if _rc and _sc and _sc != _rc:
-            try:
-                amt = _convert(amount, _sc, _rc, _rates, rounding=_rm)
-            except KeyError:
-                pass  # fall through — display in original currency
-        return round_money(amt, _rm, _places)
+    # A single display formatter, passed into every writer so statements
+    # honour the plan's rounding policy and reconcile line-to-total.
+    _round_disp = _display_rounder(rounding_mode, rounding_places, rates, reporting_currency, source_currency)
 
     def _fmt(amount: Decimal) -> str:
         return str(_round_disp(amount))
@@ -221,6 +206,115 @@ def generate_statements(
             files.append(StatementFile(payee_id=pid, period=period, path=path, fmt=fmt))
 
     return files
+
+
+def _display_rounder(
+    rounding_mode: RoundingMode, rounding_places: int, rates: dict[str, Decimal] | None = None,
+    reporting_currency: str = "", source_currency: str = "",
+) -> Callable[[Decimal], Decimal]:
+    """Convert (if a reporting currency is set), then round to the plan's
+    display policy: the one rule every statement figure goes through."""
+    _rates = dict(rates or {})
+    _rc = (reporting_currency or "").strip().upper()
+    _sc = (source_currency or "").strip().upper()
+
+    def round_disp(amount: Decimal) -> Decimal:
+        from icm_engine.currency import convert as _convert
+        amt = amount
+        if _rc and _sc and _sc != _rc:
+            try:
+                amt = _convert(amount, _sc, _rc, _rates, rounding=rounding_mode)
+            except KeyError:
+                pass  # fall through — display in original currency
+        return round_money(amt, rounding_mode, rounding_places)
+
+    return round_disp
+
+
+def statement_summary(
+    commissions: list[Any],
+    payee_id: str,
+    *,
+    period: str | None = None,
+    attainment: list[Any] | None = None,
+    rounding_mode: RoundingMode = _DEFAULT_ROUNDING,
+    rounding_places: int = 2,
+    transactions: list[Any] | None = None,
+) -> dict[str, Any]:
+    """One payee's statement as data: the total, the breakdown, every deal
+    with how it was paid, and attainment, from the same model the HTML
+    statement renders. An assistant quoting this agrees with the statement to
+    the penny instead of re-deriving figures.
+
+    Amounts are display-rounded decimal strings, without a currency."""
+    round_disp = _display_rounder(rounding_mode, rounding_places)
+
+    def _d(amount: Decimal) -> str:
+        return str(round_disp(amount))
+
+    mine = [
+        c for c in commissions
+        if _get_attr(c, "payee_id") == payee_id and (not period or _get_attr(c, "period") == period)
+    ]
+    lns = _line_models(mine, payee_id, _d)
+    items = _group_items(lns, _deal_lookup(transactions))
+    total = sum((Decimal(ln.amount) for ln in lns), Decimal("0"))
+    earned = sum((Decimal(ln.amount) for ln in lns if not ln.adj), Decimal("0"))
+
+    def line_data(ln: _Line) -> dict[str, Any]:
+        shows_rate = ln.rate != 1 and not ln.adj
+        return {
+            "type": ln.title,
+            "base": _plain(ln.base) if not ln.adj else None,
+            "rate": _pct_text(ln.rate) if shows_rate else None,
+            "amount": _plain(ln.amount),
+            "calculation": (f"{_plain(ln.base)} x {_pct_text(ln.rate)} = {_plain(ln.amount)}"
+                            if ln.exact else None),
+            "explanation": ln.notes or None,
+            "from_period": ln.origin if ln.origin and ln.origin != ln.period else None,
+            "share_of_deal": (_pct_text(ln.split) if ln.kind == "split" and ln.split is not None
+                              and 0 < ln.split < 1 else None),
+        }
+
+    att_rows = []
+    for a in _attainment_for(attainment, payee_id, period):
+        pct = _get_attainment_pct(a)
+        booked, quota = _d(_get_dec(a, "bookings")), _d(_get_dec(a, "quota"))
+        att_rows.append({
+            "period": _get_attr(a, "period"),
+            "bookings": booked,
+            "quota": quota,
+            "attainment": _att_pct_text(pct) if pct is not None else None,
+            "to_quota": _plain(max(Decimal(quota) - Decimal(booked), Decimal("0"))) if pct is not None else None,
+        })
+
+    return {
+        "payee_id": payee_id,
+        "period": period or "all",
+        "total": _plain(total),
+        "earned": _plain(earned),
+        "adjustments": _plain(total - earned),
+        "breakdown": [
+            {"category": label, "amount": _plain(value), "adjustment": adj}
+            for label, value, adj in _categories(lns)
+        ],
+        "deals": [
+            {
+                "deal": it.label,
+                "transaction_id": it.tid if it.tid not in ("", "*") else None,
+                "period": it.period,
+                "product": it.product or None,
+                "closed": it.closed or None,
+                "amount": _plain(it.amount),
+                "base": _plain(it.base) if it.base is not None else None,
+                "is_adjustment": it.adjustment,
+                "notes": [text for text, _tone in it.badges()],
+                "lines": [line_data(ln) for ln in it.lines],
+            }
+            for it in items
+        ],
+        "attainment": att_rows,
+    }
 
 
 def _period_label(period: str) -> str:

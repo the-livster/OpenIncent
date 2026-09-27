@@ -20,6 +20,10 @@ stronger audit story than most closed tools:
 - **Manager hierarchy, team/shared quotas, ramps, draws (recoverable + guarantee), caps, MBOs,
   manual adjustments, period locking + delta true-ups, multi-currency display, configurable rounding.**
 - **Per-rep statements** (XLSX / HTML / PDF) and an immutable audit ledger + `icm trace`.
+- **Assistant access (MCP)** — `icm mcp` lets Claude or any MCP client answer questions about pay
+  from the saved results, trace a deal and model a what-if deal. Admins can calculate, lock,
+  export and email with a confirmation for each change. Over the network (`icm mcp --http`), each
+  person signs in with their own access code and sees only their own pay; administrators, everyone's.
 
 ## Field-validated priorities
 
@@ -99,7 +103,8 @@ under the old version, and year-to-date attainment and draw balances carry acros
 
 ## On the radar (built on demand / on customer pull)
 
-- What-if / sensitivity modeling and org-level reporting.
+- Broader what-if / sensitivity modeling (the assistant models one extra deal today) and
+  org-level reporting.
 
 ## Deliberate non-goals (for now)
 

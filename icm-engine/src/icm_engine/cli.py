@@ -25,6 +25,8 @@ from icm_engine.run import LockedPeriodError, RunContext, execute, persist
 app = typer.Typer(pretty_exceptions_enable=False)
 db_app = typer.Typer(help="Database operations")
 app.add_typer(db_app, name="db")
+access_app = typer.Typer(help="Who may use the assistant over the network (icm mcp --http)")
+app.add_typer(access_app, name="access")
 console = Console()
 
 
@@ -376,6 +378,146 @@ def serve(
         port=port,
         log_level="info",
     )
+
+
+@app.command("mcp")
+def mcp_command(
+    db: str = typer.Option("", "--db", help="Database file (default: ICM_DB_PATH, else the app's own database)"),
+    org: str = typer.Option("default", "--org", help="Organisation within the database"),
+    payee: str = typer.Option("", "--payee", help="Answer as this payee only: their own pay, nothing else"),
+    read_only: bool = typer.Option(
+        False, "--read-only", help="Leave out the pay-cycle tools (calculate, lock, export, send)",
+    ),
+    print_config: bool = typer.Option(
+        False, "--print-config", help="Print the configuration an MCP client needs, and exit",
+    ),
+    http: bool = typer.Option(
+        False, "--http", help="Serve everyone given access (icm access grant) over HTTP, read-only, each as themselves",
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="With --http: the address to listen on"),
+    port: int = typer.Option(8765, "--port", help="With --http: the port to listen on"),
+    public_url: str = typer.Option(
+        "", "--public-url", help="With --http: the https:// address people's chat apps connect to",
+    ),
+) -> None:
+    """Serve OpenIncent to an MCP client (Claude Desktop, Claude Code, ...).
+
+    By default over stdio, for you on this machine: ask about anyone's pay, and
+    run the pay cycle with a preview and confirmation for each change. With
+    --http, as a read-only web service for everyone you've given access: each
+    person signs in with their own access code and sees only what it allows.
+    """
+    # Nothing but the protocol may reach stdout while serving: no console output here.
+    from icm_engine.assistant.server import print_config as _print_config
+    from icm_engine.assistant.server import serve as _serve
+    from icm_engine.assistant.server import serve_http as _serve_http
+
+    if http:
+        if payee or read_only or print_config:
+            typer.echo("With --http each person signs in with their own access (icm access grant); "
+                       "--payee, --read-only and --print-config are for stdio.", err=True)
+            raise typer.Exit(code=1)
+        _serve_http(db or None, org=org, host=host, port=port, public_url=public_url or None)
+    elif print_config:
+        _print_config(db or None, org=org, payee=payee or None, read_only=read_only)
+    else:
+        _serve(db or None, org=org, payee=payee or None, read_only=read_only)
+
+
+def _access_db(db: str, org: str) -> Any:
+    from icm_engine.assistant.server import database_path
+    from icm_engine.database import Database
+
+    database = Database(database_path(db or None), org_id=org)
+    database.init()
+    return database
+
+
+_ACCESS_DB_HELP = "Database file (default: ICM_DB_PATH, else the app's own database)"
+
+
+@access_app.command("grant")
+def access_grant(
+    payee: str = typer.Argument("", help="The payee's id or name: they'll see their own pay and nobody else's"),
+    admin: bool = typer.Option(False, "--admin", help="An administrator instead, who sees everyone's pay"),
+    label: str = typer.Option("", "--label", help="Who this is for, as icm access list shows it"),
+    db: str = typer.Option("", "--db", help=_ACCESS_DB_HELP),
+    org: str = typer.Option("default", "--org", help="Organisation within the database"),
+) -> None:
+    """Give one person read-only access to the assistant, and print their access code."""
+    from icm_engine.assistant import CommissionsService, NotFound, Refused, Scope
+
+    if bool(payee) == admin:
+        console.print("[red]Name one payee, or pass --admin.[/red]")
+        raise typer.Exit(code=1)
+    database = _access_db(db, org)
+    if admin:
+        who = label or "Administrator"
+        grant, code = database.create_access_grant(payee_id=None, label=who)
+        sees = "everyone's pay, read-only"
+    else:
+        try:
+            person = CommissionsService(database, Scope.admin(org, allow_changes=False)).identify(payee)
+        except NotFound:
+            console.print(f"[red]No one called {payee!r} is on the roster or in a saved run.[/red]")
+            raise typer.Exit(code=1) from None
+        except Refused as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(code=1) from None
+        who = label or f"{person['name']} ({person['payee_id']})"
+        grant, code = database.create_access_grant(payee_id=person["payee_id"], label=who)
+        sees = "their own pay, and nobody else's"
+    address = database.get_setting("assistant_url") or "your server's address, ending in /mcp"
+    console.print(f"[green]{who}[/green] can now use the assistant: {sees}.\n")
+    console.print("Their access code. It's shown only this once, so send it to them privately:\n")
+    console.print(f"    {code}\n", highlight=False, soft_wrap=True)
+    console.print(f"They connect their chat app to {address} and sign in with the code.")
+    console.print(f"[dim]Stop their access at any time: icm access revoke {grant['id']}[/dim]")
+
+
+@access_app.command("list")
+def access_list(
+    show_all: bool = typer.Option(False, "--all", help="Include access that was revoked"),
+    db: str = typer.Option("", "--db", help=_ACCESS_DB_HELP),
+    org: str = typer.Option("default", "--org", help="Organisation within the database"),
+) -> None:
+    """Who has access to the assistant, what they see, and when they last used it."""
+    grants = _access_db(db, org).list_access_grants(include_revoked=show_all)
+    if not grants:
+        console.print("[dim]No one has access yet. Give someone access with: icm access grant[/dim]")
+        return
+    table = Table(title="Assistant access")
+    table.add_column("ID", style="cyan")
+    table.add_column("Who", style="green")
+    table.add_column("Sees")
+    table.add_column("Created (UTC)", style="dim")
+    table.add_column("Last used (UTC)", style="dim")
+    if show_all:
+        table.add_column("Status")
+    for g in grants:
+        sees = "own pay only" if g["payee_id"] else "everyone's pay"
+        row = [g["id"], g["label"] or g["payee_id"] or "Administrator", sees,
+               g["created_at"][:16], (g["last_used_at"] or "never")[:16]]
+        if show_all:
+            row.append(f"revoked {g['revoked_at'][:10]}" if g["revoked_at"] else "active")
+        table.add_row(*row)
+    console.print(table)
+
+
+@access_app.command("revoke")
+def access_revoke(
+    grant_id: str = typer.Argument(..., help="The ID icm access list shows"),
+    db: str = typer.Option("", "--db", help=_ACCESS_DB_HELP),
+    org: str = typer.Option("default", "--org", help="Organisation within the database"),
+) -> None:
+    """Stop someone's access at once: their code, and every chat app they signed in with."""
+    database = _access_db(db, org)
+    grant = database.get_access_grant(grant_id)
+    if grant is None or not database.revoke_access_grant(grant_id):
+        console.print(f"[red]No active access with ID {grant_id}. icm access list shows them.[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"Revoked access for {grant['label'] or grant_id}. "
+                  "Their code, and any chat app they signed in with, stop working now.")
 
 
 @app.command("plan-from-text")

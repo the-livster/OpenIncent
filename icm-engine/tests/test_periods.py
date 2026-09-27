@@ -66,6 +66,22 @@ class TestPeriodLocks:
         resp = client.post(f"{V}/periods/{plan_id}/2026-01/lock?calculation_id={calc_id}")
         assert resp.status_code == 409
 
+    def test_lock_only_to_a_run_of_that_plan_and_period(self) -> None:
+        """Locking January to February's run would make February's pay official for January."""
+        _reset()
+        db = api_module._get_db()
+        plan_a = client.post(f"{V}/plans", json={"name": "A", "yaml_content": "rules: []"}).json()["id"]
+        plan_b = client.post(f"{V}/plans", json={"name": "B", "yaml_content": "rules: []"}).json()["id"]
+        february = db.record_calculation(plan_a, period="2026-02")
+        other_plan = db.record_calculation(plan_b, period="2026-01")
+
+        for calc_id in (february, other_plan):
+            resp = client.post(f"{V}/periods/{plan_a}/2026-01/lock?calculation_id={calc_id}")
+            assert resp.status_code == 409
+        resp = client.post(f"{V}/periods/{plan_a}/2026-01/lock?calculation_id=no-such-run")
+        assert resp.status_code == 404
+        assert db.is_locked(plan_a, "2026-01") is False
+
     def test_unlock_then_relock(self) -> None:
         _reset()
         resp = client.post(f"{V}/plans", json={"name": "P", "yaml_content": "rules: []"})
