@@ -1,16 +1,20 @@
 import type { ReactNode } from "react";
+import { cx } from "./ui/cx";
 
-export function Th({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <th className={`px-3 py-2 text-left font-medium text-ink2 whitespace-nowrap ${className ?? ""}`}>
-      {children}
-    </th>
-  );
+export function Th({ children, className }: { children?: ReactNode; className?: string }) {
+  return <th className={className}>{children}</th>;
 }
 
-export function Td({ children, mono, className }: { children: ReactNode; mono?: boolean; className?: string }) {
+export function Td({ children, mono, num, className }: {
+  children?: ReactNode; mono?: boolean; num?: boolean; className?: string;
+}) {
   return (
-    <td className={`px-3 py-1.5 whitespace-nowrap ${mono ? "font-mono text-ink" : "text-ink"} ${className ?? ""}`}>
+    <td className={cx(
+      "whitespace-nowrap",
+      mono && "font-mono text-[12.5px]",
+      num && "num text-right",
+      className,
+    )}>
       {children}
     </td>
   );

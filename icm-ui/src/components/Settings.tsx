@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { deleteSetting, getSetting, healthCheck, setSetting } from "../api";
+import { Button, Callout, Card, CardHeader, Icon, PageHeader, Spinner } from "./ui";
+import { cx } from "./ui/cx";
 
 const KEY_ANTHROPIC = "anthropic_api_key";
 const KEY_API_BASE = "api_base";
@@ -142,205 +144,169 @@ export default function Settings() {
     : "";
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6 animate-in">
-      <div className="card p-6 space-y-5">
-        <div>
-          <h2 className="text-lg font-semibold text-ink">Settings</h2>
-          <p className="text-sm text-ink2 mt-1">
-            Configure your API keys and connection settings. Settings are persisted on the server.
-          </p>
-        </div>
+    <div className="animate-in">
+      <PageHeader
+        title="Settings"
+        description="Connection, AI and currency settings. They are stored by the local engine, not in your browser."
+        actions={
+          <Button variant="primary" icon={saved ? "check" : undefined} onClick={save}>
+            {saved ? "Saved" : "Save settings"}
+          </Button>
+        }
+      />
 
-        {/* API Connection Status */}
-        <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-soft">
-          <div className={`w-2 h-2 rounded-full ${
-            health === "ok" ? "bg-success" : health === "error" ? "bg-danger" : "bg-warn animate-pulse"
-          }`} />
-          <span className="text-sm text-ink">
-            Engine API: {health === "ok" ? "Connected" : health === "error" ? "Not reachable" : "Checking..."}
-          </span>
-          <button
-            onClick={() => { setHealth("checking"); healthCheck().then((ok) => setHealth(ok ? "ok" : "error")); }}
-            className="ml-auto text-xs text-accent hover:text-brand-300 cursor-pointer transition-colors"
-          >
-            Retry
-          </button>
-        </div>
-
-        {/* Anthropic API Key */}
-        <div>
-          <label className="block text-xs font-medium text-ink2 mb-1.5">
-            Anthropic API Key
-          </label>
-          <p className="text-xs text-ink2 mb-2">
-            Required for AI Plan Builder. Your key is stored server-side and sent to Anthropic per-request.
-          </p>
-          <div className="relative">
-            <input
-              type={showKey ? "text" : "password"}
-              value={showKey ? apiKey : maskedKey || apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              onFocus={() => setShowKey(true)}
-              placeholder="sk-ant-..."
-              className="
-                w-full px-3 py-2 pr-16 rounded-lg text-sm font-mono
-                bg-soft border border-line
-                text-ink placeholder:text-ink2
-                focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/10
-                transition-all
-              "
-            />
-            <button
-              onClick={() => setShowKey(!showKey)}
-              type="button"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-ink2 hover:text-ink cursor-pointer transition-colors px-1"
-            >
-              {showKey ? "Hide" : "Show"}
-            </button>
-          </div>
-        </div>
-
-        {/* API Base URL */}
-        <div>
-          <label className="block text-xs font-medium text-ink2 mb-1.5">
-            Engine API URL <span className="text-ink2">(optional)</span>
-          </label>
-          <input
-            type="text"
-            value={apiBase}
-            onChange={(e) => setApiBase(e.target.value)}
-            placeholder="http://localhost:8000"
-            className="
-              w-full px-3 py-2 rounded-lg text-sm font-mono
-              bg-soft border border-line
-              text-ink placeholder:text-ink2
-              focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/10
-              transition-all
-            "
-          />
-          <p className="text-xs text-ink2 mt-1">
-            Leave blank to use the default ({import.meta.env.VITE_API_BASE || "http://localhost:8000"}).
-          </p>
-        </div>
-
-        {/* Exchange Rates */}
-        <div>
-          <label className="block text-xs font-medium text-ink2 mb-1.5">
-            Exchange Rates (JSON)
-          </label>
-          <input
-            type="text"
-            value={exchangeRates}
-            onChange={(e) => setExchangeRates(e.target.value)}
-            placeholder='{"CAD": "1.35", "EUR": "0.92"}'
-            className="w-full px-3 py-2 rounded-lg text-sm font-mono bg-soft border border-line text-ink placeholder:text-ink2 focus:outline-none focus:border-accent transition-all"
-          />
-          <p className="text-xs text-ink2 mt-1">
-            Rates vs USD. 1 USD = X units of each currency. Used for multi-currency display conversion.
-          </p>
-        </div>
-
-        {/* Rounding Mode */}
-        <div>
-          <label className="block text-xs font-medium text-ink2 mb-1.5">
-            Rounding Mode
-          </label>
-          <select
-            value={roundingMode}
-            onChange={(e) => setRoundingMode(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-          >
-            <option value="half-up">Half-Up (standard)</option>
-            <option value="floor">Floor (always down)</option>
-            <option value="ceil">Ceil (always up)</option>
-            <option value="none">None (exact precision)</option>
-          </select>
-        </div>
-
-        {/* Save */}
-        <button
-          onClick={save}
-          className="
-            w-full py-2.5 rounded-lg font-medium text-sm
-            bg-gradient-to-r from-accent to-accent-ink
-            text-white
-            hover:from-accent hover:to-accent
-            transition-all cursor-pointer
-            shadow-sm
-          "
-        >
-          {saved ? "\u2713 Saved!" : "Save Settings"}
-        </button>
-      </div>
-
-      {/* Updates */}
-      <div className="card p-6 space-y-4">
-        <div>
-          <h3 className="text-sm font-semibold text-ink">Software Updates</h3>
-          <p className="text-xs text-ink2 mt-0.5">
-            Current version: 0.1.0
-          </p>
-        </div>
-
-        {updateStatus.status === "available" && updateStatus.info && (
-          <div className="px-4 py-3 rounded-lg bg-accent/5 border border-accent/20 space-y-2">
-            <p className="text-sm text-ink font-medium">
-              Update available: v{updateStatus.info.version}
-            </p>
-            {updateStatus.info.release_notes && (
-              <p className="text-xs text-ink2 whitespace-pre-wrap">{updateStatus.info.release_notes}</p>
-            )}
-            <div className="flex gap-2 pt-1">
-              <button
-                onClick={applyUpdate}
-                disabled={updateApplying}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent text-white hover:bg-ink transition-colors cursor-pointer"
-              >
-                {updateApplying ? "Installing..." : "Update & Restart"}
-              </button>
-              <button
-                onClick={skipUpdate}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-soft border border-line text-ink2 hover:text-ink transition-colors cursor-pointer"
-              >
-                Skip this version
-              </button>
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="space-y-5">
+          <Card>
+            <CardHeader icon="globe" title="Connection" description="Where this app finds the calculation engine." />
+            <div className="space-y-4 px-5 py-4">
+              <div className="flex items-center gap-3 rounded-xl border border-line bg-surface-2/60 px-3.5 py-2.5">
+                <span className={cx(
+                  "h-2 w-2 shrink-0 rounded-full",
+                  health === "ok" && "bg-success shadow-[0_0_0_3px_var(--c-success-soft)]",
+                  health === "error" && "bg-danger shadow-[0_0_0_3px_var(--c-danger-soft)]",
+                  health === "checking" && "animate-pulse bg-warning",
+                )} />
+                <span className="text-[13px] text-ink">
+                  Engine API: {health === "ok" ? "Connected" : health === "error" ? "Not reachable" : "Checking..."}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="refresh"
+                  className="ml-auto"
+                  onClick={() => { setHealth("checking"); healthCheck().then((ok) => setHealth(ok ? "ok" : "error")); }}
+                >
+                  Retry
+                </Button>
+              </div>
+              <label className="block">
+                <span className="field-label">Engine API URL <span className="font-normal text-ink-3">(optional)</span></span>
+                <input
+                  type="text"
+                  value={apiBase}
+                  onChange={(e) => setApiBase(e.target.value)}
+                  placeholder="http://localhost:8000"
+                  className="w-full font-mono"
+                />
+                <span className="field-hint block">
+                  Leave blank to use the default ({import.meta.env.VITE_API_BASE || "http://localhost:8000"}).
+                </span>
+              </label>
             </div>
-          </div>
-        )}
+          </Card>
 
-        {updateStatus.status === "checking" && (
-          <p className="text-xs text-ink2">Checking for updates...</p>
-        )}
+          <Card>
+            <CardHeader icon="sparkles" title="AI plan builder" description="Needed only to draft plans from plain English." />
+            <div className="px-5 py-4">
+              <label className="block">
+                <span className="field-label">Anthropic API key</span>
+                <div className="relative">
+                  <input
+                    type={showKey ? "text" : "password"}
+                    value={showKey ? apiKey : maskedKey || apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    onFocus={() => setShowKey(true)}
+                    placeholder="sk-ant-..."
+                    className="w-full pr-16 font-mono"
+                  />
+                  <button
+                    onClick={() => setShowKey(!showKey)}
+                    type="button"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-1.5 py-0.5 text-[12px] font-medium text-ink-2 hover:bg-surface-2 hover:text-ink"
+                  >
+                    {showKey ? "Hide" : "Show"}
+                  </button>
+                </div>
+                <span className="field-hint block">
+                  Stored by the local engine and sent to Anthropic with each plan request. Never kept in the browser.
+                </span>
+              </label>
+            </div>
+          </Card>
 
-        {updateStatus.status === "idle" && updateStatus.message && (
-          <p className="text-xs text-ink2">{updateStatus.message}</p>
-        )}
+          <Card>
+            <CardHeader icon="coins" title="Currency and rounding" description="How amounts are converted and rounded for display." />
+            <div className="grid gap-4 px-5 py-4 sm:grid-cols-2">
+              <label className="block">
+                <span className="field-label">Exchange rates (JSON)</span>
+                <input
+                  type="text"
+                  value={exchangeRates}
+                  onChange={(e) => setExchangeRates(e.target.value)}
+                  placeholder='{"CAD": "1.35", "EUR": "0.92"}'
+                  className="w-full font-mono"
+                />
+                <span className="field-hint block">1 USD = X units of each currency. Display conversion only.</span>
+              </label>
+              <label className="block">
+                <span className="field-label">Rounding mode</span>
+                <select value={roundingMode} onChange={(e) => setRoundingMode(e.target.value)} className="w-full">
+                  <option value="half-up">Half-up (standard)</option>
+                  <option value="floor">Floor (always down)</option>
+                  <option value="ceil">Ceil (always up)</option>
+                  <option value="none">None (exact precision)</option>
+                </select>
+              </label>
+            </div>
+          </Card>
+        </div>
 
-        {updateStatus.status === "error" && (
-          <p className="text-xs text-danger">{updateStatus.message || "Update check failed"}</p>
-        )}
+        <div className="space-y-5">
+          <Card>
+            <CardHeader icon="download" title="Software updates" description="Current version: 0.1.0" />
+            <div className="space-y-3 px-5 py-4">
+              {updateStatus.status === "available" && updateStatus.info && (
+                <Callout
+                  tone="info"
+                  title={`Update available: v${updateStatus.info.version}`}
+                >
+                  {updateStatus.info.release_notes && (
+                    <p className="whitespace-pre-wrap">{updateStatus.info.release_notes}</p>
+                  )}
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button size="sm" variant="primary" onClick={applyUpdate} disabled={updateApplying} loading={updateApplying}>
+                      {updateApplying ? "Installing..." : "Update & restart"}
+                    </Button>
+                    <Button size="sm" onClick={skipUpdate}>Skip this version</Button>
+                  </div>
+                </Callout>
+              )}
 
-        {updateStatus.status === "installing" && (
-          <p className="text-xs text-ink2">Installing update — app will restart shortly...</p>
-        )}
+              {updateStatus.status === "checking" && (
+                <p className="flex items-center gap-2 text-[12.5px] text-ink-2"><Spinner size={12} /> Checking for updates...</p>
+              )}
+              {updateStatus.status === "idle" && updateStatus.message && (
+                <p className="text-[12.5px] text-ink-2">{updateStatus.message}</p>
+              )}
+              {updateStatus.status === "error" && (
+                <p className="text-[12.5px] text-danger-ink">{updateStatus.message || "Update check failed"}</p>
+              )}
+              {updateStatus.status === "installing" && (
+                <p className="text-[12.5px] text-ink-2">Installing update — the app will restart shortly...</p>
+              )}
 
-        <button
-          onClick={checkForUpdates}
-          disabled={updateChecking || updateStatus.status === "downloading" || updateStatus.status === "installing"}
-          className="text-xs text-accent hover:text-ink cursor-pointer transition-colors"
-        >
-          {updateChecking ? "Checking..." : "Check for updates"}
-        </button>
-      </div>
+              <Button
+                size="sm"
+                icon="refresh"
+                onClick={checkForUpdates}
+                loading={updateChecking}
+                disabled={updateChecking || updateStatus.status === "downloading" || updateStatus.status === "installing"}
+              >
+                {updateChecking ? "Checking..." : "Check for updates"}
+              </Button>
+            </div>
+          </Card>
 
-      {/* Info */}
-      <div className="card p-4 text-xs text-ink2 space-y-2">
-        <div className="font-semibold text-ink2">Privacy &amp; Security</div>
-        <ul className="list-disc list-inside space-y-1">
-          <li>Your API key is stored server-side in the local database and sent to Anthropic per-request. It is never stored in your browser.</li>
-          <li>Non-sensitive settings (API base URL) are cached in localStorage for convenience.</li>
-          <li>Clear your browser data or delete settings via the API to remove stored keys.</li>
-        </ul>
+          <Card>
+            <CardHeader icon="shield" title="Privacy and security" />
+            <ul className="space-y-2.5 px-5 py-4 text-[12.5px] text-ink-2">
+              <li className="flex gap-2"><Icon name="check" size={14} className="mt-0.5 shrink-0 text-success-ink" />Your API key is stored by the local engine and sent to Anthropic per request. It is never stored in your browser.</li>
+              <li className="flex gap-2"><Icon name="check" size={14} className="mt-0.5 shrink-0 text-success-ink" />Non-sensitive settings (the API URL, your theme) are cached in the browser for convenience.</li>
+              <li className="flex gap-2"><Icon name="check" size={14} className="mt-0.5 shrink-0 text-success-ink" />Clear your browser data, or delete settings via the API, to remove stored keys.</li>
+            </ul>
+          </Card>
+        </div>
       </div>
     </div>
   );

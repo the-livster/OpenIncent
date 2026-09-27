@@ -7,6 +7,7 @@ import {
   getCalculationInputs,
   getCalculationResult,
   listCalculations,
+  previewStatement,
 } from "../api";
 import type { CalculationResult } from "../types";
 
@@ -17,6 +18,7 @@ vi.mock("../api", async (importOriginal) => ({
   getCalculationResult: vi.fn(),
   getCalculationInputs: vi.fn().mockResolvedValue([]),
   exportSavedStatements: vi.fn().mockResolvedValue(undefined),
+  previewStatement: vi.fn().mockResolvedValue("<p>statement</p>"),
 }));
 
 afterEach(cleanup);
@@ -108,8 +110,8 @@ it("keeps currencies apart in the totals", async () => {
   const user = await openHistory();
   await user.click(await screen.findByRole("button", { name: "Open" }));
 
-  expect(await screen.findByText("Total Payable (GBP)")).toBeTruthy();
-  expect(screen.getByText("Total Payable (USD)")).toBeTruthy();
+  expect(await screen.findByText("Total payable (GBP)")).toBeTruthy();
+  expect(screen.getByText("Total payable (USD)")).toBeTruthy();
   // A single combined figure across currencies would be meaningless.
   expect(screen.queryByText("1,250.00")).toBeNull();
 });
@@ -146,4 +148,19 @@ it("surfaces a calculation that has no stored snapshot instead of failing silent
   await user.click(await screen.findByRole("button", { name: "Open" }));
 
   expect((await screen.findByRole("alert")).textContent).toContain("no statement snapshot");
+});
+
+it("previews a stored payee's statement from that run only", async () => {
+  vi.mocked(listCalculations).mockResolvedValue([RUN]);
+  vi.mocked(getCalculationResult).mockResolvedValue(RESULT);
+
+  const user = await openHistory();
+  await user.click(await screen.findByRole("button", { name: "Open" }));
+  await user.click(await screen.findByRole("button", { name: "Statement for Priya" }));
+
+  expect(await screen.findByTitle("Statement for Priya")).toBeTruthy();
+  expect(previewStatement).toHaveBeenCalledWith(
+    { calculationIds: [RUN.id], payeeId: "P1", period: "2026-03", sample: undefined },
+    expect.any(AbortSignal),
+  );
 });

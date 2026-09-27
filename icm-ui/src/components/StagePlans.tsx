@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { listPlans, savePlan } from "../api";
 import type { SavedPlan } from "../types";
+import StageShell from "./StageShell";
+import UploadZone from "./UploadZone";
+import { Badge, Callout, Icon } from "./ui";
 
 interface Props {
   plans: SavedPlan[];
@@ -12,18 +15,18 @@ interface Props {
 }
 
 export default function StagePlans({ plans, setPlans, onNext, onBack, sample, onChanged }: Props) {
-  const [dragOver, setDragOver] = useState(false);
   const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
   useEffect(() => { if (!sample) listPlans().then(setPlans).catch(() => setStatus("Could not load plans.")); }, [sample, setPlans]);
 
-  const handleFiles = useCallback(async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    if (sample) return;
+  const handleFiles = useCallback(async (files: File[]) => {
+    if (!files.length || sample) return;
     onChanged();
+    setBusy(true);
     setStatus(`Importing ${files.length} plan(s)...`);
     const existingIds = new Set(plans.map(p => p.id));
     let imported = 0;
-    for (const file of Array.from(files)) {
+    for (const file of files) {
       if (!file.name.endsWith(".yaml") && !file.name.endsWith(".yml")) continue;
       try {
         const yaml = await file.text();
@@ -44,76 +47,64 @@ export default function StagePlans({ plans, setPlans, onNext, onBack, sample, on
     // Refresh the list
     const refreshed = await listPlans();
     setPlans(refreshed);
+    setBusy(false);
     setStatus(imported > 0 ? `Imported ${imported} plan(s).` : "No valid plan files found.");
   }, [plans, setPlans, sample, onChanged]);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    handleFiles(e.dataTransfer.files);
-  }, [handleFiles]);
-
   return (
-    <div className="max-w-3xl space-y-4">
-      <h1 className="text-lg font-bold text-zinc-800">3. Plans</h1>
-      <p className="text-sm text-zinc-500">
-        Import commission plan YAML files. These will be available to assign to payees in the next step.
-      </p>
-
-      {sample && <p className="p-4 rounded-lg bg-blue-50 text-sm text-blue-800">The sample plan is ready: each person earns 10% of their sales. Continue to check who is assigned to it.</p>}
-      <div hidden={sample}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={handleDrop}
-        className={`border-2 border-dashed rounded-xl p-8 text-center space-y-3 transition-all cursor-pointer
-          ${dragOver ? "border-blue-400 bg-blue-50" : "border-zinc-300 hover:border-zinc-400"}`}
-      >
-        <label className="inline-block px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
-          Select Plan Files
-          <input
-            type="file"
-            accept=".yaml,.yml"
-            multiple
-            className="hidden"
-            onChange={e => handleFiles(e.target.files)}
-          />
-        </label>
-        <p className="text-xs text-zinc-400">or drag and drop .yaml files here</p>
-      </div>
-
-      {status && (
-        <div className="text-sm text-zinc-600 bg-zinc-50 rounded-lg px-3 py-2">{status}</div>
+    <StageShell
+      n={3}
+      group="Setup"
+      title="Plans"
+      description="Import commission plan YAML files. They become available to assign to payees in the next step."
+      actions={plans.length > 0 && <Badge tone="accent">{plans.length} in library</Badge>}
+      onBack={onBack}
+      onNext={onNext}
+    >
+      {sample ? (
+        <Callout tone="info">The sample plan is ready: each person earns 10% of their sales. Continue to check who is assigned to it.</Callout>
+      ) : (
+        <MultiUpload busy={busy} onFiles={handleFiles} />
       )}
+
+      {status && <p role="status" className="text-[13px] text-ink-2">{status}</p>}
 
       {plans.length > 0 && (
-        <div className="space-y-2">
-          <div className="text-xs font-medium text-zinc-500">
-            {plans.length} plan(s) in library
-          </div>
-          <div className="max-h-48 overflow-y-auto space-y-1">
-            {plans.map(p => (
-              <div key={p.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-zinc-50 text-sm">
-                <div>
-                  <span className="font-medium text-zinc-700">{p.id}</span>
-                  {p.name && <span className="text-zinc-500 ml-2">— {p.name}</span>}
-                </div>
-                <span className="text-xs text-zinc-400">
-                  {p.updated_at ? new Date(p.updated_at).toLocaleDateString() : "Sample"}
+        <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
+          {plans.map(p => (
+            <li key={p.id} className="flex items-center justify-between gap-3 bg-surface px-4 py-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent-ink">
+                  <Icon name="fileText" />
                 </span>
+                <div className="min-w-0">
+                  <p className="truncate text-[13.5px] font-medium text-ink">{p.name || p.id}</p>
+                  <p className="truncate font-mono text-[12px] text-ink-3">{p.id}</p>
+                </div>
               </div>
-            ))}
-          </div>
-        </div>
+              <span className="shrink-0 text-xs text-ink-3">
+                {p.updated_at ? `Updated ${new Date(p.updated_at).toLocaleDateString()}` : "Sample"}
+              </span>
+            </li>
+          ))}
+        </ul>
       )}
+    </StageShell>
+  );
+}
 
-      <div className="flex justify-between pt-2">
-        <button onClick={onBack} className="text-sm text-zinc-500 hover:text-zinc-700 cursor-pointer">
-          ← Back
-        </button>
-        <button onClick={onNext} className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
-          Continue →
-        </button>
-      </div>
-    </div>
+function MultiUpload({ busy, onFiles }: { busy: boolean; onFiles: (files: File[]) => void }) {
+  return (
+    <UploadZone
+      label="Select plan files"
+      title="Drop plan YAML files here"
+      hint="One or more .yaml files. A plan with the same id replaces the saved one."
+      accept=".yaml,.yml"
+      icon="fileText"
+      busy={busy}
+      busyLabel="Importing plans..."
+      multiple
+      onFiles={onFiles}
+    />
   );
 }

@@ -1,20 +1,34 @@
 import type { ReactNode } from "react";
+import { Icon } from "./ui";
+import { cx } from "./ui/cx";
 
 /**
  * Sortable table header cell. Click to toggle sort direction.
  */
-export function SortTh({
-  col, label, current, dir, onClick, className,
+export function SortTh<C extends string>({
+  col, label, current, dir, onClick, className, align,
 }: {
-  col: string; label: string; current: string; dir: string; onClick: (c: string) => void; className?: string;
+  col: C; label: string; current: string; dir: string; onClick: (c: C) => void; className?: string;
+  align?: "right";
 }) {
   const active = current === col;
   return (
     <th
-      onClick={() => onClick(col)}
-      className={`px-3 py-2 text-left font-medium text-zinc-500 whitespace-nowrap cursor-pointer hover:text-zinc-700 select-none ${className ?? ""}`}
+      className={cx(align === "right" && "text-right", className)}
+      aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : undefined}
     >
-      {label}{active ? (dir === "asc" ? " ↑" : " ↓") : ""}
+      <button
+        type="button"
+        onClick={() => onClick(col)}
+        className={cx("inline-flex items-center gap-1 transition-colors hover:text-ink", active && "text-ink")}
+      >
+        {label}
+        <Icon
+          name={active ? (dir === "asc" ? "arrowUp" : "arrowDown") : "arrowUpDown"}
+          size={12}
+          className={active ? "" : "opacity-35"}
+        />
+      </button>
     </th>
   );
 }
@@ -22,14 +36,15 @@ export function SortTh({
 /**
  * Filter input below a sortable header. Type to filter that column.
  */
-export function FilterTh({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function FilterTh({ value, onChange, label }: { value: string; onChange: (v: string) => void; label?: string }) {
   return (
-    <th className="px-1 py-0.5">
+    <th className="bg-surface px-2 py-1.5">
       <input
         value={value}
         onChange={e => onChange(e.target.value)}
-        placeholder="…"
-        className="w-full px-1.5 py-0.5 rounded border border-zinc-200 text-[10px] bg-white placeholder:text-zinc-300 focus:outline-none focus:border-blue-300"
+        placeholder="Filter"
+        aria-label={label ? `Filter ${label}` : "Filter column"}
+        className="w-full min-w-16 rounded-md px-2 py-1 text-xs font-normal"
       />
     </th>
   );
@@ -39,7 +54,7 @@ export function FilterTh({ value, onChange }: { value: string; onChange: (v: str
  * Empty header cell for non-filterable columns.
  */
 export function EmptyTh() {
-  return <th className="px-1 py-0.5" />;
+  return <th className="bg-surface py-1.5" />;
 }
 
 /**
@@ -49,12 +64,18 @@ export function FilterBar({ total, shown, filters, onClear, children }: {
   total: number; shown: number; filters: Record<string, unknown>; onClear: () => void; children?: ReactNode;
 }) {
   const active = Object.keys(filters).length;
+  if (!active && !children) return null;
   return (
-    <div className="flex items-center gap-3 text-xs">
-      {active > 0 && <span className="text-zinc-400">{shown} of {total} shown</span>}
+    <div className="flex flex-wrap items-center gap-3 text-[12.5px]">
+      {active > 0 && (
+        <span className="inline-flex items-center gap-1.5 text-ink-2">
+          <Icon name="filter" size={13} className="text-ink-3" />
+          <span className="num">{shown} of {total} shown</span>
+        </span>
+      )}
       {children}
       {active > 0 && (
-        <button onClick={onClear} className="text-accent hover:underline cursor-pointer">
+        <button onClick={onClear} className="font-medium text-accent-ink hover:underline">
           Clear filters
         </button>
       )}

@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { savePlan } from "../api";
+import { Button, Callout, Card, CardHeader, Icon, PageHeader } from "./ui";
 
 export interface PlanBuilderRule {
   type: string;
@@ -24,9 +25,11 @@ interface Props {
   plan: PlanBuilderPlanData;
   onClose: () => void;
   onUse?: (yaml: string) => void;
+  /** Inside another screen (Quick Calc): no page header of its own. */
+  embedded?: boolean;
 }
 
-export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props) {
+export default function PlanBuilder({ plan: initialPlan, onClose, onUse, embedded }: Props) {
   const [plan, setPlan] = useState<PlanBuilderPlanData>(structuredClone(initialPlan));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -99,222 +102,203 @@ export default function PlanBuilder({ plan: initialPlan, onClose, onUse }: Props
   }, [plan]);
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6 animate-in">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-ink">Plan Builder</h2>
-        <div className="flex items-center gap-2">
-          <button onClick={onClose} className="text-xs text-ink2 hover:text-ink cursor-pointer transition-colors">
-            ← Back to AI Builder
-          </button>
-        </div>
-      </div>
+    <div className="animate-in">
+      {!embedded && <PageHeader
+        title="Plan builder"
+        description="Tune rates, tiers and accelerators, then save the plan or use it straight away. The YAML updates as you go."
+        actions={<Button variant="ghost" icon="arrowLeft" onClick={onClose}>Back</Button>}
+      />}
 
-      {/* Plan settings */}
-      <div className="card p-5 space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-ink2 mb-1">Plan Name</label>
-            <input
-              type="text"
-              value={plan.name}
-              onChange={e => updatePlan(p => ({ ...p, name: e.target.value }))}
-              className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-ink2 mb-1">Period</label>
-            <select
-              value={plan.period_type}
-              onChange={e => updatePlan(p => ({ ...p, period_type: e.target.value }))}
-              className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-            >
-              <option value="monthly">Monthly</option>
-              <option value="quarterly">Quarterly</option>
-              <option value="annual">Annual</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* Rules */}
-      {plan.rules.map((rule, ri) => (
-        <div key={ri} className="card p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <select
-                value={rule.type}
-                onChange={e => updateRule(ri, r => {
-                  r.type = e.target.value;
-                  if (e.target.value === "tiered" && !r.tiers) {
-                    r.tiers = [{ threshold: "50000", rate: "0.03" }, { threshold: "100000", rate: "0.05" }];
-                  }
-                  if (e.target.value === "accelerator") {
-                    r.threshold_pct = "1.0";
-                    r.multiplier = "2.0";
-                  }
-                  return r;
-                })}
-                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-              >
-                <option value="flat_rate">Flat Rate</option>
-                <option value="tiered">Tiered</option>
-                <option value="accelerator">Accelerator</option>
-              </select>
-              <span className="text-xs text-ink2 font-mono">{rule.id}</span>
-            </div>
-            {plan.rules.length > 1 && (
-              <button onClick={() => removeRule(ri)} className="text-xs text-ink2 hover:text-danger cursor-pointer transition-colors">
-                Remove
-              </button>
-            )}
-          </div>
-
-          {/* Flat rate / base rate */}
-          {(rule.type === "flat_rate" || rule.type === "tiered") && (
-            <SliderField
-              label="Base Rate"
-              value={parseFloat(rule.rate || "0.05") * 100}
-              min={0}
-              max={50}
-              step={0.5}
-              unit="%"
-              onChange={v => updateRule(ri, r => { r.rate = String(v / 100); return r; })}
-            />
-          )}
-
-          {/* Tiers */}
-          {rule.type === "tiered" && rule.tiers && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-ink2">Tiers</label>
-                <button onClick={() => addTier(ri)} className="text-xs text-accent hover:text-brand-300 cursor-pointer transition-colors">
-                  + Add Tier
-                </button>
-              </div>
-              {rule.tiers.map((tier, ti) => (
-                <div key={ti} className="flex items-center gap-2">
-                  <span className="text-xs text-ink2 w-4">{ti + 1}</span>
-                  <div className="flex-1 grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10px] text-ink2">Threshold ($)</label>
-                      <input
-                        type="number"
-                        value={parseFloat(tier.threshold)}
-                        onChange={e => updateRule(ri, r => {
-                          if (r.tiers) r.tiers[ti].threshold = e.target.value;
-                          return r;
-                        })}
-                        className="w-full px-2 py-1 rounded text-xs bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-ink2">Rate (%)</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={parseFloat(tier.rate) * 100}
-                        onChange={e => updateRule(ri, r => {
-                          if (r.tiers) r.tiers[ti].rate = String(parseFloat(e.target.value || "0") / 100);
-                          return r;
-                        })}
-                        className="w-full px-2 py-1 rounded text-xs bg-soft border border-line text-ink focus:outline-none focus:border-accent transition-all"
-                      />
-                    </div>
-                  </div>
-                  {rule.tiers!.length > 1 && (
-                    <button onClick={() => removeTier(ri, ti)} className="text-xs text-ink2 hover:text-danger cursor-pointer transition-colors">
-                      ✕
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Accelerator */}
-          {rule.type === "accelerator" && (
-            <div className="space-y-3">
-              <SliderField
-                label="Threshold (% of quota)"
-                value={parseFloat(rule.threshold_pct || "1.0") * 100}
-                min={0}
-                max={200}
-                step={5}
-                unit="%"
-                onChange={v => updateRule(ri, r => { r.threshold_pct = String(v / 100); return r; })}
+      <div className="space-y-4">
+        {/* Plan settings */}
+        <Card>
+          <CardHeader icon="fileText" title="Plan settings" />
+          <div className="grid grid-cols-1 gap-4 px-5 py-4 sm:grid-cols-2">
+            <label className="block">
+              <span className="field-label">Plan name</span>
+              <input
+                type="text"
+                value={plan.name}
+                onChange={e => updatePlan(p => ({ ...p, name: e.target.value }))}
+                className="w-full"
               />
-              <SliderField
-                label="Multiplier"
-                value={parseFloat(rule.multiplier || "2.0")}
-                min={1}
-                max={5}
-                step={0.1}
-                unit="x"
-                onChange={v => updateRule(ri, r => { r.multiplier = String(v); return r; })}
-              />
-            </div>
-          )}
-
-          {/* Filter */}
-          <div>
-            <label className="block text-xs font-medium text-ink2 mb-1">
-              Filter <span className="text-ink2">(optional)</span>
             </label>
-            <input
-              type="text"
-              value={rule.filter || ""}
-              onChange={e => updateRule(ri, r => { r.filter = e.target.value || undefined; return r; })}
-              placeholder='e.g. product == "Enterprise"'
-              className="w-full px-3 py-2 rounded-lg text-sm font-mono bg-soft border border-line text-ink placeholder:text-ink2 focus:outline-none focus:border-accent transition-all"
+            <label className="block">
+              <span className="field-label">Period</span>
+              <select
+                value={plan.period_type}
+                onChange={e => updatePlan(p => ({ ...p, period_type: e.target.value }))}
+                className="w-full"
+              >
+                <option value="monthly">Monthly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="annual">Annual</option>
+              </select>
+            </label>
+          </div>
+        </Card>
+
+        {/* Rules */}
+        {plan.rules.map((rule, ri) => (
+          <Card key={ri}>
+            <CardHeader
+              icon="layers"
+              title={<span className="flex items-center gap-2">Rule <span className="badge font-mono">{rule.id}</span></span>}
+              actions={
+                <>
+                  <select
+                    aria-label={`Rule type for ${rule.id}`}
+                    value={rule.type}
+                    onChange={e => updateRule(ri, r => {
+                      r.type = e.target.value;
+                      if (e.target.value === "tiered" && !r.tiers) {
+                        r.tiers = [{ threshold: "50000", rate: "0.03" }, { threshold: "100000", rate: "0.05" }];
+                      }
+                      if (e.target.value === "accelerator") {
+                        r.threshold_pct = "1.0";
+                        r.multiplier = "2.0";
+                      }
+                      return r;
+                    })}
+                  >
+                    <option value="flat_rate">Flat rate</option>
+                    <option value="tiered">Tiered</option>
+                    <option value="accelerator">Accelerator</option>
+                  </select>
+                  {plan.rules.length > 1 && (
+                    <Button size="sm" variant="ghost" icon="trash" aria-label={`Remove rule ${rule.id}`} onClick={() => removeRule(ri)} />
+                  )}
+                </>
+              }
             />
-          </div>
-        </div>
-      ))}
+            <div className="space-y-5 px-5 py-4">
+              {/* Flat rate / base rate */}
+              {(rule.type === "flat_rate" || rule.type === "tiered") && (
+                <SliderField
+                  label="Base rate"
+                  value={parseFloat(rule.rate || "0.05") * 100}
+                  min={0}
+                  max={50}
+                  step={0.5}
+                  unit="%"
+                  onChange={v => updateRule(ri, r => { r.rate = String(v / 100); return r; })}
+                />
+              )}
 
-      {/* Add rule button */}
-      <button
-        onClick={addRule}
-        className="w-full py-3 rounded-xl border-2 border-dashed border-surface-300 text-ink2 hover:border-accent hover:text-accent text-sm font-medium transition-all cursor-pointer"
-      >
-        + Add Rule
-      </button>
+              {/* Tiers */}
+              {rule.type === "tiered" && rule.tiers && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="field-label mb-0">Tiers</span>
+                    <Button size="sm" variant="ghost" icon="plus" onClick={() => addTier(ri)}>Add tier</Button>
+                  </div>
+                  <div className="overflow-hidden rounded-xl border border-line">
+                    {rule.tiers.map((tier, ti) => (
+                      <div key={ti} className="flex items-end gap-3 border-b border-line px-3 py-2.5 last:border-b-0">
+                        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-2 text-[12px] font-semibold text-ink-2 num">{ti + 1}</span>
+                        <label className="block flex-1">
+                          <span className="field-label mb-1 text-[11.5px]">Threshold ($)</span>
+                          <input
+                            type="number"
+                            value={parseFloat(tier.threshold)}
+                            onChange={e => updateRule(ri, r => {
+                              if (r.tiers) r.tiers[ti].threshold = e.target.value;
+                              return r;
+                            })}
+                            className="w-full num"
+                          />
+                        </label>
+                        <label className="block flex-1">
+                          <span className="field-label mb-1 text-[11.5px]">Rate (%)</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={parseFloat(tier.rate) * 100}
+                            onChange={e => updateRule(ri, r => {
+                              if (r.tiers) r.tiers[ti].rate = String(parseFloat(e.target.value || "0") / 100);
+                              return r;
+                            })}
+                            className="w-full num"
+                          />
+                        </label>
+                        {rule.tiers!.length > 1 && (
+                          <Button size="sm" variant="ghost" icon="x" aria-label={`Remove tier ${ti + 1}`} onClick={() => removeTier(ri, ti)} />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-      {/* YAML preview */}
-      <details className="card overflow-hidden">
-        <summary className="px-5 py-3 text-sm font-medium text-ink2 cursor-pointer hover:text-ink transition-colors">
-          Preview YAML
-        </summary>
-        <div className="px-5 pb-4 overflow-x-auto">
-          <pre className="text-xs text-ink2 font-mono whitespace-pre">{generateYaml(plan)}</pre>
-        </div>
-      </details>
+              {/* Accelerator */}
+              {rule.type === "accelerator" && (
+                <div className="space-y-5">
+                  <SliderField
+                    label="Threshold (% of quota)"
+                    value={parseFloat(rule.threshold_pct || "1.0") * 100}
+                    min={0}
+                    max={200}
+                    step={5}
+                    unit="%"
+                    onChange={v => updateRule(ri, r => { r.threshold_pct = String(v / 100); return r; })}
+                  />
+                  <SliderField
+                    label="Multiplier"
+                    value={parseFloat(rule.multiplier || "2.0")}
+                    min={1}
+                    max={5}
+                    step={0.1}
+                    unit="x"
+                    onChange={v => updateRule(ri, r => { r.multiplier = String(v); return r; })}
+                  />
+                </div>
+              )}
 
-      {/* Save */}
-      <div className="flex justify-end gap-2">
-        {error && (
-          <div className="flex-1 px-3 py-2 rounded-lg bg-danger/10 border border-danger/30 text-danger text-xs select-text">
-            {error}
-          </div>
-        )}
-        <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-ink2 hover:text-ink cursor-pointer transition-colors">
-          Cancel
-        </button>
-        {onUse && (
-          <button
-            onClick={() => onUse(generateYaml(plan))}
-            className="px-6 py-2 rounded-lg text-sm font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-all cursor-pointer"
-          >
-            Use This Plan
-          </button>
-        )}
+              {/* Filter */}
+              <label className="block">
+                <span className="field-label">Filter <span className="font-normal text-ink-3">(optional)</span></span>
+                <input
+                  type="text"
+                  value={rule.filter || ""}
+                  onChange={e => updateRule(ri, r => { r.filter = e.target.value || undefined; return r; })}
+                  placeholder='e.g. product == "Enterprise"'
+                  className="w-full font-mono"
+                />
+              </label>
+            </div>
+          </Card>
+        ))}
+
+        {/* Add rule button */}
         <button
-          onClick={handleSave}
-          disabled={saving}
-          className="px-6 py-2 rounded-lg text-sm font-medium bg-accent text-white hover:bg-brand-400 disabled:opacity-40 transition-all cursor-pointer"
+          onClick={addRule}
+          className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-line-strong py-3 text-[13.5px] font-medium text-ink-2 transition-colors hover:border-accent/60 hover:bg-accent-soft hover:text-accent-ink"
         >
-          {saving ? "Saving..." : saved ? "✓ Saved!" : "Save to Library"}
+          <Icon name="plus" /> Add rule
         </button>
+
+        {/* YAML preview */}
+        <details className="card group overflow-hidden">
+          <summary className="flex items-center justify-between px-5 py-3.5 text-[13.5px] font-medium text-ink-2 hover:text-ink">
+            <span className="flex items-center gap-2"><Icon name="fileText" /> Preview YAML</span>
+            <Icon name="chevronDown" className="transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="px-4 pb-4">
+            <pre className="audit-panel">{generateYaml(plan)}</pre>
+          </div>
+        </details>
+
+        {/* Save */}
+        {error && <Callout tone="danger">{error}</Callout>}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          {onUse && (
+            <Button icon="play" onClick={() => onUse(generateYaml(plan))}>Use this plan</Button>
+          )}
+          <Button variant="primary" icon={saved ? "check" : "download"} onClick={handleSave} disabled={saving} loading={saving}>
+            {saving ? "Saving..." : saved ? "Saved" : "Save to library"}
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -334,13 +318,11 @@ function SliderField({ label, value, min, max, step, unit, onChange }: {
   onChange: (v: number) => void;
 }) {
   return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <label className="text-xs font-medium text-ink2">{label}</label>
-        <span className="text-xs font-mono text-ink font-semibold">
-          {value.toFixed(step < 1 ? 1 : 0)}{unit}
-        </span>
-      </div>
+    <label className="block">
+      <span className="mb-2 flex items-center justify-between">
+        <span className="field-label mb-0">{label}</span>
+        <span className="badge badge-accent num">{value.toFixed(step < 1 ? 1 : 0)}{unit}</span>
+      </span>
       <input
         type="range"
         value={value}
@@ -348,9 +330,9 @@ function SliderField({ label, value, min, max, step, unit, onChange }: {
         max={max}
         step={step}
         onChange={e => onChange(parseFloat(e.target.value))}
-        className="w-full h-2 rounded-full appearance-none bg-surface-200 accent-brand-500 cursor-pointer"
+        className="w-full cursor-pointer"
       />
-    </div>
+    </label>
   );
 }
 

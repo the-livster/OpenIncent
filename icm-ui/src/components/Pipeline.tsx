@@ -11,6 +11,8 @@ import StageAdjustments from "./StageAdjustments";
 import StageReporting from "./StageReporting";
 import PipelineWelcome from "./PipelineWelcome";
 import { parsePayees, previewFile } from "../api";
+import { Button, Callout, Icon, PageHeader } from "./ui";
+import { cx } from "./ui/cx";
 
 export interface PayeeRow {
   id: string; name: string; quota: string; plan_id: string;
@@ -125,82 +127,88 @@ export default function Pipeline() {
     }
   }, [payees, plans, resultsAvailable, visitedResults]);
 
-  const groupLabels = [...new Set(STAGES.map(s => s.group))];
+  const groups = [...new Set(STAGES.map(s => s.group))];
 
   return (
-    <div className="flex min-h-screen">
-      {/* Left rail */}
-      <nav className="w-56 shrink-0 border-r border-zinc-200 bg-zinc-50/50 p-4 space-y-6">
-        <div className="text-sm font-bold text-zinc-800">Pipeline</div>
-        {groupLabels.map(group => (
-          <div key={group} className="space-y-0">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1 ml-3">
-              {group}
-            </div>
-            {STAGES.filter(s => s.group === group).map((s, i, arr) => {
-              const complete = stageComplete(s.n);
-              const prevComplete = i > 0 ? stageComplete(arr[i - 1].n) : false;
-              const isFirst = i === 0;
-              const isLast = i === arr.length - 1;
-              return (
-                <div key={s.n} className="flex items-stretch">
-                  {/* Connecting line column */}
-                  <div className="w-5 shrink-0 flex flex-col items-center mr-2.5">
-                    {/* Incoming line: fills when the PREVIOUS stage is complete */}
-                    <div className={`w-0.5 flex-1 min-h-[4px] ${isFirst ? "bg-transparent" : prevComplete ? "bg-green-400" : "bg-zinc-200"}`} />
-                    {/* Circle */}
-                    <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0
-                      ${stage === s.n ? "bg-blue-600 text-white ring-2 ring-blue-200" : complete ? "bg-green-100 text-green-700" : canAccess(s.n) ? "bg-zinc-200 text-zinc-500" : "bg-zinc-100 text-zinc-300"}`}>
-                      {complete ? "✓" : s.n}
-                    </span>
-                    {/* Outgoing line: fills when THIS stage is complete */}
-                    <div className={`w-0.5 flex-1 min-h-[4px] ${isLast ? "bg-transparent" : complete ? "bg-green-400" : "bg-zinc-200"}`} />
-                  </div>
-                  {/* Button */}
-                  <button
-                    onClick={() => goTo(s.n)}
-                    disabled={!canAccess(s.n)}
-                    aria-current={stage === s.n ? "step" : undefined}
-                    className={`flex-1 text-left px-3 py-2 rounded-lg text-sm transition-colors
-                      ${stage === s.n
-                        ? "bg-blue-50 text-blue-700 font-semibold"
-                        : canAccess(s.n)
-                        ? "text-zinc-600 hover:bg-zinc-100 cursor-pointer"
-                        : "text-zinc-300 cursor-not-allowed"
-                      }`}
-                  >
-                    {s.label}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        ))}
+    <div className="space-y-5">
+      <PageHeader
+        title="Pipeline"
+        description="Set up once, then run each pay cycle: people and plans, the period's deals, then review every result before statements go out."
+      />
+
+      <nav aria-label="Pipeline steps" className="card">
+        {/* Groups wrap onto a second line on narrow screens rather than scroll. */}
+        <ol className="flex flex-wrap items-stretch gap-2 p-2">
+          {groups.map(group => (
+            <li key={group} className="flex flex-col rounded-[10px] bg-surface-2/70 px-1 pb-1">
+              <span className="eyebrow px-2 pb-0.5 pt-1.5">{group}</span>
+              <ol className="flex flex-wrap items-center gap-0.5">
+                {STAGES.filter(s => s.group === group).map(s => {
+                  const complete = stageComplete(s.n);
+                  const current = stage === s.n;
+                  const enabled = canAccess(s.n);
+                  return (
+                    <li key={s.n} className="flex items-center">
+                      <button
+                        onClick={() => goTo(s.n)}
+                        disabled={!enabled}
+                        aria-current={current ? "step" : undefined}
+                        className={cx(
+                          "flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[13px] font-medium transition-colors",
+                          current && "bg-accent-soft text-accent-ink",
+                          !current && enabled && "text-ink-2 hover:bg-surface hover:text-ink",
+                          !enabled && "text-ink-3 opacity-55",
+                        )}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={cx(
+                            "grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full text-[11px] font-semibold num",
+                            current ? "bg-accent text-on-accent"
+                              : complete ? "bg-success-soft text-success-ink"
+                              : "bg-surface-3 text-ink-2",
+                          )}
+                        >
+                          {complete && !current ? <Icon name="check" size={12} strokeWidth={2.8} /> : s.n}
+                        </span>
+                        {s.label}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ol>
+            </li>
+          ))}
+        </ol>
       </nav>
 
-      {/* Main content */}
-      <main className="flex-1 p-6 overflow-auto">
-        {samplePlan && <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm flex justify-between gap-4">
-          <div><strong>Sample workspace</strong><p>Fictional data. The unchanged sample pays USD 3,500.00. Follow the steps to download statements.</p></div>
-          <button onClick={exitSample} className="text-blue-700 underline shrink-0">Exit sample</button>
-        </div>}
-        {stage === 1 && !samplePlan && payees.length === 0 && <PipelineWelcome onSample={loadSample} loading={sampleLoading} error={sampleError} />}
-        {stage === 1 && <StagePayees payees={payees} setPayees={updatePayees} onNext={() => goTo(2)} />}
-        {stage === 2 && <StageQuotas payees={payees} setPayees={updatePayees} onNext={() => goTo(3)} onBack={() => goTo(1)} />}
-        {stage === 3 && <StagePlans plans={plans} setPlans={updatePlans} sample={!!samplePlan} onChanged={invalidate} onNext={() => goTo(4)} onBack={() => goTo(2)} />}
-        {stage === 4 && <StageEligibility payees={payees} setPayees={updatePayees} plans={plans} setPlans={updatePlans} sample={!!samplePlan} onNext={() => goTo(5)} onBack={() => goTo(3)} />}
-        {stage === 5 && (
-          <StageCrediting
-            payees={payees} transactions={transactions} setTransactions={updateTransactions}
-            txnFile={txnFile} setTxnFile={setTxnFile} samplePlan={samplePlan} onCalculated={onCalculated}
-            onBack={() => goTo(4)}
-          />
-        )}
-        {stage === 6 && result && <StageAttainment result={result} onNext={() => goTo(7)} onBack={() => goTo(5)} />}
-        {stage === 7 && result && <StageEarnings result={result} onNext={() => goTo(8)} onBack={() => goTo(6)} />}
-        {stage === 8 && result && <StageAdjustments result={result} onNext={() => goTo(9)} onBack={() => goTo(7)} />}
-        {stage === 9 && result && <StageReporting result={result} onBack={() => goTo(8)} />}
-      </main>
+      {samplePlan && (
+        <Callout
+          tone="warning"
+          title="Sample workspace"
+          action={<Button size="sm" onClick={exitSample}>Exit sample</Button>}
+        >
+          Fictional data, kept apart from your business data. The unchanged sample pays USD 3,500.00 — follow the steps
+          through to download statements.
+        </Callout>
+      )}
+
+      {stage === 1 && !samplePlan && payees.length === 0 && <PipelineWelcome onSample={loadSample} loading={sampleLoading} error={sampleError} />}
+      {stage === 1 && <StagePayees payees={payees} setPayees={updatePayees} onNext={() => goTo(2)} />}
+      {stage === 2 && <StageQuotas payees={payees} setPayees={updatePayees} onNext={() => goTo(3)} onBack={() => goTo(1)} />}
+      {stage === 3 && <StagePlans plans={plans} setPlans={updatePlans} sample={!!samplePlan} onChanged={invalidate} onNext={() => goTo(4)} onBack={() => goTo(2)} />}
+      {stage === 4 && <StageEligibility payees={payees} setPayees={updatePayees} plans={plans} setPlans={updatePlans} sample={!!samplePlan} onNext={() => goTo(5)} onBack={() => goTo(3)} />}
+      {stage === 5 && (
+        <StageCrediting
+          payees={payees} transactions={transactions} setTransactions={updateTransactions}
+          txnFile={txnFile} setTxnFile={setTxnFile} samplePlan={samplePlan} onCalculated={onCalculated}
+          onBack={() => goTo(4)}
+        />
+      )}
+      {stage === 6 && result && <StageAttainment result={result} onNext={() => goTo(7)} onBack={() => goTo(5)} />}
+      {stage === 7 && result && <StageEarnings result={result} onNext={() => goTo(8)} onBack={() => goTo(6)} />}
+      {stage === 8 && result && <StageAdjustments result={result} onNext={() => goTo(9)} onBack={() => goTo(7)} />}
+      {stage === 9 && result && <StageReporting result={result} onBack={() => goTo(8)} />}
     </div>
   );
 }

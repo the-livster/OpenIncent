@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchTrace } from "../api";
 import type { OrderTrace, TraceStep } from "../types";
+import { Callout, Drawer, Icon, Spinner } from "./ui";
+import { cx } from "./ui/cx";
 
 interface Props {
   transactionId: string;
@@ -37,108 +39,83 @@ export default function TracePanel({ transactionId, payeeId, calculationId, onCl
   }, []);
 
   return (
-    <div className="fixed inset-y-0 right-0 w-[420px] max-w-[90vw] bg-white border-l border-line shadow-xl z-50 flex flex-col animate-in">
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 py-4 border-b border-line shrink-0">
-        <div>
-          <h3 className="text-sm font-semibold text-ink">Order Trace</h3>
-          <p className="text-xs text-ink2 mt-0.5">
-            {transactionId} &middot; {payeeId}
-          </p>
-        </div>
-        <button
-          onClick={onClose}
-          className="text-ink2 hover:text-ink cursor-pointer text-lg leading-none px-1"
-        >
-          ×
-        </button>
-      </div>
-
-      {/* Body */}
-      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+    <Drawer open onClose={onClose} title="Order trace" subtitle={`${transactionId} · ${payeeId}`} width={460}>
+      <div className="space-y-4 px-5 py-4">
         {loading && (
-          <div className="text-center py-8">
-            <div className="inline-block w-5 h-5 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
-            <p className="text-xs text-ink2 mt-2">Loading trace...</p>
+          <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-ink-2">
+            <Spinner /> Loading trace...
           </div>
         )}
 
-        {error && (
-          <div className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs select-text">
-            {error}
-          </div>
-        )}
+        {error && <Callout tone="danger">{error}</Callout>}
 
         {trace && (
           <>
             {/* Order header */}
-            <div className="px-3 py-2.5 rounded-lg bg-soft text-xs space-y-1">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 rounded-xl border border-line bg-surface-2/60 px-4 py-3 text-[12.5px]">
               {Object.entries(trace.order).map(([k, v]) => (
-                <div key={k} className="flex justify-between">
-                  <span className="text-ink2">{k}</span>
-                  <span className="text-ink font-medium">{String(v)}</span>
+                <div key={k} className="contents">
+                  <dt className="text-ink-3">{k}</dt>
+                  <dd className="truncate text-right font-medium text-ink">{String(v)}</dd>
                 </div>
               ))}
-            </div>
+            </dl>
 
             {/* Steps */}
-            {trace.steps.map((step, si) => (
-              <StepCard key={si} step={step} expanded={expandedEvents.has(si)} onToggle={() => toggleEvent(si)} />
-            ))}
+            <ol className="space-y-3">
+              {trace.steps.map((step, si) => (
+                <StepCard key={si} step={step} expanded={expandedEvents.has(si)} onToggle={() => toggleEvent(si)} />
+              ))}
+            </ol>
 
             {/* Total */}
-            <div className="flex justify-between items-center px-3 py-2.5 border-t-2 border-line text-sm">
-              <span className="font-semibold text-ink">Total from this order</span>
-              <span className="font-mono font-semibold text-success">${trace.total}</span>
+            <div className="flex items-center justify-between rounded-xl bg-accent-soft px-4 py-3 text-sm">
+              <span className="font-semibold text-accent-ink">Total from this order</span>
+              <span className="num font-semibold text-accent-ink">{trace.total}</span>
             </div>
 
-            {/* Summary */}
-            <p className="text-xs text-ink2">{trace.summary}</p>
+            <p className="text-[12.5px] text-ink-2">{trace.summary}</p>
           </>
         )}
       </div>
-    </div>
+    </Drawer>
   );
 }
 
 function StepCard({ step, expanded, onToggle }: { step: TraceStep; expanded: boolean; onToggle: () => void }) {
   const matched = step.status === "matched";
   return (
-    <div className={`rounded-lg border ${matched ? "border-green-200 bg-green-50/50" : "border-line bg-soft"}`}>
-      <div className="flex items-center justify-between px-3 py-2.5">
-        <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${matched ? "bg-green-500" : "bg-ink2/40"}`} />
-          <span className="text-xs font-medium text-ink">{step.rule_id}</span>
-          <span className={`text-xs font-medium ${matched ? "text-green-700" : "text-ink2"}`}>
+    <li className={cx("overflow-hidden rounded-xl border", matched ? "border-success/30 bg-success-soft/50" : "border-line bg-surface")}>
+      <div className="flex items-center justify-between gap-2 px-3.5 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <Icon name={matched ? "checkCircle" : "minus"} size={15} className={matched ? "text-success-ink" : "text-ink-3"} />
+          <span className="truncate font-mono text-[12.5px] font-medium text-ink">{step.rule_id}</span>
+          <span className={cx("text-[12px] font-medium", matched ? "text-success-ink" : "text-ink-3")}>
             {matched ? "matched" : "skipped"}
           </span>
         </div>
-        {step.reason && (
-          <span className="text-xs text-ink2 bg-white/60 px-1.5 py-0.5 rounded">{step.reason}</span>
-        )}
+        {step.reason && <span className="badge">{step.reason}</span>}
       </div>
 
-      {/* Event summaries */}
-      <div className="px-3 pb-2 space-y-1">
+      <div className="space-y-1 px-3.5 pb-2.5">
         {step.events.map((ev, ei) => (
-          <div key={ei} className="text-xs text-ink2">{ev.human_readable}</div>
+          <p key={ei} className="text-[12.5px] text-ink-2">{ev.human_readable}</p>
         ))}
       </div>
 
-      {/* Expand raw events */}
       <button
         onClick={onToggle}
-        className="w-full px-3 py-1.5 text-xs text-ink2 hover:text-ink border-t border-line/50 cursor-pointer transition-colors"
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-1 border-t border-line/70 px-3.5 py-1.5 text-[12px] text-ink-3 hover:text-ink"
       >
+        <Icon name={expanded ? "chevronUp" : "chevronDown"} size={13} />
         {expanded ? "Hide raw events" : "Show raw events"}
       </button>
       {expanded && (
-        <div className="px-3 pb-2.5">
-          <pre className="text-xs text-ink2 bg-white rounded p-2 overflow-x-auto select-text max-h-48">
-            {JSON.stringify(step.events, null, 2)}
-          </pre>
+        <div className="px-3.5 pb-3">
+          <pre className="audit-panel max-h-48 p-3 text-[11.5px] select-text">{JSON.stringify(step.events, null, 2)}</pre>
         </div>
       )}
-    </div>
+    </li>
   );
 }

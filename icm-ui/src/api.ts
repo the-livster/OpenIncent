@@ -268,6 +268,26 @@ export async function exportSavedStatements(result: CalculateResponse, formats =
   return downloadExport(res);
 }
 
+/**
+ * One payee's interactive HTML statement from a saved run: the same file the
+ * export writes, so a preview is exactly what the payee will receive.
+ */
+export async function previewStatement(args: {
+  calculationIds: string[]; payeeId: string; period: string; sample?: boolean;
+}, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(v1("/calculations/statement"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      calculation_ids: args.calculationIds, payee_id: args.payeeId, period: args.period,
+      sample: args.sample ?? false,
+    }),
+    signal,
+  });
+  await requireSuccess(res, "Could not load this statement. Please try again.");
+  return res.text();
+}
+
 // ------------------------------------------------------------------
 // Order trace
 // ------------------------------------------------------------------

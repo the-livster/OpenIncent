@@ -30,7 +30,9 @@ Copy `.env.example` to `.env` and adjust as needed:
 ## Tech Stack
 
 - React 19, TypeScript, Vite 8
-- Tailwind CSS 4
+- Tailwind CSS 4, with semantic colour tokens for light and dark themes in `src/index.css`
+- A small in-house component set in `src/components/ui` (buttons, cards, drawers, callouts, icons)
+- Inter, self-hosted (`@fontsource-variable/inter`), so the desktop app needs no network for fonts
 - No external state management — local React state
 
 ## Development

@@ -1,90 +1,117 @@
 import type { CalculateResponse, Commission } from "../types";
+import { money, sumCents } from "../format";
 import { Th, Td } from "./Table";
+import StageShell from "./StageShell";
+import { Card, CardHeader, EmptyState, Icon, type IconName } from "./ui";
+import { cx } from "./ui/cx";
 
 interface Props { result: CalculateResponse; onNext: () => void; onBack: () => void; }
 
 const ADJ_RULES = ["payout_cap", "draw", "mbo", "manual_adjustment"];
+
+const LABELS: Record<string, { title: string; icon: IconName; hint: string }> = {
+  payout_cap: { title: "Plan payout cap", icon: "shield", hint: "Earnings above the plan's cap, held back" },
+  draw: { title: "Draw / guarantee", icon: "scale", hint: "Top-ups paid and recoveries taken" },
+  mbo: { title: "MBO / bonus", icon: "target", hint: "Non-commission payouts" },
+  manual_adjustment: { title: "Manual adjustments", icon: "pencil", hint: "Entered by hand, each with a reason" },
+};
 
 export default function StageAdjustments({ result, onNext, onBack }: Props) {
   const commissions = result.commissions || [];
   const drawBalances = result.draw_balances;
 
   // Find true_up entries in ledger
-  const ledger = result.ledger;
-  const trueUps = (ledger || []).filter(e => e.event_type === "true_up");
+  const trueUps = (result.ledger || []).filter(e => e.event_type === "true_up");
 
   // Group adjustment commissions by type
   const byType: Record<string, Commission[]> = {};
   for (const c of commissions) {
     if (ADJ_RULES.includes(c.rule_id)) {
       (byType[c.rule_id] ??= []).push(c);
-}
-  const labels: Record<string, string> = {
-    payout_cap: "Plan Payout Cap",
-    draw: "Draw / Guarantee",
-    mbo: "MBO / Bonus",
-    manual_adjustment: "Manual Adjustments",
-  };
+    }
+  }
+  const balances = Object.entries(drawBalances ?? {});
+  const nothing = Object.keys(byType).length === 0 && trueUps.length === 0 && balances.length === 0;
 
   return (
-    <div className="max-w-4xl space-y-4">
-      <h1 className="text-lg font-bold text-zinc-800">8. Payout Adjustments</h1>
-      <p className="text-sm text-zinc-500">Non-commission lines that affect the final payout: caps, draws, MBOs, true-ups, and manual adjustments.</p>
+    <StageShell
+      n={8}
+      group="Results"
+      title="Payout adjustments"
+      description="Lines that change the final payout without being commission: caps, draws, bonuses, true-ups and manual adjustments."
+      onBack={onBack}
+      onNext={onNext}
+    >
+      {nothing && (
+        <EmptyState icon="checkCircle" title="No adjustments in this run"
+          description="Every payout is exactly the commission earned." compact />
+      )}
 
       {Object.entries(byType).map(([ruleId, lines]) => {
-        const total = lines.reduce((s, c) => s + parseFloat(c.commission_amount || "0"), 0);
+        const label = LABELS[ruleId] ?? { title: ruleId, icon: "layers" as IconName, hint: "" };
+        const total = sumCents(lines.map(c => c.commission_amount));
         return (
-          <div key={ruleId} className="border border-zinc-200 rounded-lg p-4">
-            <h3 className="text-sm font-semibold text-zinc-700">{labels[ruleId] || ruleId}</h3>
-            <p className="text-xs text-zinc-500 mb-2">{lines.length} line(s)</p>
-            <table className="w-full text-xs">
-              <thead><tr><Th>Payee</Th><Th>Amount</Th><Th>Notes</Th></tr></thead>
-              <tbody>
-                {lines.map((c, i) => (
-                  <tr key={i} className="border-b border-zinc-100">
-                    <Td mono>{c.payee_id}</Td>
-                    <Td className={parseFloat(c.commission_amount) < 0 ? "text-red-600" : "text-green-700"}>
-                      {parseFloat(c.commission_amount) >= 0 ? "+" : ""}${Math.abs(parseFloat(c.commission_amount)).toFixed(2)}
-                    </Td>
-                    <Td className="text-zinc-500">{c.notes}</Td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <p className="text-xs font-semibold text-zinc-600 mt-1">Total: ${total.toFixed(2)}</p>
-          </div>
+          <Card key={ruleId}>
+            <CardHeader
+              icon={label.icon}
+              title={label.title}
+              description={`${lines.length} line(s) · ${label.hint}`}
+              actions={<Amount value={total} strong />}
+            />
+            <div className="table-wrap">
+              <table>
+                <thead><tr><Th>Payee</Th><Th className="text-right">Amount</Th><Th>Notes</Th></tr></thead>
+                <tbody>
+                  {lines.map((c, i) => (
+                    <tr key={i}>
+                      <Td mono>{c.payee_id}</Td>
+                      <Td className="text-right"><Amount value={parseFloat(c.commission_amount)} /></Td>
+                      <Td className="whitespace-normal text-ink-2">{c.notes}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
         );
       })}
 
-      {/* True-ups */}
       {trueUps.length > 0 && (
-        <div className="border border-zinc-200 rounded-lg p-4">
-          <h3 className="text-sm font-semibold text-zinc-700">True-Ups (Locked Periods)</h3>
-          <div className="space-y-1 mt-2">
+        <Card>
+          <CardHeader icon="history" title="True-ups on locked periods"
+            description="Changes to periods already paid, settled in this one" />
+          <ul className="divide-y divide-line">
             {trueUps.map((e, i) => (
-              <div key={i} className="text-xs text-zinc-600">{e.human_readable}</div>
+              <li key={i} className="px-5 py-2.5 text-[13px] text-ink-2">{e.human_readable}</li>
             ))}
-          </div>
-        </div>
+          </ul>
+        </Card>
       )}
 
-      {/* Draw Balances */}
-      {drawBalances && Object.keys(drawBalances).length > 0 && (
-        <div className="border border-zinc-200 rounded-lg p-4">
-          <h3 className="text-sm font-semibold text-zinc-700">Draw Balances</h3>
-          <div className="space-y-1 mt-2">
-            {Object.entries(drawBalances).map(([pid, bal]) => (
-              <div key={pid} className="text-xs text-zinc-600">{pid}: ${parseFloat(bal).toFixed(2)}</div>
+      {balances.length > 0 && (
+        <Card>
+          <CardHeader icon="scale" title="Draw balances" description="Still to recover after this run" />
+          <ul className="divide-y divide-line">
+            {balances.map(([pid, bal]) => (
+              <li key={pid} className="flex items-center justify-between px-5 py-2.5 text-[13px]">
+                <span className="font-mono text-ink">{pid}</span>
+                <span className="num font-medium text-ink">{money(bal)}</span>
+              </li>
             ))}
-          </div>
-        </div>
+          </ul>
+        </Card>
       )}
-
-      <div className="flex justify-between">
-        <button onClick={onBack} className="text-sm text-zinc-500 hover:text-zinc-700">← Back</button>
-        <button onClick={onNext} className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">Continue →</button>
-      </div>
-    </div>
+    </StageShell>
   );
 }
+
+function Amount({ value, strong }: { value: number; strong?: boolean }) {
+  const negative = value < 0;
+  return (
+    <span className={cx("num inline-flex items-center gap-1", strong ? "text-[15px] font-semibold" : "font-medium",
+      negative ? "text-danger-ink" : "text-success-ink")}>
+      <Icon name={negative ? "arrowDown" : "arrowUp"} size={13} />
+      {negative ? "−" : "+"}{money(Math.abs(value))}
+    </span>
+  );
 }

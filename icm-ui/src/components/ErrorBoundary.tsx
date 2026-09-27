@@ -26,10 +26,16 @@ export default class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen bg-white flex items-center justify-center">
-          <div className="max-w-md mx-auto p-8 text-center">
-            <h2 className="text-lg font-semibold text-ink mb-3">Something went wrong</h2>
-            <p className="text-sm text-ink2 mb-4">
+        <div className="flex min-h-screen items-center justify-center bg-canvas p-6">
+          <div className="card max-w-md p-8 text-center">
+            <div className="mx-auto mb-4 grid h-11 w-11 place-items-center rounded-xl bg-danger-soft text-danger-ink">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
+                strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" />
+              </svg>
+            </div>
+            <h2 className="mb-2 text-lg font-semibold text-ink">Something went wrong</h2>
+            <p className="mb-5 text-sm text-ink-2">
               {this.state.error?.message || "An unexpected error occurred."}
             </p>
             <button
@@ -37,7 +43,7 @@ export default class ErrorBoundary extends Component<Props, State> {
                 this.setState({ hasError: false, error: null });
                 window.location.reload();
               }}
-              className="px-4 py-2 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent-ink transition-colors cursor-pointer"
+              className="btn btn-primary"
             >
               Reload
             </button>

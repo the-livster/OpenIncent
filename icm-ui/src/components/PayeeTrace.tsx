@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Commission, LedgerEntry } from "../types";
+import { Drawer, Icon } from "./ui";
+import { cx } from "./ui/cx";
 
 interface Props {
   payeeId: string;
@@ -27,8 +29,19 @@ interface Stage {
   byRule?: Record<string, { lines: StageLine[]; total: string }>;
 }
 
+// The dot on the timeline, by kind of stage.
+const KIND: Record<Stage["kind"], { dot: string }> = {
+  computation: { dot: "bg-accent" },
+  adjustment: { dot: "bg-warning" },
+  cross_period: { dot: "bg-[#8b5cf6]" },
+  manual: { dot: "bg-[#14b8a6]" },
+  final: { dot: "bg-success" },
+};
+
+/** How one payee's payout was built, step by step: rules, then each
+ *  adjustment in the order the engine applied it, to the final figure. */
 export default function PayeeTrace({ payeeId, period, commissions, ledger, onClose }: Props) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(["rules"]));
 
   const stages = useMemo(() => buildStages(payeeId, period, commissions, ledger), [payeeId, period, commissions, ledger]);
 
@@ -41,100 +54,101 @@ export default function PayeeTrace({ payeeId, period, commissions, ledger, onClo
     });
   };
 
-  const kindColor: Record<string, string> = {
-    computation: "border-blue-200 bg-blue-50/50",
-    adjustment: "border-amber-200 bg-amber-50/50",
-    cross_period: "border-purple-200 bg-purple-50/50",
-    manual: "border-teal-200 bg-teal-50/50",
-    final: "border-green-300 bg-green-50",
-  };
-
   return (
-    <div className="fixed inset-y-0 right-0 w-[460px] max-w-[92vw] bg-white border-l border-line shadow-xl z-50 flex flex-col animate-in">
-      <div className="flex items-center justify-between px-5 py-4 border-b border-line shrink-0">
-        <div>
-          <h3 className="text-sm font-semibold text-ink">Payout Trace</h3>
-          <p className="text-xs text-ink2 mt-0.5">{payeeId} &middot; {period}</p>
-        </div>
-        <button onClick={onClose} className="text-ink2 hover:text-ink cursor-pointer text-lg px-1">×</button>
-      </div>
+    <Drawer open onClose={onClose} title="Payout trace" subtitle={`${payeeId} · ${period}`} width={500}>
+      <ol className="relative space-y-3 px-5 py-5 before:absolute before:bottom-8 before:left-[33px] before:top-8 before:w-px before:bg-line">
+        {stages.map((stage) => {
+          const open = expanded.has(stage.id);
+          const kind = KIND[stage.kind];
+          const final = stage.kind === "final";
+          return (
+            <li key={stage.id} className="relative">
+              <div className={cx("overflow-hidden rounded-xl border bg-surface", final ? "border-success/40" : "border-line")}>
+                <button
+                  onClick={() => toggle(stage.id)}
+                  aria-expanded={open}
+                  className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left hover:bg-surface-2"
+                >
+                  <span className="flex items-center gap-3">
+                    <span className="relative z-10 grid h-6 w-6 place-items-center rounded-full border border-line bg-surface">
+                      <span className={cx("h-2 w-2 rounded-full", kind.dot)} />
+                    </span>
+                    <span className={cx("text-[13px]", final ? "font-semibold text-ink" : "font-medium text-ink")}>{stage.label}</span>
+                  </span>
+                  <span className="flex items-center gap-2">
+                    {stage.output.total != null && (
+                      <span className={cx("num text-[13px]", final ? "font-semibold text-success-ink" : "font-medium text-ink")}>
+                        {String(stage.output.total)}
+                      </span>
+                    )}
+                    <Icon name="chevronRight" size={14} className={cx("text-ink-3 transition-transform", open && "rotate-90")} />
+                  </span>
+                </button>
 
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
-        {stages.map((stage, i) => (
-          <div key={stage.id} className={`rounded-lg border ${kindColor[stage.kind] ?? "border-line bg-soft"} overflow-hidden`}>
-            <button
-              onClick={() => toggle(stage.id)}
-              className="w-full flex items-center justify-between px-3 py-2.5 text-left cursor-pointer hover:bg-black/5 transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-ink2 w-5 text-right">{i + 1}</span>
-                <span className="text-xs font-semibold text-ink">{stage.label}</span>
-                {stage.output.total != null && (
-                  <span className="text-xs font-mono font-semibold text-ink">${String(stage.output.total)}</span>
-                )}
-              </div>
-              <span className="text-xs text-ink2">{expanded.has(stage.id) ? "▾" : "▸"}</span>
-            </button>
-
-            {expanded.has(stage.id) && (
-              <div className="px-3 pb-3 space-y-2 text-xs border-t border-black/5 pt-2">
-                {/* Computation: per-rule breakdown */}
-                {stage.kind === "computation" && stage.byRule && (
-                  <div className="space-y-2">
-                    {Object.entries(stage.byRule).map(([rid, rule]) => (
-                      <div key={rid}>
-                        <div className="flex justify-between text-ink font-medium mb-1">
-                          <span>{rid}</span>
-                          <span className="font-mono">${rule.total}</span>
-                        </div>
-                        {rule.lines.map((l, j) => (
-                          <div key={j} className="flex justify-between text-ink2 pl-3 text-[11px]">
-                            <span>{l.txn_id} — {l.notes}</span>
-                            <span className="font-mono">${l.amount}</span>
+                {open && (
+                  <div className="space-y-2 border-t border-line px-4 py-3 text-[12.5px]">
+                    {/* Computation: per-rule breakdown */}
+                    {stage.kind === "computation" && stage.byRule && (
+                      <div className="space-y-3">
+                        {Object.entries(stage.byRule).map(([rid, rule]) => (
+                          <div key={rid}>
+                            <div className="mb-1 flex justify-between font-medium text-ink">
+                              <span className="font-mono">{rid}</span>
+                              <span className="num">{rule.total}</span>
+                            </div>
+                            {rule.lines.map((l, j) => (
+                              <div key={j} className="flex justify-between gap-3 pl-3 text-[12px] text-ink-2">
+                                <span className="min-w-0">{l.txn_id} — {l.notes}</span>
+                                <span className="num shrink-0">{l.amount}</span>
+                              </div>
+                            ))}
                           </div>
                         ))}
                       </div>
-                    ))}
-                  </div>
-                )}
+                    )}
 
-                {/* Items: adjustments, cross-period, manual */}
-                {stage.items && (
-                  <div className="space-y-1">
-                    {stage.items.map((item, j) => (
-                      <div key={j} className="flex justify-between items-start">
-                        <div>
-                          <span className="text-ink font-medium">{item.type}</span>
-                          {item.reason && <span className="text-ink2 ml-1">— {item.reason}</span>}
-                          {item.origin && <span className="text-ink2 ml-1">from {item.origin}</span>}
-                          {item.note && <div className="text-ink2 text-[11px]">{item.note}</div>}
-                        </div>
-                        <span className={`font-mono font-medium ${item.amount.startsWith("-") ? "text-red-600" : "text-green-700"}`}>
-                          ${item.amount}
-                        </span>
+                    {/* Items: adjustments, cross-period, manual */}
+                    {stage.items && (
+                      <div className="space-y-1.5">
+                        {stage.items.map((item, j) => (
+                          <div key={j} className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <span className="font-medium text-ink">{item.type}</span>
+                              {item.reason && <span className="ml-1 text-ink-2">— {item.reason}</span>}
+                              {item.origin && <span className="ml-1 text-ink-2">from {item.origin}</span>}
+                              {item.note && <div className="text-[12px] text-ink-2">{item.note}</div>}
+                            </div>
+                            <span className={cx("num shrink-0 font-medium", item.amount.startsWith("-") ? "text-danger-ink" : "text-success-ink")}>
+                              {item.amount}
+                            </span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                )}
+                    )}
 
-                {/* Raw inputs */}
-                {Object.keys(stage.inputs).length > 0 && (
-                  <div className="text-ink2 text-[11px] space-y-0.5">
-                    {Object.entries(stage.inputs).map(([k, v]) => (
-                      <div key={k} className="flex justify-between"><span>{k}</span><span className="font-mono">{v}</span></div>
-                    ))}
-                  </div>
-                )}
+                    {/* Raw inputs */}
+                    {Object.keys(stage.inputs).length > 0 && (
+                      <div className="space-y-0.5 text-[12px] text-ink-2">
+                        {Object.entries(stage.inputs).map(([k, v]) => (
+                          <div key={k} className="flex justify-between"><span>{k}</span><span className="num font-mono">{v}</span></div>
+                        ))}
+                      </div>
+                    )}
 
-                {stage.output.note != null && (
-                  <div className="text-ink2 text-[11px] italic">{String(stage.output.note)}</div>
+                    {stage.output.note != null && (
+                      <div className="text-[12px] italic text-ink-2">{String(stage.output.note)}</div>
+                    )}
+                    {final && !stage.items && !stage.byRule && (
+                      <div className="text-[12px] text-ink-2">The amount this payee is paid for the period.</div>
+                    )}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
+            </li>
+          );
+        })}
+      </ol>
+    </Drawer>
   );
 }
 

@@ -3,6 +3,8 @@ import { calculate, listPlans, exportSavedStatements, previewFile } from "../api
 import PlanBuilder, { type PlanBuilderPlanData } from "./PlanBuilder";
 import DropZone from "./DropZone";
 import CalcResultsView from "./CalcResultsView";
+import { Button, Callout, Card, CardHeader, EmptyState, Icon, PageHeader, Segmented } from "./ui";
+import { cx } from "./ui/cx";
 import { parseCsvPreview } from "./csvParser";
 import type { CalculateResponse, SavedPlan } from "../types";
 
@@ -203,69 +205,66 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
   const stepIndex = ["data", "map", "payees", "plan", "results"].indexOf(step);
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      {exportMessage && <p role="status" className="text-sm text-green-700">{exportMessage}</p>}
+    <div className="space-y-5">
+      <PageHeader
+        title="Quick Calc"
+        description="A one-off calculation: drop a sales file, map its columns, pick a plan. Nothing here changes your saved roster."
+      />
+
+      {exportMessage && <Callout tone="success" role="status">{exportMessage}</Callout>}
+
       {/* Step indicator */}
       {step !== "results" && (
-        <div className="flex items-center gap-2">
-          {["Upload Data", "Map Columns", "Payees", "Select Plan"].map((label, i) => (
-            <div key={label} className="flex items-center gap-2">
-              <div className={`
-                flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all
-                ${i < stepIndex ? "bg-accent/15 text-accent" : ""}
-                ${i === stepIndex ? "bg-accent text-white" : ""}
-                ${i > stepIndex ? "bg-soft text-ink2" : ""}
-              `}>
-                <span className={`
-                  w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold
-                  ${i < stepIndex ? "bg-accent text-white" : ""}
-                  ${i === stepIndex ? "bg-white text-accent" : ""}
-                  ${i > stepIndex ? "bg-soft text-ink2" : ""}
-                `}>
-                  {i < stepIndex ? "✓" : i + 1}
+        <ol aria-label="Quick Calc steps" className="flex flex-wrap items-center gap-1.5">
+          {STEP_LABELS.map((label, i) => (
+            <li key={label} className="flex items-center gap-1.5">
+              {i > 0 && <Icon name="chevronRight" size={14} className="text-line-strong" />}
+              <span
+                aria-current={i === stepIndex ? "step" : undefined}
+                className={cx(
+                  "inline-flex items-center gap-2 rounded-full py-1 pl-1 pr-3 text-[12.5px] font-medium",
+                  i === stepIndex && "bg-accent-soft text-accent-ink",
+                  i < stepIndex && "text-ink",
+                  i > stepIndex && "text-ink-3",
+                )}
+              >
+                <span aria-hidden="true" className={cx(
+                  "grid h-5 w-5 place-items-center rounded-full text-[10.5px] font-semibold num",
+                  i === stepIndex ? "bg-accent text-on-accent" : i < stepIndex ? "bg-success-soft text-success-ink" : "bg-surface-3 text-ink-2",
+                )}>
+                  {i < stepIndex ? <Icon name="check" size={11} strokeWidth={2.8} /> : i + 1}
                 </span>
                 {label}
-              </div>
-              {i < 3 && <div className="w-4 h-px bg-line" />}
-            </div>
+              </span>
+            </li>
           ))}
-        </div>
+        </ol>
       )}
 
       {/* Step 1: Upload Data */}
       {step === "data" && (
-        <div className="card p-6 space-y-4 animate-in">
-          <h2 className="text-lg font-semibold text-ink">Upload Sales Data</h2>
-          <p className="text-sm text-ink2">
-            Drop your sales spreadsheet — CSV or Excel. We will detect the columns automatically.
-          </p>
-          <DropZone
-            file={txnFile}
-            onChange={setTxnFile}
-            accept=".csv,.xlsx"
-            label="Sales transactions"
-            icon="📊"
-          />
+        <WizardCard
+          title="Upload sales data"
+          description="Drop your sales spreadsheet, CSV or Excel. Columns are detected automatically."
+          footer={<Button variant="primary" iconRight="arrowRight" onClick={() => setStep("map")} disabled={!txnFile}>Map columns</Button>}
+        >
+          <DropZone file={txnFile} onChange={setTxnFile} accept=".csv,.xlsx" label="Sales transactions" icon="table" />
 
           {csvPreview && (
-            <div className="mt-4">
-              <div className="text-xs font-medium text-ink2 mb-2">
-                Detected {csvPreview.headers.length} columns, {csvPreview.rows.length} rows (showing first 50)
-              </div>
-              <div className="overflow-x-auto rounded-lg border border-line">
-                <table className="w-full text-xs">
+            <div>
+              <p className="mb-2 text-[12.5px] text-ink-2">
+                Detected {csvPreview.headers.length} columns, {csvPreview.rows.length} rows (showing the first 50)
+              </p>
+              <div className="table-wrap max-h-80 rounded-xl border border-line">
+                <table>
                   <thead>
-                    <tr className="bg-soft">
-                      {csvPreview.headers.map(h => (
-                        <th key={h} className="px-2.5 py-1.5 text-left font-medium text-ink whitespace-nowrap">{h}</th>
-                      ))}
-                    </tr>
+                    <tr>{csvPreview.headers.map(h => <th key={h}>{h}</th>)}</tr>
                   </thead>
-                  <tbody className="divide-y divide-line">
+                  <tbody>
                     {csvPreview.rows.slice(0, 50).map((row, ri) => (
                       <tr key={ri}>
                         {row.map((cell, ci) => (
-                          <td key={ci} className="px-2.5 py-1.5 text-ink2 whitespace-nowrap max-w-[200px] truncate">{cell}</td>
+                          <td key={ci} className="max-w-[200px] truncate whitespace-nowrap text-ink-2">{cell}</td>
                         ))}
                       </tr>
                     ))}
@@ -276,40 +275,35 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
           )}
 
           {txnFile && !csvPreview && (
-            <div className="text-xs text-ink2 mt-2">
-              Excel file detected — column mapping will happen automatically on the server.
-            </div>
+            <p className="text-[12.5px] text-ink-2">Excel file detected — column mapping will happen automatically on the server.</p>
           )}
-
-          <div className="flex justify-end pt-2">
-            <StepButton onClick={() => setStep("map")} disabled={!txnFile}>
-              Next: Map Columns →
-            </StepButton>
-          </div>
-        </div>
+        </WizardCard>
       )}
 
       {/* Step 2: Map Columns */}
       {step === "map" && (
-        <div className="card p-6 space-y-4 animate-in">
-          <h2 className="text-lg font-semibold text-ink">Map Columns</h2>
-          <p className="text-sm text-ink2">
-            Tell us what each column represents. We guessed based on your headers — adjust if needed.
-          </p>
-
-          <div className="space-y-3">
+        <WizardCard
+          title="Map columns"
+          description="Tell us what each column represents. We guessed from your headers — adjust if needed."
+          onBack={() => setStep("data")}
+          footer={
+            <Button variant="primary" iconRight="arrowRight" onClick={() => setStep("payees")}
+              disabled={!mapping.payeeColumn || !mapping.amountColumn}>
+              Payees
+            </Button>
+          }
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
             {(Object.keys(FIELD_LABELS) as (keyof ColumnMapping)[]).map(field => (
-              <div key={field}>
-                <label className="block text-xs font-medium text-ink2 mb-1">
-                  {FIELD_LABELS[field]}
-                </label>
+              <label key={field} className="block">
+                <span className="field-label">{FIELD_LABELS[field]}</span>
                 {csvPreview ? (
                   <select
                     value={mapping[field]}
                     onChange={e => setMapping(prev => ({ ...prev, [field]: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/10 transition-all"
+                    className="w-full"
                   >
-                    <option value="">-- Select column --</option>
+                    <option value="">Select a column</option>
                     {csvPreview.headers.map(h => (
                       <option key={h} value={h}>{h}</option>
                     ))}
@@ -320,75 +314,51 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
                     value={mapping[field]}
                     onChange={e => setMapping(prev => ({ ...prev, [field]: e.target.value }))}
                     placeholder="Type column name"
-                    className="w-full px-3 py-2 rounded-lg text-sm bg-soft border border-line text-ink placeholder:text-ink2 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/10 transition-all"
+                    className="w-full"
                   />
                 )}
-              </div>
+              </label>
             ))}
-            {!csvPreview && (
-              <div className="text-xs text-ink2 italic pt-1">
-                Excel file detected — the server will auto-map columns. Type names above to override.
-              </div>
-            )}
           </div>
-
-          <div className="flex justify-between pt-2">
-            <TextButton onClick={() => setStep("data")}>← Back</TextButton>
-            <StepButton
-              onClick={() => setStep("payees")}
-              disabled={!mapping.payeeColumn || !mapping.amountColumn}
-            >
-              Next: Payees →
-            </StepButton>
-          </div>
-        </div>
+          {!csvPreview && (
+            <p className="text-[12.5px] text-ink-2">Excel file detected — the server will auto-map columns. Type names above to override.</p>
+          )}
+        </WizardCard>
       )}
 
       {/* Step 3: Payees */}
       {step === "payees" && (
-        <div className="card p-6 space-y-4 animate-in">
-          <h2 className="text-lg font-semibold text-ink">Payees</h2>
-          <p className="text-sm text-ink2">
-            Upload a payee roster, or skip to auto-generate one from the rep names in your data.
-          </p>
-
-          <DropZone
-            file={payeeFile}
-            onChange={setPayeeFile}
-            accept=".csv,.xlsx"
-            label="Payee roster (optional)"
-            icon="👥"
-          />
+        <WizardCard
+          title="Payees"
+          description="Upload a payee roster, or skip it to generate one from the rep names in your data."
+          onBack={() => setStep("map")}
+          footer={<Button variant="primary" iconRight="arrowRight" onClick={() => setStep("plan")}>Select plan</Button>}
+        >
+          <DropZone file={payeeFile} onChange={setPayeeFile} accept=".csv,.xlsx" label="Payee roster (optional)" icon="users" />
 
           {!payeeFile && csvPreview && mapping.payeeColumn && (
-            <div className="px-3 py-2 rounded-lg bg-soft text-xs text-ink2">
+            <Callout tone="info">
               {(() => {
                 const idx = csvPreview.headers.indexOf(mapping.payeeColumn);
                 const count = idx >= 0 ? new Set(csvPreview.rows.map(r => r[idx]).filter(Boolean)).size : 0;
                 return `Will auto-generate ${count} payee${count !== 1 ? "s" : ""} from the "${mapping.payeeColumn}" column.`;
               })()}
-            </div>
+            </Callout>
           )}
 
           {payeePreview && (
-            <div className="mt-2">
-              <div className="text-xs font-medium text-ink2 mb-2">
-                Detected {payeePreview.headers.length} columns
-              </div>
-              <div className="overflow-x-auto rounded-lg border border-line">
-                <table className="w-full text-xs">
+            <div>
+              <p className="mb-2 text-[12.5px] text-ink-2">Detected {payeePreview.headers.length} columns</p>
+              <div className="table-wrap max-h-72 rounded-xl border border-line">
+                <table>
                   <thead>
-                    <tr className="bg-soft">
-                      {payeePreview.headers.map(h => (
-                        <th key={h} className="px-2.5 py-1.5 text-left font-medium text-ink whitespace-nowrap">{h}</th>
-                      ))}
-                    </tr>
+                    <tr>{payeePreview.headers.map(h => <th key={h}>{h}</th>)}</tr>
                   </thead>
-                  <tbody className="divide-y divide-line">
+                  <tbody>
                     {payeePreview.rows.map((row, ri) => (
                       <tr key={ri}>
                         {row.map((cell, ci) => (
-                          <td key={ci} className="px-2.5 py-1.5 text-ink2 whitespace-nowrap max-w-[200px] truncate">{cell}</td>
+                          <td key={ci} className="max-w-[200px] truncate whitespace-nowrap text-ink-2">{cell}</td>
                         ))}
                       </tr>
                     ))}
@@ -397,65 +367,63 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
               </div>
             </div>
           )}
-
-          <div className="flex justify-between pt-2">
-            <TextButton onClick={() => setStep("map")}>← Back</TextButton>
-            <StepButton onClick={() => setStep("plan")}>
-              Next: Select Plan →
-            </StepButton>
-          </div>
-        </div>
+        </WizardCard>
       )}
 
       {/* Step 4: Select Plan */}
       {step === "plan" && (
-        <div className="card p-6 space-y-4 animate-in">
-          <h2 className="text-lg font-semibold text-ink">Select Plan</h2>
-          <p className="text-sm text-ink2">
-            Pick a saved plan from your library, or upload a YAML file.
-          </p>
-
-          {/* Toggle source */}
-          <div className="flex gap-1 bg-soft rounded-lg p-1 w-fit">
-            <SourceToggle active={planSource === "library"} onClick={() => setPlanSource("library")} label="Library" />
-            <SourceToggle active={planSource === "file"} onClick={() => setPlanSource("file")} label="Upload File" />
-            <SourceToggle active={planSource === "build"} onClick={() => setPlanSource("build")} label="Build New" />
-          </div>
+        <WizardCard
+          title="Select plan"
+          description="Pick a saved plan from your library, upload a YAML file, or build one now."
+          onBack={() => setStep("payees")}
+          footer={
+            <Button variant="primary" icon="play" onClick={run} disabled={!(selectedPlanId || planFile) || status === "loading"}
+              loading={status === "loading"}>
+              Calculate commissions
+            </Button>
+          }
+        >
+          <Segmented
+            label="Plan source"
+            value={planSource}
+            onChange={setPlanSource}
+            options={[
+              { value: "library", label: "Library", icon: "layers" },
+              { value: "file", label: "Upload file", icon: "upload" },
+              { value: "build", label: "Build new", icon: "wand" },
+            ]}
+          />
 
           {planSource === "library" && (
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {plans.length === 0 && (
-                <div className="text-sm text-ink2 py-4 text-center">
-                  No saved plans. Switch to Upload File, or build one in the AI Builder tab.
-                </div>
-              )}
-              {plans.map(p => (
-                <button
-                  key={p.id}
-                  onClick={() => setSelectedPlanId(p.id)}
-                  className={`
-                    w-full text-left px-4 py-3 rounded-lg border transition-all cursor-pointer
-                    ${selectedPlanId === p.id
-                      ? "border-accent bg-accent/10"
-                      : "border-line bg-soft hover:border-ink2"
-                    }
-                  `}
-                >
-                  <div className="text-sm font-medium text-ink">{p.name}</div>
-                  {p.description && <div className="text-xs text-ink2 mt-0.5">{p.description}</div>}
-                </button>
-              ))}
-            </div>
+            plans.length === 0 ? (
+              <EmptyState icon="fileText" compact title="No saved plans"
+                description="Switch to Upload file, or build one in the AI Builder." />
+            ) : (
+              <div className="grid max-h-72 gap-2 overflow-y-auto sm:grid-cols-2">
+                {plans.map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => setSelectedPlanId(p.id)}
+                    aria-pressed={selectedPlanId === p.id}
+                    className={cx(
+                      "flex items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition-colors",
+                      selectedPlanId === p.id ? "border-accent bg-accent-soft" : "border-line hover:bg-surface-2",
+                    )}
+                  >
+                    <Icon name={selectedPlanId === p.id ? "checkCircle" : "fileText"}
+                      className={selectedPlanId === p.id ? "mt-0.5 text-accent-ink" : "mt-0.5 text-ink-3"} />
+                    <span className="min-w-0">
+                      <span className="block truncate text-[13.5px] font-medium text-ink">{p.name}</span>
+                      {p.description && <span className="mt-0.5 block text-[12.5px] text-ink-2">{p.description}</span>}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )
           )}
 
           {planSource === "file" && (
-            <DropZone
-              file={planFile}
-              onChange={setPlanFile}
-              accept=".yaml,.yml"
-              label="Plan YAML"
-              icon="📋"
-            />
+            <DropZone file={planFile} onChange={setPlanFile} accept=".yaml,.yml" label="Plan YAML" icon="fileText" />
           )}
 
           {planSource === "build" && (
@@ -467,26 +435,15 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
               onCancel={() => setPlanSource("library")}
             />
           )}
-
-          <div className="flex justify-between pt-2">
-            <TextButton onClick={() => setStep("payees")}>← Back</TextButton>
-            <StepButton
-              onClick={run}
-              disabled={!(selectedPlanId || planFile)}
-              highlight
-            >
-              Calculate Commissions ✨
-            </StepButton>
-          </div>
-        </div>
+        </WizardCard>
       )}
 
       {/* Error */}
       {status === "error" && (
-        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/20 text-danger text-sm animate-in select-text space-y-3">
+        <Callout tone="danger">
           <div className="whitespace-pre-wrap">{error}</div>
           {unknownPayeesBlocked && (
-            <label className="flex items-start gap-2 pt-2 border-t border-danger/20 cursor-pointer">
+            <label className="mt-3 flex items-start gap-2 border-t border-danger/20 pt-3 text-ink">
               <input
                 type="checkbox"
                 className="mt-0.5"
@@ -500,15 +457,7 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
               </span>
             </label>
           )}
-        </div>
-      )}
-
-      {/* Loading */}
-      {status === "loading" && (
-        <div className="text-center py-12 animate-in">
-          <div className="inline-block w-8 h-8 border-3 border-accent/30 border-t-accent rounded-full animate-spin mb-3" />
-          <p className="text-ink2 text-sm">Calculating commissions...</p>
-        </div>
+        </Callout>
       )}
 
       {/* Results */}
@@ -527,49 +476,20 @@ export default function CalculatorWizard({ loadedPlan, onPlanConsumed }: Props) 
 // Sub-components
 // ------------------------------------------------------------------
 
-function StepButton({ onClick, disabled, children, highlight }: {
-  onClick: () => void;
-  disabled?: boolean;
-  children: React.ReactNode;
-  highlight?: boolean;
+const STEP_LABELS = ["Upload data", "Map columns", "Payees", "Select plan"];
+
+function WizardCard({ title, description, children, footer, onBack }: {
+  title: string; description: string; children: React.ReactNode; footer?: React.ReactNode; onBack?: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`
-        px-5 py-2 rounded-lg text-sm font-medium transition-all cursor-pointer
-        ${highlight
-          ? "bg-gradient-to-r from-accent to-accent-ink text-white shadow-sm hover:from-accent hover:to-accent"
-          : "bg-accent text-white hover:bg-accent"
-        }
-        disabled:opacity-40 disabled:cursor-not-allowed
-      `}
-    >
-      {children}
-    </button>
-  );
-}
-
-function TextButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button onClick={onClick} className="text-sm text-ink2 hover:text-ink transition-colors cursor-pointer">
-      {children}
-    </button>
-  );
-}
-
-function SourceToggle({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`
-        px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer
-        ${active ? "bg-white text-ink shadow-sm" : "text-ink2 hover:text-ink"}
-      `}
-    >
-      {label}
-    </button>
+    <Card className="animate-in">
+      <CardHeader title={title} description={description} />
+      <div className="space-y-4 px-5 py-5">{children}</div>
+      <div className="flex items-center justify-between gap-3 rounded-b-[var(--radius-card)] border-t border-line bg-surface-2/60 px-5 py-3.5">
+        <div>{onBack && <Button variant="ghost" icon="arrowLeft" onClick={onBack}>Back</Button>}</div>
+        <div>{footer}</div>
+      </div>
+    </Card>
   );
 }
 
@@ -591,6 +511,7 @@ function PlanBuilderWizard({ onUse, onCancel }: { onUse: (yaml: string) => void;
       plan={DEFAULT_PLAN}
       onClose={onCancel}
       onUse={onUse}
+      embedded
     />
   );
 }

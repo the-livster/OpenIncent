@@ -1,14 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { deletePayee, importPayees, listPayees, savePayee, type PayeeSaveArgs } from "../api";
 import type { Payee } from "../types";
+import { money } from "../format";
+import { SortTh } from "./SortableTable";
+import { Badge, Button, Callout, Card, Drawer, EmptyState, Icon, PageHeader, Spinner } from "./ui";
+import { cx } from "./ui/cx";
 
 type SortCol = "id" | "name" | "quota" | "plan_id" | "effective_from" | "email";
+type Filter = "all" | "no-plan" | "no-quota" | "inactive";
 
 export default function Roster() {
   const [payees, setPayees] = useState<Payee[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
+  const [search, setSearch] = useState("");
 
   // Edit form state
   const [editing, setEditing] = useState<string | null>(null);
@@ -16,6 +22,7 @@ export default function Roster() {
 
   // Import state
   const [replaceRoster, setReplaceRoster] = useState(false);
+  const importInput = useRef<HTMLInputElement>(null);
 
   // Sort
   const [sortCol, setSortCol] = useState<SortCol>("id");
@@ -27,7 +34,7 @@ export default function Roster() {
   };
 
   // Filter
-  const [filter, setFilter] = useState<"all" | "no-plan" | "no-quota" | "inactive">("all");
+  const [filter, setFilter] = useState<Filter>("all");
 
   const refresh = useCallback(async () => {
     try {
@@ -41,15 +48,19 @@ export default function Roster() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  const today = new Date().toISOString().slice(0, 10);
+  const isInactive = useCallback((p: Payee) => !!(p.effective_to && p.effective_to < today), [today]);
+
   const sorted = useMemo(() => {
     let list = [...payees];
     // Filter
     if (filter === "no-plan") list = list.filter(p => !p.plan_id);
     else if (filter === "no-quota") list = list.filter(p => !p.quota || p.quota === "0");
-    else if (filter === "inactive") list = list.filter(p => {
-      const now = new Date().toISOString().slice(0, 10);
-      return (p.effective_to && p.effective_to < now);
-    });
+    else if (filter === "inactive") list = list.filter(isInactive);
+    const q = search.trim().toLowerCase();
+    if (q) {
+      list = list.filter(p => [p.id, p.name, p.email ?? "", p.plan_id].some(v => v.toLowerCase().includes(q)));
+    }
     // Sort
     list.sort((a, b) => {
       const av = (a[sortCol] ?? "").toString().toLowerCase();
@@ -60,17 +71,15 @@ export default function Roster() {
       return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
     });
     return list;
-  }, [payees, sortCol, sortDir, filter]);
+  }, [payees, sortCol, sortDir, filter, search, isInactive]);
 
   // Quick counts
   const noPlan = payees.filter(p => !p.plan_id).length;
   const noQuota = payees.filter(p => !p.quota || p.quota === "0").length;
-  const inactive = payees.filter(p => {
-    const now = new Date().toISOString().slice(0, 10);
-    return !!(p.effective_to && p.effective_to < now);
-  }).length;
+  const inactive = payees.filter(isInactive).length;
 
   const startEdit = (p?: Payee) => {
+    setError("");
     if (p) {
       setEditing(p.id);
       setForm({
@@ -123,125 +132,91 @@ export default function Roster() {
     }
   };
 
-  if (loading) return <div className="p-6 text-zinc-500">Loading roster...</div>;
+  const isNew = editing !== null && !payees.some(p => p.id === editing);
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6 animate-in">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-ink">Roster</h2>
-          <p className="text-sm text-ink2 mt-1">
-            {payees.length} saved payees. Edit, add, or bulk import.
-          </p>
-        </div>
-        <button
-          onClick={() => startEdit()}
-          className="px-4 py-2 rounded-lg text-sm font-medium bg-accent text-white hover:bg-accent transition-colors cursor-pointer"
-        >
-          + Add Payee
-        </button>
-      </div>
+    <div className="animate-in">
+      <PageHeader
+        title="Payees"
+        description="The saved roster the Pipeline starts from. Edit people one at a time, or import a whole file."
+        actions={
+          <>
+            <label className="flex items-center gap-2 text-[12.5px] text-ink-2">
+              <input type="checkbox" checked={replaceRoster} onChange={e => setReplaceRoster(e.target.checked)} />
+              Replace entire roster
+            </label>
+            <Button icon="upload" onClick={() => importInput.current?.click()}>Import CSV/XLSX</Button>
+            <input ref={importInput} aria-label="Import roster file" type="file" accept=".csv,.xlsx" className="hidden"
+              onChange={e => { handleImport(e.target.files); e.target.value = ""; }} />
+            <Button variant="primary" icon="userPlus" onClick={() => startEdit()}>Add payee</Button>
+          </>
+        }
+      />
 
-      {/* Import */}
-      <div className="card p-4 space-y-3">
-        <div className="flex items-center gap-3">
-          <label className="px-3 py-1.5 rounded-lg text-xs font-medium bg-soft border border-line text-ink hover:border-ink2 cursor-pointer transition-colors">
-            Import CSV/XLSX
-            <input type="file" accept=".csv,.xlsx" className="hidden" onChange={e => handleImport(e.target.files)} />
-          </label>
-          <label className="flex items-center gap-1.5 text-xs text-ink2 cursor-pointer select-none">
-            <input type="checkbox" checked={replaceRoster} onChange={e => setReplaceRoster(e.target.checked)} className="accent-accent" />
-            Replace entire roster
-          </label>
-        </div>
-        {status && <div className="text-xs text-ink2">{status}</div>}
-      </div>
+      {status && <Callout tone={status === "Importing..." ? "info" : "success"} className="mb-4">{status}</Callout>}
+      {error && !editing && <Callout tone="danger" className="mb-4">{error}</Callout>}
 
-      {/* Error */}
-      {error && (
-        <div className="px-4 py-3 rounded-xl bg-danger/10 border border-danger/20 text-danger text-sm select-text">
-          {error}
-        </div>
-      )}
-
-      {/* Edit form */}
-      {editing && (
-        <div className="card p-4 space-y-3 border-accent/30">
-          <h3 className="text-sm font-semibold text-ink">
-            {payees.some(p => p.id === editing) ? "Edit" : "New"} Payee: {form.payee_id}
-          </h3>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <Field label="Name" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} />
-            <Field label="Quota" value={form.quota} onChange={v => setForm(f => ({ ...f, quota: v }))} />
-            <Field label="Plan ID" value={form.plan_id} onChange={v => setForm(f => ({ ...f, plan_id: v }))} />
-            <Field label="Effective From" value={form.effective_from} onChange={v => setForm(f => ({ ...f, effective_from: v }))} placeholder="YYYY-MM-DD" />
-            <Field label="Effective To" value={form.effective_to || ""} onChange={v => setForm(f => ({ ...f, effective_to: v || undefined }))} placeholder="optional" />
-            <Field label="Email" value={form.email || ""} onChange={v => setForm(f => ({ ...f, email: v || undefined }))} placeholder="optional" />
+      <Card className="overflow-hidden">
+        <div className="flex flex-wrap items-center gap-2 border-b border-line px-5 py-3">
+          <div className="relative min-w-[200px] flex-1">
+            <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
+            <input type="search" aria-label="Search payees" placeholder="Search by name, id, email or plan"
+              value={search} onChange={e => setSearch(e.target.value)} className="w-full pl-9" />
           </div>
-          <div className="flex gap-2 pt-1">
-            <button onClick={handleSave} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent text-white hover:bg-accent transition-colors cursor-pointer">
-              Save
-            </button>
-            <button onClick={() => setEditing(null)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-soft border border-line text-ink2 hover:text-ink transition-colors cursor-pointer">
-              Cancel
-            </button>
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Show">
+            <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={payees.length} />
+            <FilterChip active={filter === "no-plan"} onClick={() => setFilter("no-plan")} label="No plan" count={noPlan} warn />
+            <FilterChip active={filter === "no-quota"} onClick={() => setFilter("no-quota")} label="No quota" count={noQuota} warn />
+            <FilterChip active={filter === "inactive"} onClick={() => setFilter("inactive")} label="Inactive" count={inactive} />
           </div>
         </div>
-      )}
 
-      {/* Quick-filter badges */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <FilterBadge active={filter === "all"} onClick={() => setFilter("all")} label={`All (${payees.length})`} />
-        <FilterBadge active={filter === "no-plan"} onClick={() => setFilter("no-plan")} label={`No plan (${noPlan})`} warn />
-        <FilterBadge active={filter === "no-quota"} onClick={() => setFilter("no-quota")} label={`No quota (${noQuota})`} warn />
-        <FilterBadge active={filter === "inactive"} onClick={() => setFilter("inactive")} label={`Inactive (${inactive})`} />
-      </div>
-
-      {/* Payee list */}
-      {sorted.length === 0 ? (
-        <div className="text-sm text-ink2 py-8 text-center">
-          {filter !== "all" ? "No payees match this filter." : "No payees saved. Import a CSV or add one manually."}
-        </div>
-      ) : (
-        <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 py-14 text-[13px] text-ink-2"><Spinner /> Loading roster...</div>
+        ) : sorted.length === 0 ? (
+          <EmptyState
+            icon="users"
+            title={filter !== "all" || search ? "No payees match" : "No payees saved"}
+            description={filter !== "all" || search ? "Try another filter or search." : "Import a CSV or add people one at a time."}
+            action={filter === "all" && !search && <Button variant="primary" icon="userPlus" onClick={() => startEdit()}>Add payee</Button>}
+          />
+        ) : (
+          <div className="table-wrap">
+            <table>
               <thead>
-                <tr className="bg-soft">
+                <tr>
                   <SortTh col="id" label="ID" current={sortCol} dir={sortDir} onClick={toggleSort} />
                   <SortTh col="name" label="Name" current={sortCol} dir={sortDir} onClick={toggleSort} />
-                  <SortTh col="quota" label="Quota" current={sortCol} dir={sortDir} onClick={toggleSort} right />
+                  <SortTh col="quota" label="Quota" current={sortCol} dir={sortDir} onClick={toggleSort} align="right" />
                   <SortTh col="plan_id" label="Plan" current={sortCol} dir={sortDir} onClick={toggleSort} />
                   <SortTh col="effective_from" label="Active" current={sortCol} dir={sortDir} onClick={toggleSort} />
                   <SortTh col="email" label="Email" current={sortCol} dir={sortDir} onClick={toggleSort} />
-                  <th className="px-3 py-2"></th>
+                  <th className="w-0" />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-line">
+              <tbody>
                 {sorted.map(p => {
-                  const noPlan = !p.plan_id;
-                  const noQuota = !p.quota || p.quota === "0";
-                  const now = new Date().toISOString().slice(0, 10);
-                  const isInactive = !!(p.effective_to && p.effective_to < now);
+                  const missingPlan = !p.plan_id;
+                  const missingQuota = !p.quota || p.quota === "0";
+                  const ended = isInactive(p);
                   return (
-                    <tr key={p.id} className={`hover:bg-soft ${isInactive ? "opacity-50" : ""}`}>
-                      <td className="px-3 py-1.5 text-ink font-mono">{p.id}</td>
-                      <td className="px-3 py-1.5 text-ink">{p.name}</td>
-                      <td className={`px-3 py-1.5 font-mono text-right ${noQuota ? "text-warn font-semibold" : "text-ink"}`}>
-                        {noQuota ? "—" : `$${parseFloat(p.quota!).toLocaleString()}`}
+                    <tr key={p.id} className={cx(ended && "opacity-60")}>
+                      <td className="font-mono text-[12.5px]">{p.id}</td>
+                      <td className="font-medium">{p.name}</td>
+                      <td className="num text-right">
+                        {missingQuota ? <Badge tone="warning">No quota</Badge> : money(p.quota)}
                       </td>
-                      <td className={`px-3 py-1.5 ${noPlan ? "text-warn font-semibold" : "text-ink2"}`}>
-                        {p.plan_id || "⚠ None"}
+                      <td>{missingPlan ? <Badge tone="warning" icon="alertTriangle">None</Badge> : <span className="font-mono text-[12.5px] text-ink-2">{p.plan_id}</span>}</td>
+                      <td className="whitespace-nowrap text-ink-2">
+                        {p.effective_from || "—"} <span className="text-ink-3">→</span> {p.effective_to || "ongoing"}
+                        {ended && <Badge className="ml-2">Ended</Badge>}
                       </td>
-                      <td className="px-3 py-1.5 text-xs">
-                        {p.effective_from || "—"} → {p.effective_to || "ongoing"}
-                        {isInactive && <span className="ml-1 text-warn">(ended)</span>}
-                      </td>
-                      <td className="px-3 py-1.5 text-ink2 text-xs">{p.email || "—"}</td>
-                      <td className="px-3 py-1.5 flex gap-1 justify-end">
-                        <button onClick={() => startEdit(p)} className="text-xs text-accent hover:underline cursor-pointer">Edit</button>
-                        <button onClick={() => handleDelete(p.id)} className="text-xs text-danger hover:underline cursor-pointer">Delete</button>
+                      <td className="text-ink-2">{p.email || "—"}</td>
+                      <td>
+                        <div className="flex justify-end gap-1">
+                          <Button size="sm" variant="ghost" icon="pencil" onClick={() => startEdit(p)}>Edit</Button>
+                          <Button size="sm" variant="ghost" icon="trash" aria-label={`Delete ${p.id}`} onClick={() => handleDelete(p.id)} />
+                        </div>
                       </td>
                     </tr>
                   );
@@ -249,39 +224,55 @@ export default function Roster() {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
+        )}
+      </Card>
+
+      <Drawer
+        open={editing !== null}
+        onClose={() => setEditing(null)}
+        title={isNew ? "New payee" : "Edit payee"}
+        subtitle={<span className="font-mono">{form.payee_id}</span>}
+        width={440}
+      >
+        <form
+          className="space-y-4 px-5 py-5"
+          onSubmit={e => { e.preventDefault(); void handleSave(); }}
+        >
+          {error && <Callout tone="danger">{error}</Callout>}
+          <Field label="Name" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} />
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Quota" value={form.quota} onChange={v => setForm(f => ({ ...f, quota: v }))} />
+            <Field label="Plan ID" value={form.plan_id} onChange={v => setForm(f => ({ ...f, plan_id: v }))} />
+            <Field label="Effective from" value={form.effective_from} onChange={v => setForm(f => ({ ...f, effective_from: v }))} placeholder="YYYY-MM-DD" />
+            <Field label="Effective to" value={form.effective_to || ""} onChange={v => setForm(f => ({ ...f, effective_to: v || undefined }))} placeholder="Optional" />
+          </div>
+          <Field label="Email" value={form.email || ""} onChange={v => setForm(f => ({ ...f, email: v || undefined }))} placeholder="Optional — used to send statements" />
+          <div className="flex justify-end gap-2 border-t border-line pt-4">
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+            <Button variant="primary" type="submit" icon="check">Save payee</Button>
+          </div>
+        </form>
+      </Drawer>
     </div>
   );
 }
 
-function SortTh({ col, label, current, dir, onClick, right }: {
-  col: SortCol; label: string; current: SortCol; dir: string; onClick: (c: SortCol) => void; right?: boolean;
-}) {
-  const active = current === col;
-  return (
-    <th
-      onClick={() => onClick(col)}
-      className={`px-3 py-2 font-medium text-ink2 whitespace-nowrap cursor-pointer hover:text-ink select-none ${right ? "text-right" : "text-left"}`}
-    >
-      {label}{active ? (dir === "asc" ? " ↑" : " ↓") : ""}
-    </th>
-  );
-}
-
-function FilterBadge({ active, onClick, label, warn }: {
-  active: boolean; onClick: () => void; label: string; warn?: boolean;
+function FilterChip({ active, onClick, label, count, warn }: {
+  active: boolean; onClick: () => void; label: string; count: number; warn?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors cursor-pointer
-        ${active
-          ? warn ? "bg-warn/15 text-warn" : "bg-accent/15 text-accent"
-          : warn ? "text-warn/60 hover:text-warn hover:bg-warn/5" : "text-ink2 hover:text-ink hover:bg-soft"
-        }`}
+      aria-pressed={active}
+      className={cx(
+        "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12.5px] font-medium transition-colors",
+        active
+          ? warn ? "border-warning/40 bg-warning-soft text-warning-ink" : "border-accent/30 bg-accent-soft text-accent-ink"
+          : "border-line text-ink-2 hover:bg-surface-2 hover:text-ink",
+      )}
     >
       {label}
+      <span className={cx("num rounded-full px-1.5 text-[11px]", active ? "bg-surface/70" : "bg-surface-2")}>{count}</span>
     </button>
   );
 }
@@ -290,15 +281,10 @@ function Field({ label, value, onChange, placeholder }: {
   label: string; value: string; onChange: (v: string) => void; placeholder?: string;
 }) {
   return (
-    <div>
-      <label className="block text-[10px] font-medium text-ink2 mb-0.5">{label}</label>
-      <input
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full px-2 py-1 rounded text-xs bg-soft border border-line text-ink placeholder:text-ink2 focus:outline-none focus:border-accent"
-      />
-    </div>
+    <label className="block">
+      <span className="field-label">{label}</span>
+      <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} className="w-full" />
+    </label>
   );
 }
 

@@ -6,6 +6,9 @@ import { payeeCsv } from "../payeeCsv";
 import { Td } from "./Table";
 import { useTableSort } from "./useTableSort";
 import { FilterBar, FilterTh, SortTh } from "./SortableTable";
+import StageShell from "./StageShell";
+import UploadZone from "./UploadZone";
+import { Button, Callout, Icon, Pagination } from "./ui";
 
 interface Props {
   payees: PayeeRow[];
@@ -17,6 +20,14 @@ interface Props {
   onCalculated: (r: CalculateResponse) => void;
   onBack: () => void;
 }
+
+const COLUMNS = [
+  { col: "id", label: "ID" },
+  { col: "payee_id", label: "Payee" },
+  { col: "period", label: "Period" },
+  { col: "amount", label: "Amount" },
+  { col: "product", label: "Product" },
+] as const;
 
 export default function StageCrediting({ payees, transactions: preview, setTransactions, txnFile, setTxnFile, samplePlan, onCalculated, onBack }: Props) {
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -76,72 +87,79 @@ export default function StageCrediting({ payees, transactions: preview, setTrans
     }
   }
 
+  const loaded = preview.length > 0;
+
   return (
-    <div className="max-w-4xl space-y-4">
-      <h1 className="text-lg font-bold text-zinc-800">5. Crediting</h1>
-      <p className="text-sm text-zinc-500">Upload the period's deals (transactions).</p>
-      {error && preview.length === 0 && <p role="alert" className="p-3 bg-red-50 text-red-700 text-sm">{error}</p>}
-      {preview.length === 0 ? (
-        <div className="space-y-3">
-          <div className="border-2 border-dashed border-zinc-300 rounded-xl p-8 text-center">
-            <p className="text-sm text-zinc-500 mb-3">Choose a CSV or XLSX file with columns: id, payee_id, amount, period</p>
-            <label className="inline-block px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
-              {uploading ? "Reading transactions..." : "Upload Transactions"}
-              <input aria-label="Upload Transactions" disabled={uploading} type="file" accept=".csv,.xlsx" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
-            </label>
-          </div>
-        </div>
+    <StageShell
+      n={5}
+      group="Run"
+      title="Crediting"
+      description="Upload the period's deals. Each sale is credited to its payee, then every plan runs against it."
+      actions={loaded && (
+        <Button size="sm" variant="ghost" icon="x" disabled={status === "loading"}
+          onClick={() => { setTransactions([]); setTxnFile(null); }}>
+          Clear
+        </Button>
+      )}
+      onBack={onBack}
+      footer={loaded && (
+        <Button variant="primary" icon={status === "loading" ? undefined : "play"} loading={status === "loading"}
+          onClick={runCalc} disabled={status === "loading" || uploading || !txnFile}>
+          {status === "loading" ? "Calculating..." : "Calculate commissions"}
+        </Button>
+      )}
+    >
+      {error && !loaded && <Callout tone="danger" role="alert">{error}</Callout>}
+      {!loaded ? (
+        <UploadZone
+          label="Upload Transactions"
+          title="Drop this period's deals here"
+          hint="CSV or XLSX with columns id, payee_id, amount and period. Messy headers are matched automatically."
+          accept=".csv,.xlsx"
+          icon="upload"
+          busy={uploading}
+          busyLabel="Reading transactions..."
+          onFile={handleFile}
+        />
       ) : (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-zinc-600">{txnFile?.name}: showing {preview.length} preview rows. The full original file will be calculated.</span>
-            <button disabled={status === "loading"} onClick={() => { setTransactions([]); setTxnFile(null); }} className="text-xs text-zinc-400 hover:text-zinc-600">Clear</button>
+        <>
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface-2/60 px-4 py-3 text-[13px] text-ink-2">
+            <Icon name="fileText" className="text-ink-3" />
+            <span className="font-medium text-ink">{txnFile?.name}</span>
+            <span>showing {preview.length} preview rows. The full original file will be calculated.</span>
           </div>
           <FilterBar total={preview.length} shown={totalItems} filters={filters} onClear={clearFilters} />
-          <table className="w-full text-xs border rounded-lg overflow-hidden">
-            <thead className="bg-zinc-100">
-              <tr>
-                <SortTh col="id" label="ID" current={sortCol} dir={sortDir} onClick={toggleSort} />
-                <SortTh col="payee_id" label="Payee" current={sortCol} dir={sortDir} onClick={toggleSort} />
-                <SortTh col="period" label="Period" current={sortCol} dir={sortDir} onClick={toggleSort} />
-                <SortTh col="amount" label="Amount" current={sortCol} dir={sortDir} onClick={toggleSort} />
-                <SortTh col="product" label="Product" current={sortCol} dir={sortDir} onClick={toggleSort} />
-              </tr>
-              <tr className="bg-zinc-50">
-                <FilterTh value={filters["id"] || ""} onChange={v => setFilter("id", v)} />
-                <FilterTh value={filters["payee_id"] || ""} onChange={v => setFilter("payee_id", v)} />
-                <FilterTh value={filters["period"] || ""} onChange={v => setFilter("period", v)} />
-                <FilterTh value={filters["amount"] || ""} onChange={v => setFilter("amount", v)} />
-                <FilterTh value={filters["product"] || ""} onChange={v => setFilter("product", v)} />
-              </tr>
-            </thead>
-            <tbody>
-              {paginated.map(t => (
-                <tr key={t.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                  <Td mono>{t.id}</Td><Td mono>{t.payee_id}</Td><Td mono>{t.period}</Td><Td>{t.amount}</Td><Td>{t.product}</Td>
+          <div className="table-wrap overflow-hidden rounded-xl border border-line">
+            <table>
+              <thead>
+                <tr>
+                  {COLUMNS.map(c => (
+                    <SortTh key={c.col} col={c.col} label={c.label} current={sortCol} dir={sortDir} onClick={toggleSort}
+                      align={c.col === "amount" ? "right" : undefined} />
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          {totalPages > 1 && (
-            <div className="flex items-center justify-center gap-3 text-xs text-zinc-500">
-              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="px-2 py-1 rounded hover:bg-zinc-100 disabled:opacity-30 cursor-pointer">← Prev</button>
-              <span>Page {page} of {totalPages}</span>
-              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-2 py-1 rounded hover:bg-zinc-100 disabled:opacity-30 cursor-pointer">Next →</button>
-            </div>
-          )}
-          <div className="flex justify-between items-center">
-            <button onClick={onBack} className="text-sm text-zinc-500 hover:text-zinc-700">← Back</button>
-            <button onClick={runCalc} disabled={status === "loading" || uploading || !txnFile}
-              className="px-5 py-2.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 cursor-pointer">
-              {status === "loading" ? "Calculating..." : "Calculate Commissions →"}
-            </button>
+                <tr>
+                  {COLUMNS.map(c => (
+                    <FilterTh key={c.col} label={c.label} value={filters[c.col] || ""} onChange={v => setFilter(c.col, v)} />
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {paginated.map(t => (
+                  <tr key={t.id}>
+                    <Td mono>{t.id}</Td><Td mono>{t.payee_id}</Td><Td mono>{t.period}</Td>
+                    <Td num>{t.amount}</Td><Td className="text-ink-2">{t.product}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <Pagination page={page} totalPages={totalPages} onPage={setPage} className="border-t border-line" />
           </div>
           {error && (
-            <div className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs select-text space-y-2">
-              <div className="whitespace-pre-wrap">{error}</div>
+            <Callout tone="danger">
+              <div role="alert" className="whitespace-pre-wrap">{error}</div>
               {unknownPayeesBlocked && (
-                <label className="flex items-start gap-2 pt-2 border-t border-red-200 cursor-pointer">
+                <label className="mt-3 flex items-start gap-2 border-t border-danger/20 pt-3 text-ink">
                   <input
                     type="checkbox"
                     className="mt-0.5"
@@ -155,10 +173,10 @@ export default function StageCrediting({ payees, transactions: preview, setTrans
                   </span>
                 </label>
               )}
-            </div>
+            </Callout>
           )}
-        </div>
+        </>
       )}
-    </div>
+    </StageShell>
   );
 }

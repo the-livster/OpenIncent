@@ -1,6 +1,9 @@
 import { useMemo, useState } from "react";
 import type { PayeeRow } from "./Pipeline";
 import { Th, Td } from "./Table";
+import { SortTh } from "./SortableTable";
+import StageShell from "./StageShell";
+import { Badge, Callout } from "./ui";
 
 interface Props {
   payees: PayeeRow[];
@@ -38,56 +41,61 @@ export default function StageQuotas({ payees, setPayees, onNext, onBack }: Props
   const missingQuota = payees.filter(p => !p.quota || p.quota === "0");
 
   return (
-    <div className="max-w-4xl space-y-4">
-      <h1 className="text-lg font-bold text-zinc-800">2. Quotas</h1>
-      <p className="text-sm text-zinc-500">Review and adjust each payee's quota, ramp schedule, and per-window overrides.</p>
-
+    <StageShell
+      n={2}
+      group="Setup"
+      title="Quotas"
+      description="Review each payee's quota and ramp. Edits here apply to this run; the saved roster is unchanged."
+      actions={payees.length > 0 && missingQuota.length === 0 && <Badge tone="success" icon="check">All quotas set</Badge>}
+      onBack={onBack}
+      onNext={onNext}
+    >
       {missingQuota.length > 0 && (
-        <div className="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs select-text">
-          ⚠ {missingQuota.length} payee(s) have no quota set. Attainment will be N/A until fixed.
-        </div>
+        <Callout tone="warning">
+          {missingQuota.length} payee(s) have no quota set. Attainment will be N/A until fixed.
+        </Callout>
       )}
 
-      <div className="overflow-auto max-h-[60vh] border rounded-lg">
-        <table className="w-full text-xs">
-          <thead className="bg-zinc-100 sticky top-0">
-            <tr>
-              <SortTh col="id" label="ID" current={sortCol} dir={sortDir} onClick={toggleSort} />
-              <SortTh col="name" label="Name" current={sortCol} dir={sortDir} onClick={toggleSort} />
-              <SortTh col="quota" label="Base Quota" current={sortCol} dir={sortDir} onClick={toggleSort} />
-              <Th>Ramp Months</Th><Th>Ramp Schedule</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map(p => (
-              <tr key={p.id} className="border-b border-zinc-100 hover:bg-zinc-50">
-                <Td mono>{p.id}</Td><Td>{p.name}</Td>
-                <Td><input value={p.quota} onChange={e => update(p.id, "quota", e.target.value)} className="w-24 px-1 py-0.5 rounded border border-zinc-200 text-xs bg-white" /></Td>
-                <Td><input value={p.ramp_months} onChange={e => update(p.id, "ramp_months", e.target.value)} placeholder="optional" className="w-20 px-1 py-0.5 rounded border border-zinc-200 text-xs bg-white" /></Td>
-                <Td><input value={p.ramp_schedule} onChange={e => update(p.id, "ramp_schedule", e.target.value)} placeholder='e.g. 0.25 0.5 0.75' className="w-40 px-1 py-0.5 rounded border border-zinc-200 text-xs bg-white" /></Td>
+      {payees.length === 0 ? (
+        <p className="text-[13.5px] text-ink-2">Upload a roster in step 1 to review quotas.</p>
+      ) : (
+        <div className="table-wrap max-h-[60vh] rounded-xl border border-line">
+          <table>
+            <thead>
+              <tr>
+                <SortTh col="id" label="ID" current={sortCol} dir={sortDir} onClick={toggleSort} />
+                <SortTh col="name" label="Name" current={sortCol} dir={sortDir} onClick={toggleSort} />
+                <SortTh col="quota" label="Base quota" current={sortCol} dir={sortDir} onClick={toggleSort} />
+                <Th>Ramp months</Th>
+                <Th>Ramp schedule</Th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="flex justify-between">
-        <button onClick={onBack} className="text-sm text-zinc-500 hover:text-zinc-700">← Back</button>
-        <button onClick={onNext} className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 cursor-pointer">
-          Continue →
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function SortTh({ col, label, current, dir, onClick }: {
-  col: SortCol; label: string; current: SortCol; dir: string; onClick: (c: SortCol) => void;
-}) {
-  const active = current === col;
-  return (
-    <th onClick={() => onClick(col)} className="px-3 py-2 text-left font-medium text-zinc-500 whitespace-nowrap cursor-pointer hover:text-zinc-700 select-none">
-      {label}{active ? (dir === "asc" ? " ↑" : " ↓") : ""}
-    </th>
+            </thead>
+            <tbody>
+              {sorted.map(p => {
+                const missing = !p.quota || p.quota === "0";
+                return (
+                  <tr key={p.id}>
+                    <Td mono>{p.id}</Td>
+                    <Td className="font-medium">{p.name}</Td>
+                    <Td>
+                      <input aria-label={`Quota for ${p.name}`} value={p.quota} onChange={e => update(p.id, "quota", e.target.value)}
+                        className={`w-28 num ${missing ? "border-warning" : ""}`} />
+                    </Td>
+                    <Td>
+                      <input aria-label={`Ramp months for ${p.name}`} value={p.ramp_months} onChange={e => update(p.id, "ramp_months", e.target.value)}
+                        placeholder="Optional" className="w-24" />
+                    </Td>
+                    <Td>
+                      <input aria-label={`Ramp schedule for ${p.name}`} value={p.ramp_schedule} onChange={e => update(p.id, "ramp_schedule", e.target.value)}
+                        placeholder="e.g. 0.25 0.5 0.75" className="w-44" />
+                    </Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </StageShell>
   );
 }
