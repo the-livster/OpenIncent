@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.routing import APIRouter
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -1413,6 +1413,7 @@ async def export_statements(
             formats=fmt_list,
             attainment=result.attainment,
             plan_name=plan_obj.name,
+            transactions=txn_list,
             **_stmt_round,
         )
 
@@ -1541,6 +1542,37 @@ def export_calculation(req: SavedRunExportRequest, org: str = Depends(get_org)) 
     return Response(content, media_type="application/zip", headers={
         "Content-Disposition": f'attachment; filename="{filename}"',
     })
+
+
+class StatementPreviewRequest(BaseModel):
+    calculation_ids: list[str] = Field(min_length=1, max_length=1000)
+    payee_id: str = Field(min_length=1)
+    period: str = Field(min_length=1)
+    sample: bool = False
+
+
+@v1.post("/calculations/statement", response_class=HTMLResponse)
+def preview_statement(req: StatementPreviewRequest, org: str = Depends(get_org)) -> HTMLResponse:
+    """One payee's interactive HTML statement from a saved run.
+
+    It is rendered by the same code path as the export, so what the app
+    previews is byte for byte what the payee is sent."""
+    from icm_engine.reporting import render_saved_statement
+
+    if len(set(req.calculation_ids)) != len(req.calculation_ids):
+        raise HTTPException(400, detail={"error": "Duplicate calculation IDs."})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            page = render_saved_statement(
+                _get_db(org, sample=req.sample), req.calculation_ids,
+                req.payee_id, req.period, Path(tmpdir),
+            )
+        except LookupError as exc:
+            raise HTTPException(404, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(409, detail={"error": str(exc)}) from exc
+    # Pay data: never cache it anywhere between here and the viewer.
+    return HTMLResponse(page, headers={"Cache-Control": "no-store"})
 
 
 app.include_router(v1)

@@ -965,7 +965,8 @@ class TestAttainment:
             attainment=result.attainment,
         )
         content = files[0].path.read_text(encoding="utf-8")
-        assert "120000" in content
+        assert "120%" in content
+        assert "$120,000.00 booked" in content
 
 
 # --- time-varying quotas ------------------------------------------------

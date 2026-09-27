@@ -5,13 +5,15 @@ import csv
 import io
 import json
 import zipfile
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from icm_engine.database import Database
 from icm_engine.models import Commission, Payee, Plan
 from icm_engine.rounding import RoundingMode, parse_rounding_mode, round_money
-from icm_engine.statements import StatementTheme, generate_statements
+from icm_engine.statements import StatementFile, StatementTheme, generate_statements
 
 
 def payee_plan(payee_id: str, payees: list[Payee], plans: dict[str, Plan], multi: bool) -> Plan:
@@ -47,39 +49,80 @@ def payout_rows(
     ]
 
 
-def export_saved_run(
-    db: Database, ids: list[str], formats: tuple[str, ...], root: Path,
-) -> bytes:
+@dataclass
+class SavedRun:
+    """Everything a statement needs, read back from a run's frozen records."""
+
+    snapshot: dict[str, Any]
+    payees: list[Payee]
+    plans: dict[str, Plan]
+    lines: list[Commission]
+    deals: list[dict[str, str]]
+
+
+def load_saved_run(db: Database, ids: list[str]) -> SavedRun:
     records = [db.get_calculation(cid) for cid in ids]
     if any(r is None for r in records):
         raise LookupError("Calculation not found")
-    snapshots = [json.loads(r["input_summary"]).get("statement_snapshot") for r in records if r]
+    summaries = [json.loads(r["input_summary"]) for r in records if r]
+    snapshots = [s.get("statement_snapshot") for s in summaries]
     if not snapshots or any(not s for s in snapshots):
         raise ValueError("This older calculation has no statement snapshot. Calculate it again before exporting.")
     if len({s["run_id"] for s in snapshots}) != 1:
         raise ValueError("Choose calculations from one run.")
     snapshot = snapshots[0]
-    payees = [Payee.model_validate(p) for p in snapshot["payees"]]
-    plans = {key: Plan.model_validate(value) for key, value in snapshot["plans"].items()}
-    lines = [Commission.model_validate(c) for cid in ids for c in db.get_commission_lines(cid)]
-    rows = payout_rows(lines, payees, plans, snapshot["multi_plan"])
+    # Deal details frozen with the run; runs saved before they were kept
+    # simply show transaction ids.
+    deals: dict[str, dict[str, str]] = {}
+    for summary in summaries:
+        deals.update(summary.get("statement_deals") or {})
+    return SavedRun(
+        snapshot=snapshot,
+        payees=[Payee.model_validate(p) for p in snapshot["payees"]],
+        plans={key: Plan.model_validate(value) for key, value in snapshot["plans"].items()},
+        lines=[Commission.model_validate(c) for cid in ids for c in db.get_commission_lines(cid)],
+        deals=[{"id": tid, **info} for tid, info in deals.items()],
+    )
+
+
+def write_saved_statements(
+    run: SavedRun, payee_id: str, period: str, formats: tuple[str, ...], out_dir: Path,
+) -> list[StatementFile]:
+    """One payee's statement for one period of a saved run, as issued."""
+    plan = payee_plan(payee_id, run.payees, run.plans, run.snapshot["multi_plan"])
+    rounding = plan.rounding
+    return generate_statements(
+        [c for c in run.lines if c.payee_id == payee_id and c.period == period],
+        run.payees, out_dir=out_dir, period=period, formats=formats,
+        attainment=run.snapshot["attainment"], plan_name=plan.name,
+        rounding_mode=parse_rounding_mode(rounding.mode) if rounding else RoundingMode.HALF_UP,
+        rounding_places=rounding.places if rounding else 2,
+        source_currency=plan.currency,
+        theme=StatementTheme(currency_symbol=f"{plan.currency} "),
+        transactions=run.deals,
+    )
+
+
+def render_saved_statement(db: Database, ids: list[str], payee_id: str, period: str, root: Path) -> str:
+    """The interactive HTML statement exactly as the export would write it."""
+    run = load_saved_run(db, ids)
+    if not any(c.payee_id == payee_id and c.period == period for c in run.lines):
+        raise LookupError(f"No statement for {payee_id} in {period}")
+    files = write_saved_statements(run, payee_id, period, ("html",), root)
+    return files[0].path.read_text(encoding="utf-8")
+
+
+def export_saved_run(
+    db: Database, ids: list[str], formats: tuple[str, ...], root: Path,
+) -> bytes:
+    run = load_saved_run(db, ids)
+    rows = payout_rows(run.lines, run.payees, run.plans, run.snapshot["multi_plan"])
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
         for index, row in enumerate(rows):
-            pid, period = row["payee_id"], row["period"]
-            plan = payee_plan(pid, payees, plans, snapshot["multi_plan"])
-            rounding = plan.rounding
             # Separate directories also prevent sanitized payee IDs colliding.
             folder = f"statements/{index + 1:04d}"
-            files = generate_statements(
-                [c for c in lines if c.payee_id == pid and c.period == period],
-                payees, out_dir=root / folder, period=period, formats=formats,
-                attainment=snapshot["attainment"], plan_name=plan.name,
-                rounding_mode=parse_rounding_mode(rounding.mode) if rounding else RoundingMode.HALF_UP,
-                rounding_places=rounding.places if rounding else 2,
-                source_currency=plan.currency,
-                theme=StatementTheme(currency_symbol=f"{plan.currency} "),
-            )
+            files = write_saved_statements(run, row["payee_id"], row["period"], formats, root / folder)
             for file in files:
                 zf.write(file.path, f"{folder}/{file.path.name}")
         summary = io.StringIO(newline="")

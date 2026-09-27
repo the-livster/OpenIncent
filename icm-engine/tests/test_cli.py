@@ -83,17 +83,18 @@ def test_statements_multi_plan_routes_payees_to_their_plan(tmp_path: Path) -> No
 
     # Perm desk: Priya's reconciled total, from the tiered perm plan
     priya = (Path(out) / "statement_P-101_2026-05.html").read_text(encoding="utf-8")
-    assert "2480.00" in priya
+    # Statements show money with thousands separators and the theme's symbol.
+    assert "£2,480.00" in priya
     assert "Northwind Recruitment" in priya  # theme applied
 
     # Contract desk: Aisha's GP-based total — only correct if she was routed
     # to the contract plan rather than computed against the first plan
     aisha = (Path(out) / "statement_P-110_2026-05.html").read_text(encoding="utf-8")
-    assert "1897.50" in aisha
+    assert "£1,897.50" in aisha
 
     # Manager override plan
     dana = (Path(out) / "statement_P-201_2026-05.html").read_text(encoding="utf-8")
-    assert "1050.00" in dana
+    assert "£1,050.00" in dana
 
 
 def test_statements_requires_a_plan(tmp_path: Path) -> None:

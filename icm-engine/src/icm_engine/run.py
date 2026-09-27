@@ -251,6 +251,24 @@ def persist(
             for a in result.attainment
         ],
     }
+    # The deal details a statement shows (deal id, product, close date), frozen
+    # per calculation for its own lines only. The transactions table is
+    # overwritten by every upload, so reading it back later could relabel a
+    # statement that was already reviewed.
+    txn_by_id = {t.id: t for t in ctx.transactions}
+
+    def statement_deals(comms: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+        deals: dict[str, dict[str, str]] = {}
+        for c in comms:
+            txn = txn_by_id.get(c["transaction_id"])
+            if txn is None or txn.id in deals:
+                continue
+            info = {"deal_id": txn.deal_id, "product": txn.product or "",
+                    "close_date": txn.close_date.isoformat() if txn.close_date else ""}
+            if any(info.values()):
+                deals[txn.id] = {k: v for k, v in info.items() if v}
+        return deals
+
     for (plan_id, period_key), comms in sorted(by_plan_period.items()):
         calc_id = ctx.db.record_calculation(
             plan_id,
@@ -259,6 +277,7 @@ def persist(
                 "txn_count": len(ctx.transactions),
                 "payee_count": len(ctx.payees),
                 "statement_snapshot": snapshot,
+                "statement_deals": statement_deals(comms),
             },
         )
         ctx.db.save_commission_lines(calc_id, comms)

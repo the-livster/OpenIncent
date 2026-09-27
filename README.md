@@ -32,7 +32,7 @@ engine are both free.
 
 1. **You write your comp plan** in YAML, or describe it in plain English and let the AI builder draft it.
 2. **You add your deals** — CSV, Excel, or Parquet. Messy column names get fuzzy-matched automatically.
-3. **You get explained payouts.** Per-rep commission statements (XLSX, HTML, PDF), plus a full audit ledger that traces every dollar to the exact rule and deal behind it.
+3. **You get explained payouts.** Per-rep commission statements — an interactive page that shows how every deal was paid, plus PDF and XLSX — and a full audit ledger that traces every dollar to the exact rule and deal behind it.
 
 ## Who it is for
 
@@ -81,7 +81,7 @@ uv run icm --plan plan.yaml --transactions deals.csv --payees reps.csv --output 
 - **Rule composition:** `on_rule` — a rule whose base is what an earlier rule paid, so a kicker layered on base commission has one rate to maintain, not two
 - **Mid-year plan changes:** dated `changes` on a plan - new rates or rules from a given month, with a recorded reason; earlier months keep their own rates and year-to-date attainment carries across
 - **Year-to-date attainment:** `attainment_basis: cumulative` — tiers measured against fiscal-year-cumulative bookings and quota, so tier position carries across periods
-- **Per-rep statements:** XLSX, HTML, PDF — one file per payee
+- **Per-rep statements:** one file per payee — interactive HTML (every deal explained band by band, pay breakdown that filters the deals, search, CSV download, print, dark mode; self-contained and readable with scripts off), PDF, XLSX. Previewable in the app exactly as the payee receives them
 - **Distribution:** SMTP / .eml / mail-merge; safe by default (no sending without `--send`)
 - **Audit ledger:** every decision point recorded — dispute resolution without recomputation
 - **Reconciliation:** diff a run against what was actually paid — surfaces underpaid, overpaid, and missed lines

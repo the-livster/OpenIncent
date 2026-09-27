@@ -3,7 +3,13 @@
 Generates one statement file PER payee, per period. Each file contains ONLY
 that payee's data — no other payee's id, name, or amounts may appear.
 
-Formats: xlsx, html (branded, print-ready), pdf (optional fpdf2 extra).
+Formats:
+  html  an interactive, self-contained page: the pay breakdown, each deal with
+        how it was calculated, search / filter / sort, CSV download, print and
+        dark mode. It makes no network requests, and still reads and prints
+        with scripts disabled (an email preview, say).
+  xlsx  the same lines as a workbook.
+  pdf   a print layout matching the HTML (optional fpdf2 extra).
 
 Look & branding are controlled by a `StatementTheme` (company name, logo, accent
 colour, currency symbol, contact line, section toggles, white-label switch). An
@@ -14,13 +20,14 @@ the plain built-in style.
 from __future__ import annotations
 
 import html
+import json
 import re
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -41,7 +48,7 @@ class StatementTheme(BaseModel):
 
     company_name: str = ""                       # shown in the header; blank = none
     logo_url: str = ""                           # header logo (URL, relative path, or data URI)
-    accent_color: str = "#1d4ed8"                # themes the top rule, total, and attainment bar
+    accent_color: str = "#1d4ed8"                # themes the headline total, bars and highlights
     currency_symbol: str = "$"                   # amount prefix (e.g. "£", "€")
     title: str = "Commission statement"          # the document label
     earned_label: str = "Total commission"       # caption above the headline figure
@@ -100,6 +107,7 @@ def generate_statements(
     reporting_currency: str = "",
     source_currency: str = "",
     theme: StatementTheme | None = None,
+    transactions: list[Any] | None = None,
 ) -> list[StatementFile]:
     """Generate per-payee commission statements.
 
@@ -113,12 +121,18 @@ def generate_statements(
         formats: Which formats to generate ("xlsx", "html", "pdf").
         generated_on: Injectable date for deterministic output.
         emit_zero: If True, emit zero statements for payees with no lines.
-        attainment: AttainmentSummary objects for attainment display.
+        attainment: AttainmentSummary objects (or their dict form) for
+                    attainment display. Each statement shows only its own
+                    payee's attainment for the statement's period.
         plan_name: Plan name for the statement header.
         theme: Branding/look. Defaults to the plain built-in style.
+        transactions: The run's transactions (objects or dicts), optional. When
+                      given, deals show their deal id, product and close date.
+                      Only the ids on the payee's own lines are looked up.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     theme = theme or StatementTheme()
+    deals = _deal_lookup(transactions)
 
     # Build payee lookup
     payee_map: dict[str, Any] = {}
@@ -183,27 +197,25 @@ def generate_statements(
         )
         total_str = str(total)
 
-        # Find attainment for this payee
-        payee_attainment: Any = None
-        if attainment:
-            for a in attainment:
-                if _get_attr(a, "payee_id") == pid:
-                    payee_attainment = a
-                    break
+        payee_attainment = _attainment_for(attainment, pid, period)
+        # With no quota there is nothing to attain: a lone "no quota" record
+        # would only draw an empty bar.
+        if len(payee_attainment) == 1 and _get_attainment_pct(payee_attainment[0]) is None:
+            payee_attainment = []
 
         for fmt in formats:
             if fmt == "xlsx":
                 path = _write_xlsx(pid, pname, period_label, lines, total_str, out_dir,
                                    _d=_fmt, plan_name=plan_name, attainment=payee_attainment,
-                                   theme=theme)
+                                   theme=theme, deals=deals)
             elif fmt == "html":
                 path = _write_html(pid, pname, period_label, lines, total_str, generated_on, out_dir,
                                    _d=_fmt, plan_name=plan_name, attainment=payee_attainment,
-                                   theme=theme)
+                                   theme=theme, deals=deals)
             elif fmt == "pdf":
                 path = _write_pdf(pid, pname, period_label, lines, total_str, generated_on, out_dir,
                                   _d=_fmt, plan_name=plan_name, attainment=payee_attainment,
-                                  theme=theme)
+                                  theme=theme, deals=deals)
             else:
                 raise ValueError(f"Unknown format: {fmt}")
             files.append(StatementFile(payee_id=pid, period=period, path=path, fmt=fmt))
@@ -221,6 +233,56 @@ def _period_label(period: str) -> str:
         if 1 <= mo <= 12:
             return f"{_MONTHS[mo - 1]} {yr}"
     return period
+
+
+def _short_period(period: str) -> str:
+    """'2026-01' -> 'Jan 2026'; anything else unchanged."""
+    m = re.fullmatch(r"(\d{4})-(\d{2})", period)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return f"{_MONTHS[int(m.group(2)) - 1][:3]} {m.group(1)}"
+    return period
+
+
+def _fmt_date(value: Any) -> str:
+    """A date (or ISO string) as '6 May 2026'; anything unparseable unchanged."""
+    if isinstance(value, date):
+        d = value
+    else:
+        text = str(value or "").strip()
+        try:
+            d = date.fromisoformat(text[:10])
+        except ValueError:
+            return text
+    return f"{d.day} {_MONTHS[d.month - 1]} {d.year}"
+
+
+def _attainment_for(attainment: list[Any] | None, pid: str, period: str | None) -> list[Any]:
+    """This payee's attainment records for the statement: the one for its
+    period, or every period (oldest first) when the statement covers them all.
+
+    Matching on the period matters: a run's attainment list holds every payee
+    and every window, and taking the first record for the payee printed
+    January's attainment on the February statement."""
+    if not attainment:
+        return []
+    mine = [a for a in attainment if _get_attr(a, "payee_id") == pid]
+    if period:
+        return [a for a in mine if _get_attr(a, "period") == period]
+    return sorted(mine, key=lambda a: _get_attr(a, "period"))
+
+
+def _deal_lookup(transactions: list[Any] | None) -> dict[str, dict[str, str]]:
+    """transaction id -> the deal details a payee recognises it by."""
+    deals: dict[str, dict[str, str]] = {}
+    for t in transactions or []:
+        tid = _opt(t, "id")
+        if not tid:
+            continue
+        info = {k: _opt(t, k) for k in ("deal_id", "product", "close_date")}
+        info = {k: v for k, v in info.items() if v}
+        if info:
+            deals[tid] = info
+    return deals
 
 
 # ------------------------------------------------------------------
@@ -258,6 +320,295 @@ def _adj_label(c: Any, pid: str) -> str:
     return ""
 
 
+# Rep-facing wording for the adjustment labels above.
+_ADJ_TEXT = {
+    "Manual Adj": "Manual adjustment",
+    "Cap": "Payout cap",
+    "Draw Recovery": "Draw recovery",
+    "Draw Top-up": "Draw top-up",
+    "Balance Recovered": "Balance recovered",
+    "Carried Forward": "Carried forward",
+}
+
+# Lines the engine makes itself rather than from a deal; they are titled by
+# what they are, not by a transaction id nobody recognises.
+_SYNTHETIC_RULES = {"manual_adjustment", "mbo", "payout_cap", "cap_adjustment", "draw", "balance"}
+
+_RULE_TEXT = {
+    "manual_adjustment": "Manual adjustment",
+    "payout_cap": "Payout cap",
+    "cap_adjustment": "Rule cap",
+    "draw": "Draw",
+    "mbo": "Bonus (MBO)",
+    "balance": "Carried balance",
+}
+
+_ACRONYMS = {"gp", "mbo", "spif", "arr", "acv", "tcv", "sdr", "bdr", "ae", "mrr", "nrr", "ote", "kpi"}
+
+
+def _rule_label(rule_id: str) -> str:
+    """'placement_fee' -> 'Placement fee'. Ids that are not plain snake case
+    ('R1', 'BaseRate') are somebody's deliberate name and stay as they are."""
+    if rule_id in _RULE_TEXT:
+        return _RULE_TEXT[rule_id]
+    if not re.fullmatch(r"[a-z0-9]+(?:[_\-][a-z0-9]+)*", rule_id or ""):
+        return rule_id
+    words = [w.upper() if w in _ACRONYMS else w for w in re.split(r"[_\-]", rule_id)]
+    first = words[0] if words[0].isupper() else words[0][:1].upper() + words[0][1:]
+    return " ".join([first, *words[1:]])
+
+
+# ------------------------------------------------------------------
+# Presentation model (shared by the HTML and PDF writers)
+# ------------------------------------------------------------------
+
+
+@dataclass
+class _Line:
+    tid: str
+    period: str
+    origin: str
+    rule_id: str
+    base: str          # display amount
+    rate: Decimal
+    amount: str        # display amount
+    notes: str
+    adj: str           # _adj_label(), "" for an ordinary commission line
+    kind: str
+    split: Decimal | None
+    exact: bool        # base x rate is the commission, so the maths can be shown
+
+    @property
+    def title(self) -> str:
+        if self.adj:
+            return _adj_text(self)
+        return _rule_label(self.rule_id)
+
+    @property
+    def category(self) -> str:
+        if self.adj:
+            return "True-ups" if self.adj.startswith("True-up") else _adj_text(self)
+        return _rule_label(self.rule_id)
+
+
+@dataclass
+class _Item:
+    """One row on the statement: a deal and all its lines (one per tier band
+    it crossed), or a single adjustment."""
+
+    period: str
+    tid: str
+    lines: list[_Line] = field(default_factory=list)
+    label: str = ""
+    ref: str = ""
+    product: str = ""
+    closed: str = ""
+
+    @property
+    def adjustment(self) -> bool:
+        return all(ln.adj for ln in self.lines)
+
+    @property
+    def is_deal(self) -> bool:
+        """A sale, as opposed to a bonus, draw, cap or adjustment."""
+        return not self.adjustment and self.lines[0].rule_id not in _SYNTHETIC_RULES
+
+    @property
+    def amount(self) -> Decimal:
+        return sum((Decimal(ln.amount) for ln in self.lines), Decimal("0"))
+
+    @property
+    def base(self) -> Decimal | None:
+        bases = [Decimal(ln.base) for ln in self.lines if not ln.adj]
+        return sum(bases, Decimal("0")) if bases else None
+
+    @property
+    def types(self) -> str:
+        return ", ".join(dict.fromkeys(ln.title for ln in self.lines))
+
+    def badges(self) -> list[tuple[str, str]]:
+        """(text, tone) chips: adjustments, true-ups, splits, overrides."""
+        out: dict[str, str] = {}
+        for ln in self.lines:
+            if ln.adj:
+                text = _adj_text(ln)
+                if text != self.label:
+                    out.setdefault(text, "warn" if Decimal(ln.amount) < 0 else "acc")
+        if any(ln.kind == "manager_override" for ln in self.lines):
+            out.setdefault("Override", "")
+        if any(ln.kind == "overlay" for ln in self.lines):
+            out.setdefault("Overlay", "")
+        splits = {ln.split for ln in self.lines
+                  if ln.kind == "split" and ln.split is not None and 0 < ln.split < 1}
+        if len(splits) == 1:
+            out.setdefault(f"Split {_pct_text(splits.pop())}", "")
+        return list(out.items())
+
+
+def _adj_text(ln: _Line) -> str:
+    if ln.adj.startswith("True-up"):
+        return f"True-up from {_period_label(ln.origin)}" if ln.origin else "True-up"
+    return _ADJ_TEXT.get(ln.adj, ln.adj)
+
+
+def _line_models(lines: Iterable[Any], pid: str, _d: Callable[[Decimal], str]) -> list[_Line]:
+    out: list[_Line] = []
+    for c in lines:
+        base = _get_dec(c, "base_amount")
+        rate = _get_dec(c, "rate")
+        amount = _get_dec(c, "commission_amount")
+        split_text = _opt(c, "split_pct")
+        try:
+            split = Decimal(split_text) if split_text else None
+        except InvalidOperation:
+            split = None
+        out.append(_Line(
+            tid=_opt(c, "transaction_id"), period=_opt(c, "period"),
+            origin=_opt(c, "origin_period"), rule_id=_opt(c, "rule_id"),
+            base=_d(base), rate=rate, amount=_d(amount), notes=_opt(c, "notes"),
+            adj=_adj_label(c, pid), kind=_opt(c, "kind"), split=split,
+            exact=rate != 1 and abs(base * rate - amount) < Decimal("0.000001"),
+        ))
+    return out
+
+
+def _group_items(lines: list[_Line], deals: dict[str, dict[str, str]]) -> list[_Item]:
+    """Group a payee's lines into deals, keeping the engine's order."""
+    items: dict[str, _Item] = {}
+    for n, ln in enumerate(lines):
+        # "*" and "" are not deals (plan caps and the like); never merge them.
+        key = f"#{n}" if ln.tid in ("", "*") else f"{ln.period}\x00{ln.tid}"
+        if key not in items:
+            items[key] = _Item(period=ln.period, tid=ln.tid)
+        items[key].lines.append(ln)
+
+    for item in items.values():
+        first = item.lines[0]
+        info = deals.get(item.tid, {}) if item.tid not in ("", "*") else {}
+        if first.rule_id in _SYNTHETIC_RULES and all(ln.rule_id == first.rule_id for ln in item.lines):
+            item.label = first.title
+            generated = item.tid in ("", "*") or item.tid.startswith(("adj_", "mbo_"))
+            item.ref = "" if generated else item.tid
+        else:
+            item.label = info.get("deal_id") or item.tid or "-"
+            item.ref = item.tid if info.get("deal_id") and info["deal_id"] != item.tid else ""
+        item.product = info.get("product", "")
+        item.closed = _fmt_date(info["close_date"]) if info.get("close_date") else ""
+    return list(items.values())
+
+
+def _categories(lines: list[_Line]) -> list[tuple[str, Decimal, bool]]:
+    """(label, amount, is_adjustment) per pay category: earnings largest
+    first, then adjustments."""
+    totals: dict[tuple[bool, str], Decimal] = {}
+    for ln in lines:
+        key = (bool(ln.adj), ln.category)
+        totals[key] = totals.get(key, Decimal("0")) + Decimal(ln.amount)
+    earned = sorted(((k[1], v) for k, v in totals.items() if not k[0]), key=lambda kv: -kv[1])
+    adjust = sorted(((k[1], v) for k, v in totals.items() if k[0]), key=lambda kv: -abs(kv[1]))
+    return [(label, v, False) for label, v in earned] + [(label, v, True) for label, v in adjust]
+
+
+# ------------------------------------------------------------------
+# Number formatting
+# ------------------------------------------------------------------
+
+
+def _plain(value: str | Decimal) -> str:
+    """A decimal as fixed-point text: never '1E+3'."""
+    return format(Decimal(value), "f")
+
+
+def _money(sym: str, value: str | Decimal, minus: str = "\u2212") -> str:
+    """'1234.5' -> '$1,234.5' with thousands separators. The decimals are kept
+    exactly as given: they are the plan's rounding policy, already applied."""
+    text = _plain(value)
+    neg = text.startswith("-")
+    digits = text[1:] if neg else text
+    whole, dot, frac = digits.partition(".")
+    if whole.isdigit():
+        whole = f"{int(whole):,}"
+    body = f"{sym}{whole}{dot}{frac}"
+    if neg and digits.strip("0."):
+        return minus + body
+    return body
+
+
+def _pct_text(rate: Decimal) -> str:
+    """0.1 -> '10%', 0.225 -> '22.5%'."""
+    p = (rate * 100).quantize(Decimal("0.0001")).normalize()
+    return f"{format(p, 'f')}%"
+
+
+def _att_pct_text(pct: Decimal) -> str:
+    """1.26 -> '126%', 0.825 -> '82.5%'."""
+    text = format((pct * 100).quantize(Decimal("0.1")), "f")
+    return (text[:-2] if text.endswith(".0") else text) + "%"
+
+
+def _decimals(value: str) -> int:
+    _, _, frac = _plain(value).partition(".")
+    return len(frac)
+
+
+# ------------------------------------------------------------------
+# Accent colour
+# ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Palette:
+    accent: str
+    ink: str         # accent text on light surfaces (contrast-safe)
+    soft: str        # accent tint on light surfaces
+    ink_dark: str    # accent text on dark surfaces
+    soft_dark: str   # accent tint on dark surfaces
+
+
+def _rgb_hex(rgb: tuple[int, int, int]) -> str:
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
+def _mix(a: str, b: str, t: float) -> str:
+    """Blend colour a toward b by t (0..1)."""
+    (r1, g1, b1), (r2, g2, b2) = _hex_to_rgb(a), _hex_to_rgb(b)
+    return _rgb_hex((round(r1 + (r2 - r1) * t), round(g1 + (g2 - g1) * t), round(b1 + (b2 - b1) * t)))
+
+
+def _luminance(h: str) -> float:
+    def ch(v: int) -> float:
+        s = v / 255
+        return s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4
+    r, g, b = _hex_to_rgb(h)
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def _readable(fg: str, bg: str, toward: str, target: float = 4.5) -> str:
+    """fg, moved toward `toward` just far enough to be legible on bg. A pale
+    brand colour stays recognisable instead of becoming invisible text."""
+    for step in range(21):
+        c = _mix(fg, toward, step * 0.05)
+        if _contrast(c, bg) >= target:
+            return c
+    return toward
+
+
+def _accent_palette(accent: str) -> _Palette:
+    base = _rgb_hex(_hex_to_rgb(accent))
+    return _Palette(
+        accent=accent,
+        ink=_readable(base, "#ffffff", "#000000"),
+        soft=_mix(base, "#ffffff", 0.88),
+        ink_dark=_readable(base, "#12151c", "#ffffff"),
+        soft_dark=_mix(base, "#12151c", 0.8),
+    )
+
+
 # ------------------------------------------------------------------
 # XLSX
 # ------------------------------------------------------------------
@@ -266,12 +617,13 @@ def _adj_label(c: Any, pid: str) -> str:
 def _write_xlsx(
     pid: str, pname: str, period: str,
     lines: list[Any], total_str: str, out_dir: Path,
-    *, _d: Callable[[Decimal], str], plan_name: str = "", attainment: Any = None,
-    theme: StatementTheme,
+    *, _d: Callable[[Decimal], str], plan_name: str = "", attainment: Sequence[Any] = (),
+    theme: StatementTheme, deals: dict[str, dict[str, str]] | None = None,
 ) -> Path:
     from icm_engine.excel import write_xlsx
 
     sym = theme.currency_symbol
+    deals = deals or {}
 
     # Header info rows
     info_rows: list[dict[str, str]] = []
@@ -280,24 +632,26 @@ def _write_xlsx(
     info_rows.append({"Field": "Plan", "Value": plan_name or "-"})
     info_rows.append({"Field": "Payee", "Value": f"{pname} ({pid})"})
     info_rows.append({"Field": "Period", "Value": period})
-    if attainment is not None:
-        booked = _d(_get_dec(attainment, "bookings"))
-        quota = _d(_get_dec(attainment, "quota"))
-        pct_val = _get_attainment_pct(attainment)
+    for a in attainment:
+        booked = _d(_get_dec(a, "bookings"))
+        quota = _d(_get_dec(a, "quota"))
+        pct_val = _get_attainment_pct(a)
         if pct_val is not None:
             pct_str = f"{pct_val * 100:.1f}%"
         else:
             pct_str = "N/A"
-        info_rows.append({"Field": "Attainment", "Value": f"{sym}{booked} / {sym}{quota} ({pct_str})"})
+        label = "Attainment" if len(attainment) == 1 else f"Attainment {_get_attr(a, 'period')}"
+        info_rows.append({"Field": label, "Value": f"{sym}{booked} / {sym}{quota} ({pct_str})"})
 
     # Line items
     data_rows: list[dict[str, str]] = []
     for c in lines:
         adj = _adj_label(c, pid)
+        info = deals.get(_opt(c, "transaction_id"), {})
         row = {
             "transaction_id": _get(c, "transaction_id"),
-            "deal_id": _get(c, "deal_id", ""),
-            "product": _get(c, "product", ""),
+            "deal_id": info.get("deal_id") or _opt(c, "deal_id"),
+            "product": info.get("product") or _opt(c, "product"),
             "rule_id": _get(c, "rule_id"),
             "base_amount": _d(_get_dec(c, "base_amount")),
             "rate": str(_get_dec(c, "rate")),
@@ -326,139 +680,684 @@ def _write_xlsx(
 
 
 # ------------------------------------------------------------------
-# HTML (branded, print-ready)
+# HTML (interactive, self-contained, print-ready)
 # ------------------------------------------------------------------
 
-_STMT_CSS = """
-*{box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
-  color:var(--ink);margin:0;background:#f4f5f7;line-height:1.55;-webkit-font-smoothing:antialiased}
-.sheet{max-width:720px;margin:28px auto;background:#fff;border:1px solid var(--line);border-radius:16px;
-  overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,.06)}
-.top{display:flex;align-items:center;justify-content:space-between;gap:16px;
-  border-top:5px solid var(--accent);padding:22px 32px 18px}
-.brand{display:flex;align-items:center;gap:12px;font-weight:800;font-size:18px;letter-spacing:-.01em;color:var(--ink)}
+# Light and dark surfaces. Accent colours come from the theme, per file.
+_LIGHT = (
+    "--bg:#f4f5f8;--card:#fff;--ink:#101828;--ink2:#475467;--ink3:#8a93a3;--line:#e5e7ee;"
+    "--soft:#f7f8fb;--chip:#f0f2f6;--track:#e7e9f0;--neg:#c4320a;--pos:#067647;--pos-soft:#e3f6ec;"
+    "--warn-bg:#fdf1dc;--warn-ink:#93480b;--shadow:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.06);"
+    "--ai:var(--accent-ink);--as:var(--accent-soft);color-scheme:light"
+)
+_DARK = (
+    "--bg:#0b0d12;--card:#12151c;--ink:#eceef3;--ink2:#a4acba;--ink3:#6f7888;--line:#252a35;"
+    "--soft:#171b23;--chip:#1d222c;--track:#262b36;--neg:#ff8a6b;--pos:#52d18f;--pos-soft:#11301f;"
+    "--warn-bg:#3a2408;--warn-ink:#fcb35a;--shadow:none;"
+    "--ai:var(--accent-ink-d);--as:var(--accent-soft-d);color-scheme:dark"
+)
+
+_STMT_CSS = (
+    "*,*::before,*::after{box-sizing:border-box}[hidden]{display:none!important}"
+    ":root{" + _LIGHT + "}"
+    ":root[data-theme=dark]{" + _DARK + "}"
+    "@media (prefers-color-scheme:dark){:root:not([data-theme=light]){" + _DARK + "}}"
+    """
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;
+  font:15px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+button,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.num,.amt,.base,.big,.pct{font-variant-numeric:tabular-nums}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.page{max-width:920px;margin:0 auto;padding:26px 20px 40px}
+.mast{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding-bottom:18px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px;min-width:0;font-weight:700;font-size:16px;letter-spacing:-.01em}
 .brand img{height:32px;width:auto;display:block}
-.doctype{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--accent)}
-.body{padding:6px 32px 0}
-.who{margin:16px 0 2px;font-size:26px;font-weight:800;letter-spacing:-.02em}
-.sub{color:var(--ink2);font-size:14px;margin:0 0 20px}
-.hero{background:var(--soft);border:1px solid var(--line);border-radius:14px;padding:20px 24px;
-  display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
-.hero .lbl{font-size:13px;color:var(--ink2);font-weight:600}
-.hero .amt{font-size:38px;font-weight:800;letter-spacing:-.02em;color:var(--accent);line-height:1.04;margin-top:3px}
-.hero .who-id{font-size:12.5px;color:var(--ink2);text-align:right}
-.att{margin:24px 0 2px}
-.att .row{display:flex;justify-content:space-between;font-size:13px;color:var(--ink2);margin-bottom:7px}
-.att .row b{color:var(--ink);font-weight:700}
-.att .bar{height:10px;background:var(--line);border-radius:999px;overflow:hidden}
-.att .fill{height:100%;background:var(--accent);border-radius:999px}
-h2.sec{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink2);
-  margin:30px 0 4px;font-weight:700}
-.line{border-bottom:1px solid var(--line);padding:13px 0}
-.line:last-child{border-bottom:0}
-.line-h{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
-.line-deal{font-weight:650;font-size:15px}
-.line-deal .prod{color:var(--ink2);font-weight:400}
-.line-amt{font-weight:700;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap}
-.line-amt.neg{color:#b91c1c}
-.line-note{color:var(--ink2);font-size:12.5px;margin-top:3px}
-.badge{display:inline-block;background:#fff3cd;color:#856404;font-size:11px;font-weight:700;
-  padding:1px 8px;border-radius:999px;margin-left:2px;vertical-align:1px}
-.tot{display:flex;justify-content:space-between;align-items:baseline;border-top:2px solid var(--ink);
-  margin-top:2px;padding:15px 0 4px;font-size:17px;font-weight:800}
-.tot .amt{color:var(--accent)}
-.foot{margin-top:30px;padding:18px 32px 26px;border-top:1px solid var(--line);color:var(--ink2);font-size:12.5px}
+.mast-r{display:flex;align-items:center;gap:14px}
+.doctype{font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ai)}
+.tools{display:flex;gap:6px}
+.btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 12px;border:1px solid var(--line);
+  border-radius:9px;background:var(--card);font-size:13px;font-weight:550;cursor:pointer}
+.btn:hover{background:var(--soft)}
+.btn svg,.search svg,.chev{width:16px;height:16px;flex:none}
+.btn.icon{width:32px;padding:0;justify-content:center}
+.btn .sun,:root[data-theme=dark] .btn .moon{display:none}
+:root[data-theme=dark] .btn .sun{display:block}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme=light]) .btn .moon{display:none}
+  :root:not([data-theme=light]) .btn .sun{display:block}
+}
+.intro{padding:26px 0 20px}
+.eyebrow{margin:0;font-size:13px;font-weight:650;color:var(--ai)}
+h1{margin:4px 0 3px;font-size:34px;line-height:1.15;font-weight:750;letter-spacing:-.025em}
+.meta{margin:0;color:var(--ink2);font-size:13.5px}
+.grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:14px}
+.grid.solo{grid-template-columns:minmax(0,1fr)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+.hero{padding:22px 24px;background:linear-gradient(135deg,var(--as),var(--card) 72%)}
+.label{font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--ink2)}
+.big{margin-top:6px;font-size:44px;line-height:1.05;font-weight:750;letter-spacing:-.03em;color:var(--ai);
+  overflow-wrap:anywhere}
+.comp{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:16px;font-size:13.5px;color:var(--ink2)}
+.comp b{color:var(--ink);font-weight:650}
+.dot{display:inline-block;width:8px;height:8px;margin-right:7px;border-radius:50%;vertical-align:1px;
+  background:var(--accent)}
+.dot.neg{background:var(--neg)}
+.att{padding:22px 24px}
+.att-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.pct{margin-top:6px;font-size:32px;line-height:1.1;font-weight:750;letter-spacing:-.02em}
+.state{padding:2px 10px;border-radius:999px;background:var(--chip);color:var(--ink2);font-size:12px;
+  font-weight:650;white-space:nowrap}
+.state.up{background:var(--pos-soft);color:var(--pos)}
+.track{position:relative;height:10px;margin:14px 0 10px;border-radius:999px;background:var(--track)}
+.fill,.over{position:absolute;top:0;bottom:0;border-radius:999px;background:var(--accent)}
+.fill{left:0}
+.over{background:var(--pos);border-radius:0 999px 999px 0}
+.tick{position:absolute;top:-4px;bottom:-4px;width:2px;margin-left:-1px;border-radius:2px;background:var(--ink);
+  opacity:.5}
+.att-foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;font-size:13px;color:var(--ink2)}
+.att-rows{list-style:none;margin:12px 0 0;padding:0}
+.att-rows li{display:grid;grid-template-columns:76px minmax(0,1fr) 64px;align-items:center;gap:12px;
+  padding:6px 0;font-size:13px}
+.att-rows .track{margin:0;height:8px}
+.att-rows .v{text-align:right;font-weight:650}
+.sec{margin-top:14px}
+.sec-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 22px 0}
+h2{margin:0;font-size:15.5px;font-weight:700;letter-spacing:-.01em}
+.muted{color:var(--ink3);font-weight:500}
+.sec-head .muted{font-size:13px}
+.bars{list-style:none;margin:0;padding:10px 12px 4px}
+.bar{display:grid;grid-template-columns:minmax(110px,210px) minmax(0,1fr) auto;align-items:center;gap:14px;
+  width:100%;padding:9px 10px;border:0;border-radius:10px;background:none;text-align:left}
+.js .bar{cursor:pointer}
+.js .bar:hover{background:var(--soft)}
+.bar[aria-pressed=true]{background:var(--as)}
+.bar-name{overflow:hidden;font-size:14px;font-weight:550;text-overflow:ellipsis;white-space:nowrap}
+.bar-track{height:8px;overflow:hidden;border-radius:999px;background:var(--track)}
+.bar-fill{display:block;height:100%;border-radius:999px;background:var(--accent)}
+.bar.neg .bar-fill{background:var(--neg)}
+.bar-amt{min-width:100px;font-size:14px;font-weight:650;text-align:right;font-variant-numeric:tabular-nums}
+.bar.neg .bar-amt,.amt.neg,.neg-t{color:var(--neg)}
+.sum-row{display:flex;justify-content:space-between;margin:0 22px;padding:12px 0 18px;
+  border-top:1px solid var(--line);font-weight:700}
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:14px 22px 0}
+.search{position:relative;flex:1 1 220px}
+.search svg{position:absolute;top:50%;left:11px;transform:translateY(-50%);color:var(--ink3)}
+.search input{width:100%;height:34px;padding:0 12px 0 34px;border:1px solid var(--line);border-radius:10px;
+  background:var(--card);font-size:14px}
+.search input::placeholder{color:var(--ink3)}
+.seg{display:inline-flex;gap:2px;padding:3px;border-radius:10px;background:var(--chip)}
+.seg button{height:28px;padding:0 11px;border:0;border-radius:8px;background:none;color:var(--ink2);
+  font-size:13px;font-weight:550;cursor:pointer;white-space:nowrap}
+.seg button[aria-pressed=true]{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(16,24,40,.14)}
+.status{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 22px 0;font-size:12.5px;
+  color:var(--ink2)}
+.link{padding:0;border:0;background:none;color:var(--ai);font-size:12.5px;font-weight:600;cursor:pointer}
+.cols,.item>summary,.item>.row{display:grid;align-items:center;gap:12px;
+  grid-template-columns:16px minmax(0,1fr) minmax(0,170px) 120px 128px}
+.cols{margin-top:10px;padding:10px 22px 8px;border-bottom:1px solid var(--line);font-size:11.5px;
+  font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3)}
+.r{text-align:right}
+.sort{padding:0;border:0;background:none;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit}
+.js .sort{cursor:pointer}
+.js .sort:hover,.sort[aria-pressed=true]{color:var(--ink)}
+.sort[aria-pressed=true]::after{content:" \\2193"}
+.sort[aria-pressed=true][data-dir=asc]::after{content:" \\2191"}
+.list{padding:0 8px}
+.item{border-bottom:1px solid var(--line)}
+.item:last-child{border-bottom:0}
+.item>summary,.item>.row{padding:12px 14px;border-radius:10px}
+.item>summary{cursor:pointer;list-style:none}
+.item>summary::-webkit-details-marker{display:none}
+.item>summary:hover{background:var(--soft)}
+.chev{color:var(--ink3);transition:transform .15s}
+.item[open] .chev{transform:rotate(90deg)}
+.deal{min-width:0}
+.deal-id{font-size:14.5px;font-weight:650;overflow-wrap:anywhere}
+.deal-sub{display:-webkit-box;margin-top:1px;overflow:hidden;font-size:12.5px;color:var(--ink2);
+  -webkit-line-clamp:2;-webkit-box-orient:vertical}
+.badge{display:inline-block;margin:0 0 0 6px;padding:1px 8px;border-radius:999px;background:var(--chip);
+  color:var(--ink2);font-size:11px;font-weight:650;vertical-align:1px;white-space:nowrap}
+.badge.warn{background:var(--warn-bg);color:var(--warn-ink)}
+.badge.acc{background:var(--as);color:var(--ai)}
+.item .type{overflow:hidden;font-size:13.5px;color:var(--ink2);text-overflow:ellipsis;white-space:nowrap}
+.item .base,.item .amt{text-align:right;white-space:nowrap}
+.item .base{font-size:14px;color:var(--ink2)}
+.item .amt{font-size:14.5px;font-weight:650}
+.body{margin:0 14px 14px 42px;padding:12px 14px;border-radius:12px;background:var(--soft);font-size:13.5px}
+.slice+.slice{margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)}
+.calc{display:flex;justify-content:space-between;gap:12px;font-variant-numeric:tabular-nums}
+.calc .how{color:var(--ink2)}
+.calc .res{font-weight:600;white-space:nowrap}
+.line-note{margin-top:3px;font-size:13px;color:var(--ink2)}
+.calc+.line-note{margin-top:3px}
+.slice>.line-note:first-child{margin-top:0}
+.facts{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:6px;font-size:12.5px;color:var(--ink3)}
+.m-only{display:none}
+.empty{padding:30px 22px;text-align:center;color:var(--ink2)}
+.total{display:flex;justify-content:space-between;align-items:baseline;margin:0 22px;padding:16px 0 20px;
+  border-top:2px solid var(--ink);font-size:16px;font-weight:750}
+.total .amt{font-size:20px;color:var(--ai);font-variant-numeric:tabular-nums}
+.foot{margin-top:22px;padding:16px 4px 0;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink2)}
 .foot p{margin:0 0 4px}
-.foot .pb{margin-top:8px;font-size:11.5px;color:#9aa1ad}
+.foot .pb{margin-top:8px;font-size:11.5px;color:var(--ink3)}
+@media (max-width:720px){
+  .page{padding:18px 14px 32px}
+  .mast{flex-wrap:wrap}
+  h1{font-size:28px}
+  .big{font-size:36px}
+  .grid{grid-template-columns:minmax(0,1fr)}
+  .cols,.item>summary,.item>.row{grid-template-columns:16px minmax(0,1fr) auto}
+  .cols .h-type,.cols .h-base,.item .type,.item .base{display:none}
+  .bar{grid-template-columns:minmax(0,1fr) auto;gap:6px 12px}
+  .bar-track{grid-column:1/-1;order:3}
+  .body{margin-left:14px}
+  .m-only{display:inline}
+}
+@media (prefers-reduced-motion:reduce){.chev{transition:none}}
+@page{margin:14mm}
 @media print{
-  body{background:#fff}
-  .sheet{border:0;box-shadow:none;margin:0;max-width:none}
-  .hero,.line{break-inside:avoid}
+  :root,:root[data-theme=dark]{""" + _LIGHT + """}
+  body{background:#fff;font-size:12.5px}
+  .page{max-width:none;padding:0}
+  .tools,.controls,.status,.empty,.sec-head .muted{display:none!important}
+  .item[hidden]{display:block!important}
+  .card{box-shadow:none}
+  .hero{background:var(--card)}
+  .item,.att,.hero,.bars li{break-inside:avoid}
+  .item>summary:hover{background:none}
+  .chev{visibility:hidden}
+  .fill,.over,.bar-fill,.dot,.tick{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 """
+)
+
+_STMT_JS = r"""
+(function () {
+  "use strict";
+  var d = document, root = d.documentElement;
+  var meta = {};
+  try { meta = JSON.parse(d.getElementById("stmt-data").textContent) || {}; } catch (e) { meta = {}; }
+  var places = meta.places || 0, sym = meta.sym || "";
+  function all(sel) { return Array.prototype.slice.call(d.querySelectorAll(sel)); }
+  function one(sel) { return d.querySelector(sel); }
+  function on(sel, ev, fn) { all(sel).forEach(function (el) { el.addEventListener(ev, fn); }); }
+
+  root.className += " js";
+  all("[data-js]").forEach(function (el) { el.hidden = false; });
+
+  // Amounts are summed in minor units: floating point would drift a cent.
+  function minor(text) {
+    var s = String(text || "0"), neg = s.charAt(0) === "-";
+    if (neg) s = s.slice(1);
+    var parts = s.split("."), frac = (parts[1] || "");
+    while (frac.length < places) frac += "0";
+    var n = parseInt(parts[0] || "0", 10) * Math.pow(10, places);
+    if (places) n += parseInt(frac.slice(0, places), 10);
+    return neg ? -n : n;
+  }
+  function money(n) {
+    var neg = n < 0, p = Math.pow(10, places), a = Math.abs(n);
+    var whole = Math.floor(a / p), s = String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    if (places) {
+      var f = String(a - whole * p);
+      while (f.length < places) f = "0" + f;
+      s += "." + f;
+    }
+    return (neg ? "−" : "") + sym + s;
+  }
+
+  var list = one("[data-list]");
+  var items = all("[data-item]").map(function (el, i) {
+    return {
+      el: el, i: i, kind: el.getAttribute("data-kind"),
+      open: el.tagName === "DETAILS",
+      cats: " " + (el.getAttribute("data-cats") || "") + " ",
+      period: el.getAttribute("data-period") || "",
+      label: el.getAttribute("data-label") || "",
+      amt: minor(el.getAttribute("data-amt")),
+      q: el.getAttribute("data-q") || ""
+    };
+  });
+  var disclosures = items.filter(function (it) { return it.open; });
+  var st = { q: "", kind: "all", cat: "", period: "", sort: "", dir: -1 };
+
+  function matches(it) {
+    if (st.kind !== "all" && it.kind !== st.kind) return false;
+    if (st.cat && it.cats.indexOf(" " + st.cat + " ") < 0) return false;
+    if (st.period && it.period !== st.period) return false;
+    var words = st.q ? st.q.split(/\s+/) : [];
+    for (var k = 0; k < words.length; k++) {
+      if (words[k] && it.q.indexOf(words[k]) < 0) return false;
+    }
+    return true;
+  }
+
+  function press(sel, attr, value) {
+    all(sel).forEach(function (b) { b.setAttribute("aria-pressed", String(b.getAttribute(attr) === value)); });
+  }
+
+  function render() {
+    if (!list) return;
+    var order = items.slice();
+    if (st.sort === "amt") {
+      order.sort(function (a, b) { return (a.amt - b.amt) * st.dir || a.i - b.i; });
+    } else if (st.sort === "label") {
+      order.sort(function (a, b) {
+        return a.label.localeCompare(b.label, undefined, { numeric: true }) * st.dir || a.i - b.i;
+      });
+    }
+    var shown = 0, sum = 0;
+    order.forEach(function (it) {
+      var ok = matches(it);
+      it.el.hidden = !ok;
+      if (ok) { shown++; sum += it.amt; }
+      list.appendChild(it.el);
+    });
+    var filtered = shown !== items.length;
+    var status = one("[data-status]");
+    if (status) {
+      status.textContent = filtered ? "Showing " + shown + " of " + items.length + " · " + money(sum) : "";
+    }
+    var clear = one("[data-action=clear]");
+    if (clear) clear.hidden = !filtered;
+    var empty = one("[data-empty]");
+    if (empty) empty.hidden = shown !== 0;
+    press("[data-kind-btn]", "data-kind-btn", st.kind);
+    press("[data-period-btn]", "data-period-btn", st.period);
+    press("[data-cat]", "data-cat", st.cat);
+    all("[data-sort]").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-sort") === st.sort));
+      b.setAttribute("data-dir", st.dir < 0 ? "desc" : "asc");
+    });
+    syncExpand();
+  }
+
+  function visible() { return disclosures.filter(function (it) { return !it.el.hidden; }); }
+  function syncExpand() {
+    var b = one("[data-action=expand]");
+    if (!b) return;
+    var v = visible();
+    b.hidden = !disclosures.length;
+    b.textContent = v.length && v.every(function (it) { return it.el.open; }) ? "Collapse all" : "Expand all";
+  }
+
+  on("[data-search]", "input", function (e) { st.q = e.target.value.trim().toLowerCase(); render(); });
+  on("[data-kind-btn]", "click", function (e) { st.kind = e.currentTarget.getAttribute("data-kind-btn"); render(); });
+  on("[data-period-btn]", "click", function (e) {
+    st.period = e.currentTarget.getAttribute("data-period-btn");
+    render();
+  });
+  on("[data-cat]", "click", function (e) {
+    var c = e.currentTarget.getAttribute("data-cat");
+    st.cat = st.cat === c ? "" : c;
+    render();
+  });
+  on("[data-sort]", "click", function (e) {
+    var s = e.currentTarget.getAttribute("data-sort");
+    var first = s === "amt" ? -1 : 1;
+    if (st.sort !== s) { st.sort = s; st.dir = first; }
+    else if (st.dir === first) { st.dir = -first; }
+    else { st.sort = ""; st.dir = -1; }
+    render();
+  });
+  on("[data-action=clear]", "click", function () {
+    st.q = ""; st.kind = "all"; st.cat = ""; st.period = "";
+    var s = one("[data-search]");
+    if (s) s.value = "";
+    render();
+  });
+  on("[data-action=expand]", "click", function () {
+    var v = visible(), open = v.every(function (it) { return it.el.open; });
+    v.forEach(function (it) { it.el.open = !open; });
+    syncExpand();
+  });
+  disclosures.forEach(function (it) { it.el.addEventListener("toggle", syncExpand); });
+
+  // Theme: follow the system until the reader picks one.
+  var mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  function isDark() {
+    var t = root.getAttribute("data-theme");
+    return t ? t === "dark" : !!(mq && mq.matches);
+  }
+  function syncTheme() {
+    all("[data-action=theme]").forEach(function (b) { b.setAttribute("aria-pressed", String(isDark())); });
+  }
+  on("[data-action=theme]", "click", function () {
+    root.setAttribute("data-theme", isDark() ? "light" : "dark");
+    syncTheme();
+  });
+  syncTheme();
+
+  // Print everything, expanded, whatever the screen is showing.
+  var reopened = [];
+  window.addEventListener("beforeprint", function () {
+    reopened = disclosures.filter(function (it) { return !it.el.open; });
+    reopened.forEach(function (it) { it.el.open = true; });
+  });
+  window.addEventListener("afterprint", function () {
+    reopened.forEach(function (it) { it.el.open = false; });
+    reopened = [];
+  });
+  on("[data-action=print]", "click", function () { window.print(); });
+
+  on("[data-action=csv]", "click", function () {
+    var text = meta.text || [];
+    function cell(v, j) {
+      v = v == null ? "" : String(v);
+      // A spreadsheet runs a cell starting with = + - @ as a formula.
+      if (text.indexOf(j) >= 0 && /^[=+\-@\t\r]/.test(v)) v = "'" + v;
+      return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    }
+    var rows = [(meta.cols || []).map(function (c) { return cell(c, -1); }).join(",")];
+    (meta.rows || []).forEach(function (r) { rows.push(r.map(cell).join(",")); });
+    var blob = new Blob(["﻿" + rows.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    var a = d.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (meta.file || "statement") + ".csv";
+    d.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.parentNode.removeChild(a); }, 1000);
+  });
+
+  render();
+})();
+"""
+
+# Lucide-style strokes; currentColor so they follow the theme.
+_SVG = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"{cls}>{body}</svg>'
+)
+_ICONS = {
+    "moon": '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/>',
+    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 3v1.5M12 19.5V21M4.6 4.6l1 1M18.4 18.4l1 1'
+           'M3 12h1.5M19.5 12H21M4.6 19.4l1-1M18.4 5.6l1-1"/>',
+    "download": '<path d="M12 4v11m0 0-4-4m4 4 4-4M5 19h14"/>',
+    "print": '<path d="M7 9V4h10v5M7 17H5a1 1 0 0 1-1-1v-5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v5a1 1 0 0 1-1 1h-2'
+             'M7 14h10v6H7z"/>',
+    "search": '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
+    "chev": '<path d="m9 6 6 6-6 6"/>',
+}
+
+
+def _icon(name: str, cls: str = "") -> str:
+    return _SVG.format(cls=f' class="{cls}"' if cls else "", body=_ICONS[name])
+
+
+def _json_for_script(obj: Any) -> str:
+    """JSON that is safe inside <script>: nothing in it can close the tag."""
+    text = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    return (text.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+_SEP = " · "
+_ARROW = " → "
+
+# Beyond this many deals the list starts collapsed; below it, every
+# explanation is visible without a click (and without scripts).
+_OPEN_ITEMS_MAX = 10
 
 
 def _write_html(
     pid: str, pname: str, period: str,
     lines: list[Any], total_str: str, generated_on: date | None, out_dir: Path,
-    *, _d: Callable[[Decimal], str], plan_name: str = "", attainment: Any = None,
-    theme: StatementTheme,
+    *, _d: Callable[[Decimal], str], plan_name: str = "", attainment: Sequence[Any] = (),
+    theme: StatementTheme, deals: dict[str, dict[str, str]] | None = None,
 ) -> Path:
+    doc = _render_html(pid, pname, period, lines, total_str, generated_on, _d=_d,
+                       plan_name=plan_name, attainment=list(attainment), theme=theme,
+                       deals=deals or {})
+    path = out_dir / f"statement_{pid}_{period}.html"
+    # LF everywhere: the same statement is byte-identical on every OS.
+    path.write_text(doc, encoding="utf-8", newline="\n")
+    return path
+
+
+def _render_html(
+    pid: str, pname: str, period: str,
+    lines: list[Any], total_str: str, generated_on: date | None,
+    *, _d: Callable[[Decimal], str], plan_name: str, attainment: list[Any],
+    theme: StatementTheme, deals: dict[str, dict[str, str]],
+) -> str:
     esc = html.escape
     sym = theme.currency_symbol
-    accent = theme.safe_accent
+    pal = _accent_palette(theme.safe_accent)
+    show_notes = theme.show_line_explanations
 
-    def money(v: str) -> str:
-        return f"{sym}{v}"
+    lns = _line_models(lines, pid, _d)
+    items = _group_items(lns, deals)
+    periods = sorted({ln.period for ln in lns})
+    multi = len(periods) > 1
+    cats = _categories(lns)
+    cat_ids = {(adj, label): f"c{n}" for n, (label, _v, adj) in enumerate(cats)}
 
-    # --- header brand ---
-    brand_bits = ""
+    def money(v: str | Decimal) -> str:
+        return esc(_money(sym, v))
+
+    def neg(v: str | Decimal) -> bool:
+        return Decimal(v) < 0
+
+    earned = sum((Decimal(ln.amount) for ln in lns if not ln.adj), Decimal("0"))
+    adjusted = sum((Decimal(ln.amount) for ln in lns if ln.adj), Decimal("0"))
+    has_adj = any(ln.adj for ln in lns)
+    places = max([_decimals(total_str), *(_decimals(ln.amount) for ln in lns)])
+
+    # --- masthead ---
+    brand = ""
     if theme.logo_url:
-        brand_bits += f'<img src="{esc(theme.logo_url)}" alt="">'
-    brand_bits += esc(theme.company_name) if theme.company_name else "Commission statement"
+        brand += f'<img src="{esc(theme.logo_url)}" alt="">'
+    if theme.company_name:
+        brand += f"<span>{esc(theme.company_name)}</span>"
+    tools = (
+        '<div class="tools" data-js hidden>'
+        f'<button type="button" class="btn icon" data-action="theme" aria-pressed="false" '
+        f'title="Dark mode"><span class="sr">Dark mode</span>{_icon("moon", "moon")}{_icon("sun", "sun")}</button>'
+        f'<button type="button" class="btn" data-action="csv">{_icon("download")}CSV</button>'
+        f'<button type="button" class="btn" data-action="print">{_icon("print")}Print</button>'
+        "</div>"
+    )
+    # Without a brand, the document title takes the brand's place instead of
+    # appearing twice.
+    doctype = f'<span class="doctype">{esc(theme.title)}</span>' if brand else ""
+    mast = (
+        f'<header class="mast"><div class="brand">{brand or esc(theme.title)}</div>'
+        f'<div class="mast-r">{doctype}{tools}</div></header>'
+    )
 
-    # --- sub line ---
-    sub = esc(_period_label(period))
-    if plan_name:
-        sub += f" &middot; {esc(plan_name)}"
+    # --- who / when ---
+    eyebrow = _period_label(period) + (f" \u00b7 {plan_name}" if plan_name else "")
+    meta_bits = [f"Payee {pid}"]
     if generated_on:
-        sub += f" &middot; generated {esc(str(generated_on))}"
+        meta_bits.append(f"Generated {_fmt_date(generated_on)}")
+    intro = (
+        f'<section class="intro"><p class="eyebrow">{esc(eyebrow)}</p>'
+        f"<h1>{esc(pname)}</h1>"
+        f'<p class="meta">{esc(" · ".join(meta_bits))}</p></section>'
+    )
+
+    # --- headline total ---
+    deal_count = sum(1 for it in items if it.is_deal)
+    comp = []
+    if has_adj:
+        comp.append(f'<span><i class="dot"></i>Earned <b class="num">{money(earned)}</b></span>')
+        comp.append(f'<span><i class="dot neg"></i>Adjustments <b class="num">{money(adjusted)}</b></span>')
+    if deal_count:
+        comp.append(f"<span>{deal_count} deal{'s' if deal_count != 1 else ''}</span>")
+    hero = (
+        f'<div class="card hero"><div class="label">{esc(theme.earned_label)}</div>'
+        f'<div class="big">{money(total_str)}</div>'
+        f'<div class="comp">{"".join(comp)}</div></div>'
+    )
 
     # --- attainment ---
     att_html = ""
-    if theme.show_attainment and attainment is not None:
-        booked = _d(_get_dec(attainment, "bookings"))
-        quota = _d(_get_dec(attainment, "quota"))
-        pct_val = _get_attainment_pct(attainment)
-        pct = f"{pct_val * 100:.1f}%" if pct_val is not None else "N/A"
-        width = "0"
-        if pct_val is not None:
-            width = f"{max(0.0, min(pct_val * 100, 100.0)):.1f}"
-        att_html = (
-            f'<div class="att"><div class="row">'
-            f'<span>Quota attainment</span>'
-            f'<span><b>{esc(pct)}</b> &middot; {money(esc(booked))} of {money(esc(quota))}</span>'
-            f'</div><div class="bar"><div class="fill" style="width:{width}%"></div></div></div>'
+    if theme.show_attainment and attainment:
+        att_html = _attainment_html(attainment, _d, sym)
+    summary = f'<div class="grid{"" if att_html else " solo"}">{hero}{att_html}</div>'
+
+    # --- how the pay adds up ---
+    breakdown = ""
+    if cats:
+        biggest = max(abs(v) for _l, v, _a in cats) or Decimal("1")
+        rows = []
+        for label, value, adj in cats:
+            width = f"{abs(value) / biggest * 100:.2f}"
+            rows.append(
+                f'<li><button type="button" class="bar{" neg" if neg(value) else ""}" '
+                f'data-cat="{cat_ids[(adj, label)]}" aria-pressed="false">'
+                f'<span class="bar-name">{esc(label)}</span>'
+                f'<span class="bar-track"><span class="bar-fill" style="width:{width}%"></span></span>'
+                f'<span class="bar-amt">{money(value)}</span></button></li>'
+            )
+        hint = '<span class="muted" data-js hidden>Select a line to filter your deals</span>'
+        breakdown = (
+            '<section class="card sec"><div class="sec-head"><h2>How your pay adds up</h2>'
+            f"{hint}</div><ul class=\"bars\">{''.join(rows)}</ul>"
+            f'<div class="sum-row"><span>Total</span><span class="num">{money(total_str)}</span></div>'
+            "</section>"
         )
 
-    # --- line items ---
-    line_parts: list[str] = []
-    for c in lines:
-        adj = _adj_label(c, pid)
-        base = _d(_get_dec(c, "base_amount"))
-        rate = str(_get_dec(c, "rate"))
-        comm_dec = _get_dec(c, "commission_amount")
-        comm = _d(comm_dec)
-        notes = str(_get(c, "notes", ""))
-        tid = esc(str(_get(c, "transaction_id")))
-        deal = esc(str(_get(c, "deal_id", "")))
-        product = esc(str(_get(c, "product", "")))
-        origin = esc(str(_get(c, "origin_period", "")))
-
-        label = deal or tid
-        prod_bit = f' <span class="prod">&middot; {product}</span>' if product else ""
-        neg = " neg" if comm_dec < 0 else ""
-        badge = f'<span class="badge">{esc(adj)}</span>' if adj else ""
-
-        note_html = ""
-        if theme.show_line_explanations:
-            if notes:
-                explanation = esc(notes)
+    # --- deals ---
+    item_parts = []
+    csv_rows: list[list[str]] = []
+    start_open = len(items) <= _OPEN_ITEMS_MAX
+    for it in items:
+        sub_bits = []
+        if multi:
+            sub_bits.append(_short_period(it.period))
+        if it.product:
+            sub_bits.append(it.product)
+        if it.closed:
+            sub_bits.append(f"Closed {it.closed}")
+        if it.ref:
+            sub_bits.append(f"Ref {it.ref}")
+        item_badges = it.badges()
+        badges = "".join(
+            f'<span class="{"badge " + tone if tone else "badge"}">{esc(text)}</span>'
+            for text, tone in item_badges
+        )
+        sub_html = f'<div class="deal-sub">{esc(_SEP.join(sub_bits))}</div>' if sub_bits else ""
+        base = it.base
+        amount = it.amount
+        # A bonus or an adjustment is already titled by what it is; repeating
+        # that in the type column is noise.
+        types = "" if it.types == it.label else it.types
+        split_badge = any(text.startswith("Split ") for text, _ in item_badges)
+        slices = []
+        for ln in it.lines:
+            if ln.exact:
+                how = f"{money(ln.base)} \u00d7 {esc(_pct_text(ln.rate))}"
+            elif ln.rate == 1 or ln.adj:
+                how = "" if ln.title == it.label else esc(ln.title)
             else:
-                explanation = f"{money(esc(base))} &times; {esc(rate)}"
-            if origin:
-                explanation += f" &middot; from {origin}"
-            note_html = f'<div class="line-note">{explanation} {badge}</div>'
-        elif badge:
-            note_html = f'<div class="line-note">{badge}</div>'
-
-        line_parts.append(
-            f'<div class="line"><div class="line-h">'
-            f'<span class="line-deal">{label}{prod_bit}</span>'
-            f'<span class="line-amt{neg}">{money(esc(comm))}</span>'
-            f'</div>{note_html}</div>'
+                how = f"Base {money(ln.base)} \u00b7 rate {esc(_pct_text(ln.rate))}"
+            facts = []
+            if ln.origin and ln.origin != ln.period:
+                facts.append(f"Deal from {_period_label(ln.origin)}")
+            if not split_badge and ln.kind == "split" and ln.split is not None and 0 < ln.split < 1:
+                facts.append(f"Your share {_pct_text(ln.split)}")
+            facts_html = "".join(f"<span>{esc(f)}</span>" for f in facts)
+            if types:
+                facts_html += f'<span class="m-only">{esc(ln.title)}</span>'
+            calc = ""
+            if how or len(it.lines) > 1:
+                res_cls = "res neg-t" if neg(ln.amount) else "res"
+                calc = (
+                    f'<div class="calc"><span class="how">{how}</span>'
+                    f'<span class="{res_cls}">{"= " if ln.exact else ""}{money(ln.amount)}</span></div>'
+                )
+            note = ""
+            if show_notes and ln.notes:
+                note = f'<div class="line-note">{esc(ln.notes.replace(" -> ", _ARROW))}</div>'
+            facts_div = f'<div class="facts">{facts_html}</div>' if facts_html else ""
+            if calc or note or facts:
+                slices.append(f'<div class="slice">{calc}{note}{facts_div}</div>')
+            csv_rows.append([
+                ln.period, it.label, ln.tid, it.product,
+                _opt_iso(deals.get(ln.tid, {}).get("close_date", "")),
+                ln.title, _plain(ln.base), _plain(ln.rate), _plain(ln.amount),
+                _adj_text(ln) if ln.adj else "", ln.notes,
+            ])
+        item_cats = " ".join(dict.fromkeys(cat_ids[(bool(ln.adj), ln.category)] for ln in it.lines))
+        search = " ".join([it.label, it.tid, it.product, it.types, it.closed,
+                           *(t for t, _ in item_badges), *(ln.notes for ln in it.lines)]).lower()
+        attrs = (
+            f'data-item data-kind="{"adjustment" if it.adjustment else "earning"}" '
+            f'data-cats="{item_cats}" data-period="{esc(it.period)}" data-amt="{esc(_plain(amount))}" '
+            f'data-label="{esc(it.label.lower())}" data-q="{esc(search)}"'
         )
+        cells = (
+            f'<span class="deal"><span class="deal-id">{esc(it.label)}</span>{badges}{sub_html}</span>'
+            f'<span class="type">{esc(types)}</span>'
+            f'<span class="base">{money(base) if base is not None else ""}</span>'
+            f'<span class="{"amt neg" if neg(amount) else "amt"}">{money(amount)}</span>'
+        )
+        if slices:
+            item_parts.append(
+                f'<details class="item" {attrs}{" open" if start_open else ""}>'
+                f"<summary>{_icon('chev', 'chev')}{cells}</summary>"
+                f'<div class="body">{"".join(slices)}</div></details>'
+            )
+        else:
+            # Nothing more to say about it: a plain row, not a disclosure.
+            item_parts.append(f'<div class="item" {attrs}><div class="row"><span></span>{cells}</div></div>')
+
+    controls = ""
+    if items:
+        seg = (
+            '<div class="seg" role="group" aria-label="Show">'
+            '<button type="button" data-kind-btn="all" aria-pressed="true">All</button>'
+            '<button type="button" data-kind-btn="earning" aria-pressed="false">Earnings</button>'
+            '<button type="button" data-kind-btn="adjustment" aria-pressed="false">Adjustments</button>'
+            "</div>"
+        ) if has_adj and any(not it.adjustment for it in items) else ""
+        period_seg = ""
+        if multi:
+            period_seg = (
+                '<div class="seg" role="group" aria-label="Period">'
+                '<button type="button" data-period-btn="" aria-pressed="true">All periods</button>'
+                + "".join(
+                    f'<button type="button" data-period-btn="{esc(p)}" aria-pressed="false">'
+                    f"{esc(_short_period(p))}</button>"
+                    for p in periods
+                )
+                + "</div>"
+            )
+        controls = (
+            '<div class="controls" data-js hidden>'
+            f'<label class="search"><span class="sr">Search deals</span>{_icon("search")}'
+            '<input type="search" data-search placeholder="Search deals, products, notes" autocomplete="off"></label>'
+            f"{seg}{period_seg}"
+            '<button type="button" class="btn" data-action="expand">Expand all</button>'
+            "</div>"
+            '<div class="status" data-js hidden><span data-status role="status" aria-live="polite"></span>'
+            '<button type="button" class="link" data-action="clear" hidden>Clear filters</button></div>'
+        )
+    if items:
+        list_html = (
+            '<div class="cols" aria-hidden="true"><span></span>'
+            '<span><button type="button" class="sort" data-sort="label" tabindex="-1">Deal</button></span>'
+            '<span class="h-type">Type</span><span class="h-base r">Base</span>'
+            '<span class="r"><button type="button" class="sort" data-sort="amt" tabindex="-1">'
+            "Commission</button></span>"
+            "</div>"
+            f'<div class="list" data-list>{"".join(item_parts)}</div>'
+            '<div class="empty" data-empty hidden>Nothing matches these filters.</div>'
+        )
+    else:
+        list_html = '<div class="empty">No commission lines for this period.</div>'
+    count = f'<span class="muted">{len(items)}</span>' if items else ""
+    deals_html = (
+        f'<section class="card sec"><div class="sec-head"><h2>Your deals {count}</h2>'
+        "</div>"
+        f"{controls}{list_html}"
+        f'<div class="total"><span>Total</span><span class="amt">{money(total_str)}</span></div>'
+        "</section>"
+    )
 
     # --- footer ---
     foot_parts = [f"<p>This statement is confidential and intended only for {esc(pname)}.</p>"]
@@ -470,38 +1369,102 @@ def _write_html(
     if theme.show_powered_by:
         foot_parts.append('<p class="pb">Generated by OpenIncent</p>')
 
-    root = (
-        f"<style>:root{{--accent:{accent};--ink:#0f172a;--ink2:#5b6472;"
-        f"--line:#e6e8ee;--soft:#f7f8fa}}\n{_STMT_CSS}</style>"
-    )
+    data = {
+        "v": 1,
+        "payee": pid,
+        "period": period,
+        "sym": sym,
+        "places": places,
+        "file": f"statement_{pid}_{period}",
+        "cols": ["period", "deal", "transaction_id", "product", "close_date", "type",
+                 "base_amount", "rate", "commission", "adjustment", "notes"],
+        "text": [0, 1, 2, 3, 4, 5, 9, 10],
+        "rows": csv_rows,
+    }
 
-    html_doc = (
+    accent_vars = (
+        f":root{{--accent:{theme.safe_accent};--accent-ink:{pal.ink};--accent-soft:{pal.soft};"
+        f"--accent-ink-d:{pal.ink_dark};--accent-soft-d:{pal.soft_dark}}}"
+    )
+    title = f"{theme.title} — {pname} · {_period_label(period)}"
+    return (
         '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
-        f"<title>Commission statement — {esc(pname)}</title>\n{root}\n</head>\n<body>\n"
-        '<div class="sheet">\n'
-        f'  <div class="top"><div class="brand">{brand_bits}</div>'
-        f'<div class="doctype">{esc(theme.title)}</div></div>\n'
-        '  <div class="body">\n'
-        f'    <div class="who">{esc(pname)}</div>\n'
-        f'    <div class="sub">{sub}</div>\n'
-        '    <div class="hero">\n'
-        f'      <div><div class="lbl">{esc(theme.earned_label)}</div>'
-        f'<div class="amt">{money(esc(total_str))}</div></div>\n'
-        f'      <div class="who-id">{esc(pid)}</div>\n'
-        '    </div>\n'
-        f"    {att_html}\n"
-        '    <h2 class="sec">Your deals</h2>\n'
-        f'    {"".join(line_parts)}\n'
-        f'    <div class="tot"><span>Total</span><span class="amt">{money(esc(total_str))}</span></div>\n'
-        '  </div>\n'
-        f'  <div class="foot">{"".join(foot_parts)}</div>\n'
-        '</div>\n</body>\n</html>'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta name="color-scheme" content="light dark">\n'
+        f"<title>{esc(title)}</title>\n<style>{accent_vars}\n{_STMT_CSS}</style>\n</head>\n<body>\n"
+        f'<div class="page">\n{mast}\n{intro}\n{summary}\n{breakdown}\n{deals_html}\n'
+        f'<footer class="foot">{"".join(foot_parts)}</footer>\n</div>\n'
+        f'<script type="application/json" id="stmt-data">{_json_for_script(data)}</script>\n'
+        f"<script>{_STMT_JS}</script>\n</body>\n</html>\n"
     )
 
-    path = out_dir / f"statement_{pid}_{period}.html"
-    path.write_text(html_doc, encoding="utf-8")
-    return path
+
+def _opt_iso(value: str) -> str:
+    """A close date as YYYY-MM-DD for the CSV, if it is one."""
+    text = (value or "").strip()
+    try:
+        return date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return text
+
+
+def _attainment_html(attainment: list[Any], _d: Callable[[Decimal], str], sym: str) -> str:
+    esc = html.escape
+
+    def bar(pct: Decimal | None, tick: bool = True) -> str:
+        if pct is None:
+            return '<div class="track"></div>'
+        pct = max(pct, Decimal("0"))
+        # The track shows up to 200%: past quota, the extra is drawn in a
+        # second colour so over-achievement reads at a glance.
+        scale = min(max(pct, Decimal("1")), Decimal("2"))
+        fill = min(pct, Decimal("1")) / scale * 100
+        over = (min(pct, Decimal("2")) - Decimal("1")) / scale * 100 if pct > 1 else Decimal("0")
+        parts = [f'<div class="fill" style="width:{fill:.2f}%"></div>']
+        if over > 0:
+            parts.append(f'<div class="over" style="left:{fill:.2f}%;width:{over:.2f}%"></div>')
+        if tick and pct > 1:
+            parts.append(f'<div class="tick" style="left:{Decimal(100) / scale:.2f}%"></div>')
+        return f'<div class="track">{"".join(parts)}</div>'
+
+    if len(attainment) == 1:
+        a = attainment[0]
+        booked = _d(_get_dec(a, "bookings"))
+        quota = _d(_get_dec(a, "quota"))
+        pct = _get_attainment_pct(a)
+        if pct is None:
+            return (
+                '<div class="card att"><div class="att-head"><div><div class="label">Quota attainment</div>'
+                '<div class="pct">No quota</div></div></div>'
+                f'<div class="att-foot"><span>{esc(_money(sym, booked))} booked this period</span></div></div>'
+            )
+        remaining = Decimal(quota) - Decimal(booked)
+        if remaining > 0:
+            state = f'<span class="state">{esc(_money(sym, remaining))} to quota</span>'
+        else:
+            state = '<span class="state up">Quota reached</span>'
+        return (
+            '<div class="card att"><div class="att-head"><div><div class="label">Quota attainment</div>'
+            f'<div class="pct">{esc(_att_pct_text(pct))}</div></div>{state}</div>'
+            f"{bar(pct)}"
+            f'<div class="att-foot"><span>{esc(_money(sym, booked))} booked</span>'
+            f"<span>of {esc(_money(sym, quota))} quota</span></div></div>"
+        )
+
+    rows = []
+    for a in attainment:
+        pct = _get_attainment_pct(a)
+        value = _att_pct_text(pct) if pct is not None else "No quota"
+        booked = _money(sym, _d(_get_dec(a, "bookings")))
+        quota = _money(sym, _d(_get_dec(a, "quota")))
+        rows.append(
+            f'<li title="{esc(booked)} of {esc(quota)}"><span>{esc(_short_period(_get_attr(a, "period")))}</span>'
+            f'{bar(pct, tick=False)}<span class="v">{esc(value)}</span></li>'
+        )
+    return (
+        '<div class="card att"><div class="label">Quota attainment</div>'
+        f'<ul class="att-rows">{"".join(rows)}</ul></div>'
+    )
 
 
 # ------------------------------------------------------------------
@@ -518,92 +1481,283 @@ def _hex_to_rgb(h: str) -> tuple[int, int, int]:
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
+# The PDF's built-in fonts only cover Windows-1252. Swap in the nearest
+# equivalents for common typography, and replace whatever else is left, so an
+# em dash in a contact line or an unusual name never stops a statement run.
+_PDF_SUBS = {
+    "\u2212": "-", "\u2192": "->", "\u2190": "<-", "\u2264": "<=", "\u2265": ">=",
+    "\u2248": "~", "\u2260": "!=", "\u00a0": " ", "\u202f": " ", "\u2009": " ", "\u20b9": "Rs ",
+}
+
+
+def _pdf_text(value: Any) -> str:
+    text = "".join(_PDF_SUBS.get(ch, ch) for ch in str(value))
+    return text.encode("cp1252", errors="replace").decode("cp1252")
+
+
 def _write_pdf(
     pid: str, pname: str, period: str,
     lines: list[Any], total_str: str, generated_on: date | None, out_dir: Path,
-    *, _d: Callable[[Decimal], str], plan_name: str = "", attainment: Any = None,
-    theme: StatementTheme,
+    *, _d: Callable[[Decimal], str], plan_name: str = "", attainment: Sequence[Any] = (),
+    theme: StatementTheme, deals: dict[str, dict[str, str]] | None = None,
 ) -> Path:
     try:
         from fpdf import FPDF
+        from fpdf.enums import MethodReturnValue
     except ImportError:
         raise ImportError(
             "PDF support requires fpdf2. Install with: pip install icm-engine[pdf] "
             "or: uv pip install fpdf2"
         ) from None
 
+    t = _pdf_text
     sym = theme.currency_symbol
-    ar, ag, ab = _hex_to_rgb(theme.safe_accent)
-    col_w = {"txn": 34, "rule": 24, "base": 28, "rate": 16, "comm": 28, "adj": 28}
+    pal = _accent_palette(theme.safe_accent)
+    accent, accent_ink = _hex_to_rgb(theme.safe_accent), _hex_to_rgb(pal.ink)
+    ink, ink2, ink3 = (16, 24, 40), (71, 84, 103), (138, 147, 163)
+    line_c, soft, track = (229, 231, 238), (247, 248, 251), (231, 233, 240)
+    neg_c, pos_c, warn_c = (196, 50, 10), (6, 118, 71), (147, 72, 11)
 
-    pdf = FPDF()
+    def money(v: str | Decimal) -> str:
+        return t(_money(sym, v, minus="-"))
+
+    lns = _line_models(lines, pid, _d)
+    items = _group_items(lns, deals or {})
+    earned = sum((Decimal(ln.amount) for ln in lns if not ln.adj), Decimal("0"))
+    adjusted = sum((Decimal(ln.amount) for ln in lns if ln.adj), Decimal("0"))
+    confidential = t(f"Confidential - prepared for {pname}")
+
+    class _Statement(FPDF):
+        def footer(self) -> None:
+            self.set_y(-12)
+            self.set_font("Helvetica", "", 7)
+            self.set_text_color(*ink3)
+            self.cell(self.epw / 2, 4, confidential)
+            self.cell(self.epw / 2, 4, f"Page {self.page_no()} of {{nb}}", align="R")
+
+    pdf = _Statement(format="A4")
+    pdf.core_fonts_encoding = "windows-1252"
+    pdf.set_margins(16, 16, 16)
+    pdf.set_auto_page_break(True, margin=18)
     pdf.add_page()
-    # Accent header band
-    pdf.set_fill_color(ar, ag, ab)
-    pdf.rect(0, 0, 210, 3, style="F")
-    if theme.company_name:
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.set_text_color(ar, ag, ab)
-        pdf.cell(0, 9, theme.company_name, new_x="LMARGIN", new_y="NEXT")
-    pdf.set_text_color(20, 20, 30)
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, theme.title, new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 9)
-    pdf.cell(0, 5, f"{pname} ({pid})  -  Plan: {plan_name or '-'}  -  Period: {_period_label(period)}",
-             new_x="LMARGIN", new_y="NEXT")
-    if theme.show_attainment and attainment is not None:
-        booked = _d(_get_dec(attainment, "bookings"))
-        quota = _d(_get_dec(attainment, "quota"))
-        pct_val = _get_attainment_pct(attainment)
-        pct = f"{pct_val * 100:.1f}%" if pct_val is not None else "N/A"
-        pdf.cell(0, 5, f"Attainment: {sym}{booked} / {sym}{quota} ({pct})",
-                 new_x="LMARGIN", new_y="NEXT")
+    x0, w = pdf.l_margin, pdf.epw
+
+    def fit(text: str, width: float) -> str:
+        """Truncate with an ellipsis to fit a column."""
+        text = t(text)
+        if pdf.get_string_width(text) <= width:
+            return text
+        while text and pdf.get_string_width(text + "...") > width:
+            text = text[:-1]
+        return text + "..."
+
+    def caps(text: str, x: float, y: float, width: float, colour: tuple[int, int, int],
+             align: str = "L") -> None:
+        pdf.set_font("Helvetica", "B", 7)
+        pdf.set_text_color(*colour)
+        pdf.set_char_spacing(0.8)
+        pdf.set_xy(x, y)
+        pdf.cell(width, 4, t(text.upper()), align=align)
+        pdf.set_char_spacing(0)
+
+    # --- masthead ---
+    pdf.set_fill_color(*accent)
+    pdf.rect(0, 0, pdf.w, 2.4, style="F")
+    pdf.set_xy(x0, 11)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(*ink)
+    pdf.cell(w / 2, 6, fit(theme.company_name, w / 2))
+    caps(theme.title, x0 + w / 2, 12, w / 2, accent_ink, align="R")
+    pdf.set_draw_color(*line_c)
+    pdf.set_line_width(0.2)
+    pdf.line(x0, 20.5, x0 + w, 20.5)
+
+    # --- who / when ---
+    pdf.set_xy(x0, 25)
+    pdf.set_font("Helvetica", "B", 20)
+    pdf.set_text_color(*ink)
+    pdf.cell(w, 9, fit(pname, w))
+    meta = [_period_label(period), plan_name, f"Payee {pid}"]
     if generated_on:
-        pdf.cell(0, 5, f"Generated: {generated_on}", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(3)
+        meta.append(f"Generated {_fmt_date(generated_on)}")
+    pdf.set_xy(x0, 34.5)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_text_color(*ink2)
+    pdf.cell(w, 5, fit(" \u00b7 ".join(m for m in meta if m), w))
 
-    # Table header
-    pdf.set_font("Helvetica", "B", 8)
-    headers = ("Txn", "Rule", "Base", "Rate", "Comm", "Adj")
-    for h, w in zip(headers, col_w.values(), strict=True):
-        pdf.cell(w, 6, h, border=1)
-    pdf.ln()
+    # --- headline total ---
+    y = 44.0
+    pdf.set_fill_color(*soft)
+    pdf.set_draw_color(*line_c)
+    pdf.rect(x0, y, w, 25, style="DF", round_corners=True, corner_radius=3)
+    caps(theme.earned_label, x0 + 6, y + 5, w / 2, ink2)
+    pdf.set_xy(x0 + 6, y + 10.5)
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.set_text_color(*accent_ink)
+    pdf.cell(w / 2, 10, money(total_str))
+    facts: list[tuple[str, str]] = []
+    if any(ln.adj for ln in lns):
+        facts += [("Earned", money(earned)), ("Adjustments", money(adjusted))]
+    deal_count = sum(1 for it in items if not it.adjustment)
+    facts.append(("Deals", str(deal_count)))
+    fy = y + 6.5
+    for name, value in facts:
+        pdf.set_xy(x0 + w / 2, fy)
+        pdf.set_font("Helvetica", "", 8.5)
+        pdf.set_text_color(*ink2)
+        pdf.cell(w / 2 - 34, 4.5, t(name), align="R")
+        pdf.set_font("Helvetica", "B", 8.5)
+        pdf.set_text_color(*ink)
+        pdf.cell(28, 4.5, value, align="R")
+        fy += 4.8
+    y += 25 + 7
 
-    # Rows
-    pdf.set_font("Helvetica", "", 8)
-    for c in lines:
-        adj = _adj_label(c, pid)
-        row = (
-            str(_get(c, "transaction_id"))[:20],
-            str(_get(c, "rule_id"))[:12],
-            f"{sym}{_d(_get_dec(c, 'base_amount'))}",
-            str(_get_dec(c, "rate")),
-            f"{sym}{_d(_get_dec(c, 'commission_amount'))}",
-            adj[:18] if adj else "",
-        )
-        for val, w in zip(row, col_w.values(), strict=True):
-            pdf.cell(w, 5, val, border=1)
-        pdf.ln()
+    # --- attainment ---
+    if theme.show_attainment and attainment:
+        caps("Quota attainment", x0, y, w / 2, ink2)
+        y += 5.5
+        for a in attainment:
+            pct = _get_attainment_pct(a)
+            booked, quota = money(_d(_get_dec(a, "bookings"))), money(_d(_get_dec(a, "quota")))
+            head = _att_pct_text(pct) if pct is not None else "No quota"
+            if len(attainment) > 1:
+                head = f"{_short_period(_get_attr(a, 'period'))}: {head}"
+            pdf.set_xy(x0, y)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.set_text_color(*ink)
+            pdf.cell(w / 2, 5, t(head))
+            pdf.set_font("Helvetica", "", 8.5)
+            pdf.set_text_color(*ink2)
+            detail = f"{booked} booked of {quota} quota" if pct is not None else f"{booked} booked"
+            pdf.cell(w / 2, 5, detail, align="R")
+            y += 6.5
+            pdf.set_fill_color(*track)
+            pdf.rect(x0, y, w, 2.4, style="F", round_corners=True, corner_radius=1.2)
+            if pct is not None and pct > 0:
+                scale = min(max(pct, Decimal("1")), Decimal("2"))
+                base_w = float(min(pct, Decimal("1")) / scale) * w
+                pdf.set_fill_color(*accent)
+                pdf.rect(x0, y, max(base_w, 2.4), 2.4, style="F", round_corners=True, corner_radius=1.2)
+                if pct > 1:
+                    over_w = float((min(pct, Decimal("2")) - 1) / scale) * w
+                    pdf.set_fill_color(*pos_c)
+                    pdf.rect(x0 + base_w, y, over_w, 2.4, style="F")
+                    pdf.set_fill_color(*ink)
+                    pdf.rect(x0 + base_w - 0.3, y - 0.8, 0.6, 4.0, style="F")
+            y += 7
+        y += 2
 
-    # Total
-    pdf.set_font("Helvetica", "B", 8)
-    label_w = sum(list(col_w.values())[:4])
-    pdf.cell(label_w, 6, "Total", border=1)
-    pdf.cell(col_w["comm"], 6, f"{sym}{total_str}", border=1, align="R")
-    pdf.cell(col_w["adj"], 6, "", border=1)
-    pdf.ln(6)
+    # --- deals ---
+    cols = [("Deal", 66.0, "L"), ("Type", 40.0, "L"), ("Base", 26.0, "R"),
+            ("Rate", 16.0, "R"), ("Commission", w - 148.0, "R")]
+    note_w = w - cols[-1][1] - 4
 
-    # Confidentiality footer
-    pdf.set_font("Helvetica", "I", 7)
-    pdf.cell(0, 4, f"This statement is confidential and intended only for {pname}.",
-             new_x="LMARGIN", new_y="NEXT")
-    foot = theme.contact_line or ""
+    def table_head(top: float) -> float:
+        caps("Your deals", x0, top, w / 2, ink2)
+        top += 7
+        x = x0
+        for name, cw, align in cols:
+            caps(name, x, top, cw, ink3, align=align)
+            x += cw
+        pdf.set_draw_color(*line_c)
+        pdf.line(x0, top + 5.2, x0 + w, top + 5.2)
+        return top + 7.5
+
+    def note_lines(text: str) -> list[str]:
+        pdf.set_font("Helvetica", "", 7.5)
+        lines_out = pdf.multi_cell(note_w, 3.6, t(text), dry_run=True, output=MethodReturnValue.LINES)
+        return cast(list[str], lines_out)
+
+    pdf.set_y(y)
+    y = table_head(y)
+    for it in items:
+        sub_bits = [it.product, f"Closed {it.closed}" if it.closed else "", f"Ref {it.ref}" if it.ref else ""]
+        sub = " \u00b7 ".join(b for b in sub_bits if b)
+        item_badges = it.badges()
+        badges = "  ".join(text.upper() for text, _tone in item_badges)
+        badge_colour = warn_c if any(tone == "warn" for _t, tone in item_badges) else ink2
+        for j, ln in enumerate(it.lines):
+            notes = note_lines(ln.notes) if theme.show_line_explanations and ln.notes else []
+            has_sub = j == 0 and bool(sub or badges)
+            height = 5.5 + (4.0 if has_sub else 0) + len(notes) * 3.6 + 2.5
+            if y + height > pdf.h - pdf.b_margin:
+                pdf.add_page()
+                y = table_head(pdf.t_margin)
+            x = x0
+            cells = [
+                (it.label if j == 0 else "", "B" if j == 0 else "", ink),
+                ("" if ln.title == it.label else ln.title, "", ink2),
+                (money(ln.base) if not ln.adj else "", "", ink2),
+                (_pct_text(ln.rate) if ln.rate != 1 and not ln.adj else "", "", ink2),
+                (money(ln.amount), "B", neg_c if Decimal(ln.amount) < 0 else ink),
+            ]
+            for (text, style, colour), (_name, cw, align) in zip(cells, cols, strict=True):
+                pdf.set_xy(x, y)
+                pdf.set_font("Helvetica", style, 8.5)
+                pdf.set_text_color(*colour)
+                pdf.cell(cw, 5.5, fit(text, cw - 2), align=align)
+                x += cw
+            y += 5.5
+            if has_sub:
+                pdf.set_xy(x0, y - 0.6)
+                pdf.set_font("Helvetica", "", 7.5)
+                pdf.set_text_color(*ink3)
+                shown = fit(sub, note_w)
+                pdf.cell(pdf.get_string_width(shown) + (3 if shown else 0), 4, shown)
+                if badges:
+                    pdf.set_font("Helvetica", "B", 6.5)
+                    pdf.set_text_color(*badge_colour)
+                    room = note_w - (pdf.get_x() - x0)
+                    pdf.cell(room, 4, fit(badges, room))
+                y += 4.0
+            pdf.set_font("Helvetica", "", 7.5)
+            pdf.set_text_color(*ink2)
+            for text in notes:
+                pdf.set_xy(x0, y - 0.4)
+                pdf.cell(note_w, 3.6, text)
+                y += 3.6
+            y += 2.5 if j == len(it.lines) - 1 else 0.5
+        pdf.set_draw_color(*line_c)
+        pdf.line(x0, y - 1.2, x0 + w, y - 1.2)
+    if not items:
+        pdf.set_xy(x0, y)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(*ink2)
+        pdf.cell(w, 8, "No commission lines for this period.")
+        y += 10
+
+    # --- total ---
+    if y + 22 > pdf.h - pdf.b_margin:
+        pdf.add_page()
+        y = pdf.t_margin
+    pdf.set_draw_color(*ink)
+    pdf.set_line_width(0.5)
+    pdf.line(x0, y, x0 + w, y)
+    pdf.set_line_width(0.2)
+    pdf.set_xy(x0, y + 2.5)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(*ink)
+    pdf.cell(w / 2, 7, "Total")
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_text_color(*accent_ink)
+    pdf.cell(w / 2, 7, money(total_str), align="R")
+    y += 14
+
+    # --- footer notes ---
+    foot = [f"This statement is confidential and intended only for {pname}."]
+    contact = theme.contact_line or ""
     if theme.footer_note:
-        foot = (foot + "  |  " if foot else "") + theme.footer_note
+        contact = (contact + " \u00b7 " if contact else "") + theme.footer_note
+    if contact:
+        foot.append(contact)
     if theme.show_powered_by:
-        foot = (foot + "  |  " if foot else "") + "Generated by OpenIncent"
-    if foot:
-        pdf.cell(0, 4, foot, new_x="LMARGIN", new_y="NEXT")
+        foot.append("Generated by OpenIncent")
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_text_color(*ink2)
+    for text in foot:
+        pdf.set_xy(x0, y)
+        pdf.multi_cell(w, 4, t(text))
+        y = pdf.get_y() + 0.8
 
     path = out_dir / f"statement_{pid}_{period}.pdf"
     pdf.output(str(path))
@@ -628,14 +1782,27 @@ def _get(obj: Any, attr: str, default: str = "") -> str:
     return _get_attr(obj, attr, default)
 
 
+def _opt(obj: Any, attr: str) -> str:
+    """An optional field as text: "" when missing or None (never "None")."""
+    value = obj.get(attr) if isinstance(obj, dict) else getattr(obj, attr, None)
+    return "" if value is None else str(value)
+
+
 def _get_dec(obj: Any, attr: str) -> Decimal:
     val = _get(obj, attr, "0")
     return Decimal(val)
 
 
-def _get_attainment_pct(attainment: Any) -> float | None:
-    """Safely extract attainment_pct as a float, or None."""
-    raw = getattr(attainment, "attainment_pct", None)
-    if raw is None:
+def _get_attainment_pct(attainment: Any) -> Decimal | None:
+    """Attainment as a fraction (1.26 = 126%), or None when there is no quota.
+
+    Reads the engine's AttainmentSummary and the dict form a saved run keeps
+    ({"attainment_pct": "1.26"} or "None"). Reading only attributes made every
+    statement exported from a saved run show "N/A"."""
+    raw = _opt(attainment, "attainment_pct").strip()
+    if not raw or raw.lower() in {"none", "null", "n/a"}:
         return None
-    return float(str(raw))
+    try:
+        return Decimal(raw)
+    except InvalidOperation:
+        return None

@@ -1063,6 +1063,7 @@ def statements_command(
         reporting_currency=_rpt_cur,
         source_currency=_src_cur,
         theme=theme,
+        transactions=txn_list,
     )
 
     console.print(f"[green]Generated {len(files)} statement file(s) in {out_dir}[/green]")
